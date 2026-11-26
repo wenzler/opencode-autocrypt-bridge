@@ -25,6 +25,8 @@ const settingsProperties = {
   keyPassphrase: { type: 'string' },
   generateKey: { type: 'boolean' },
   preferEncryptMutual: { type: 'boolean' },
+  defaultSessionID: { type: 'string' },
+  defaultSessionDirectory: { type: 'string' },
 }
 
 const emptyInput = {
@@ -59,6 +61,46 @@ const statusOutput = {
     verified: { type: 'boolean' },
     handshake: { type: 'string' },
     lastError: { type: 'string' },
+    sessionID: { type: 'string' },
+    sessionTitle: { type: 'string' },
+    sessionDirectory: { type: 'string' },
+    sessionProjectID: { type: 'string' },
+  },
+  additionalProperties: false,
+}
+
+const sessionInfo = {
+  type: 'object',
+  properties: {
+    id: { type: 'string' },
+    title: { type: 'string' },
+    projectID: { type: 'string' },
+    directory: { type: 'string' },
+    agent: { type: 'string' },
+    model: { type: 'string' },
+    updated: { type: 'number' },
+  },
+  additionalProperties: false,
+}
+
+const projectInfo = {
+  type: 'object',
+  properties: {
+    id: { type: 'string' },
+    directory: { type: 'string' },
+    sessionCount: { type: 'number' },
+    updated: { type: 'number' },
+  },
+  additionalProperties: false,
+}
+
+const sessionsOutput = {
+  type: 'object',
+  properties: {
+    sessions: { type: 'array', items: sessionInfo },
+    projects: { type: 'array', items: projectInfo },
+    boundSessionID: { type: 'string' },
+    defaultSessionID: { type: 'string' },
   },
   additionalProperties: false,
 }
@@ -110,6 +152,30 @@ export const BridgeRpc = Rpc.define({
     },
     resetContact: {
       input: emptyInput,
+      output: statusOutput,
+    },
+    listSessions: {
+      input: emptyInput,
+      output: sessionsOutput,
+    },
+    bindSession: {
+      input: {
+        type: 'object',
+        properties: { sessionID: { type: 'string' } },
+        required: ['sessionID'],
+        additionalProperties: false,
+      },
+      output: statusOutput,
+    },
+    createSession: {
+      input: {
+        type: 'object',
+        properties: {
+          title: { type: 'string' },
+          directory: { type: 'string' },
+        },
+        additionalProperties: false,
+      },
       output: statusOutput,
     },
   },

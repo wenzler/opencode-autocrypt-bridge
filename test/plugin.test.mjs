@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import plugin from '../src/index.js'
 
 function fakeContext(storageValues, handlersOut, emitted) {
-  const toolApi = { add() {}, async dispose() {} }
+  const tools = []
+  const toolApi = { add(definition) { tools.push(definition) }, async dispose() {} }
   const registration = {
     events: {
       async emit(name, status) { emitted.push({ name, status }) },
@@ -30,11 +31,19 @@ function fakeContext(storageValues, handlersOut, emitted) {
     },
     session: {
       async create() { return { id: 'session-1' } },
+      async get({ sessionID }) {
+        if (sessionID !== 'session-1') throw new Error(`Unknown session ${sessionID}`)
+        return { id: sessionID, title: 'Autocrypt session', location: { directory: '/tmp' } }
+      },
+      async list() {
+        return { data: [{ id: 'session-1', title: 'Autocrypt session', projectID: 'p1', location: { directory: '/tmp' }, time: { updated: 1 } }] }
+      },
       async prompt() { return { id: 'user-message' } },
       async wait() {},
       async context() { return [] },
     },
     location: { directory: '/tmp' },
+    tools,
   }
 }
 
@@ -98,6 +107,39 @@ test('GUI defaults to key generation and stores hostnames without URL schemes', 
   assert.equal(saved.imapHost, 'imap.example.org')
   assert.equal(saved.smtpHost, 'smtp.example.org')
   assert.equal(saved.generateKey, false)
+
+  await dispose()
+})
+
+test('session RPC and agent tool are registered for project awareness', async () => {
+  const storageValues = new Map()
+  const handlersOut = { value: null }
+  const ctx = fakeContext(storageValues, handlersOut, [])
+
+  const dispose = await plugin.setup(ctx)
+  const handlers = handlersOut.value
+
+  assert.equal(typeof handlers.listSessions, 'function')
+  assert.equal(typeof handlers.bindSession, 'function')
+  assert.equal(typeof handlers.createSession, 'function')
+  assert.ok(ctx.tools.some((tool) => tool.name === 'autocrypt_send_file'))
+  assert.ok(ctx.tools.some((tool) => tool.name === 'autocrypt_sessions'))
+
+  const catalog = await handlers.listSessions({})
+  assert.ok(Array.isArray(catalog.sessions))
+  assert.ok(Array.isArray(catalog.projects))
+  assert.equal(catalog.boundSessionID, '')
+
+  const status = await handlers.getStatus({})
+  assert.equal(status.sessionID, '')
+
+  await handlers.updateSettings({
+    defaultSessionID: 'ses_example',
+    defaultSessionDirectory: '/tmp/project',
+  })
+  const saved = await handlers.getSettings({})
+  assert.equal(saved.defaultSessionID, 'ses_example')
+  assert.equal(saved.defaultSessionDirectory, '/tmp/project')
 
   await dispose()
 })

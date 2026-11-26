@@ -34,14 +34,41 @@ function harness(fingerprint, options = {}) {
   }, {})
   const values = new Map()
   const userId = 'user-message'
+  const records = new Map()
+  for (const session of options.sessions || []) records.set(session.id, session)
+  const created = []
+  const prompted = []
+  const promptInputs = []
   const ctx = {
     storage: {
       async get(key) { return values.get(key) },
       async set(key, value) { values.set(key, value) },
     },
     session: {
-      async create() { return { id: 'session-1' } },
-      async prompt() { return { id: userId } },
+      async create(input = {}) {
+        const id = `session-${created.length + 1}`
+        const record = {
+          id,
+          title: input.title || '',
+          projectID: options.projectID || 'project-1',
+          location: input.location || { directory: options.directory || '/tmp' },
+          time: { updated: Date.now() },
+        }
+        records.set(id, record)
+        created.push(record)
+        return record
+      },
+      async get({ sessionID }) {
+        const record = records.get(sessionID)
+        if (!record) throw new Error(`Unknown session ${sessionID}`)
+        return record
+      },
+      async list() { return { data: [...records.values()] } },
+      async prompt(input) {
+        prompted.push(input.sessionID)
+        promptInputs.push(input)
+        return { id: userId }
+      },
       async wait() {},
       async context() {
         if (!options.assistantText) return []
@@ -57,7 +84,7 @@ function harness(fingerprint, options = {}) {
   const sender = {
     async send(raw, to) { sent.push({ raw: raw.toString('utf8'), to }) },
   }
-  return { cfg, ctx, sent, sender }
+  return { cfg, ctx, sent, sender, created, prompted, promptInputs, records }
 }
 
 function firstContactMail(contact) {
@@ -75,6 +102,36 @@ function firstContactMail(contact) {
     'Hello from the pinned contact.',
     '',
   ].join('\r\n'))
+}
+
+function contactReply(contact, { subject = 'Re: first contact', text = 'hello', messageId = '<reply@example.net>', inReplyTo = '' } = {}) {
+  const lines = [
+    'From: Contact <contact@example.net>',
+    'To: <bot@example.org>',
+    `Subject: ${subject}`,
+    `Date: ${new Date().toUTCString()}`,
+    `Message-ID: ${messageId}`,
+    `Autocrypt: ${autocryptHeader('contact@example.net', contact.publicB64, true)}`,
+  ]
+  if (inReplyTo) lines.push(`In-Reply-To: ${inReplyTo}`)
+  lines.push(
+    'MIME-Version: 1.0',
+    'Content-Type: text/plain; charset=utf-8',
+    'Content-Transfer-Encoding: 7bit',
+    '',
+    text,
+    '',
+  )
+  return Buffer.from(lines.join('\r\n'))
+}
+
+async function sentText(sent, bot, index = sent.length - 1) {
+  const armored = extractArmored(sent[index].raw)
+  assert.ok(armored, 'reply is PGP/MIME encrypted')
+  const decrypted = await decryptMessage(armored, bot, bot.publicB64)
+  assert.equal(decrypted.signatureVerified, true)
+  const parsed = await simpleParser(decrypted.data)
+  return String(parsed.text || '')
 }
 
 test('a matching Autocrypt fingerprint learns the key and sends an encrypted confirmation', async () => {
@@ -148,4 +205,118 @@ test('a mismatched Autocrypt fingerprint is rejected without sending anything', 
   assert.equal(status.established, false)
   assert.equal(status.learnedFingerprint, '')
   assert.equal(h.sent.length, 0)
+})
+
+test('outbound subjects carry the session marker used for reply routing', async () => {
+  const bot = await keyPair('bot4@example.org')
+  const contact = await keyPair('contact4@example.net')
+  const h = harness(contact.fingerprint, { assistantText: 'first answer' })
+  const bridge = await createBridge(h.ctx, h.cfg, { identity: bot, sender: h.sender, log: () => {} })
+
+  await bridge.process(firstContactMail(contact))
+
+  assert.equal(h.sent.length, 2)
+  assert.match(parseRawHeaders(h.sent[0].raw).get('subject'), /\[session:session-1\]/)
+  assert.match(parseRawHeaders(h.sent[1].raw).get('subject'), /\[session:session-1\]/)
+  assert.deepEqual(h.prompted, ['session-1'])
+  assert.equal(h.created.length, 1)
+})
+
+test('a Delta Chat subject marker routes a reply to another existing session', async () => {
+  const bot = await keyPair('bot5@example.org')
+  const contact = await keyPair('contact5@example.net')
+  const existing = {
+    id: 'ses_main',
+    title: 'Main project',
+    projectID: 'p1',
+    location: { directory: '/work/alpha' },
+    time: { updated: 10 },
+  }
+  const h = harness(contact.fingerprint, { assistantText: 'routed answer', sessions: [existing] })
+  const bridge = await createBridge(h.ctx, h.cfg, { identity: bot, sender: h.sender, log: () => {} })
+
+  await bridge.process(firstContactMail(contact))
+  await bridge.process(contactReply(contact, {
+    subject: 'Re: first contact [session:ses_main]',
+    text: 'route me',
+    messageId: '<routed@example.net>',
+  }))
+
+  assert.deepEqual(h.prompted, ['session-1', 'ses_main'])
+  assert.equal(h.created.length, 1)
+  assert.match(parseRawHeaders(h.sent.at(-1).raw).get('subject'), /\[session:ses_main\]/)
+})
+
+test('thread headers route replies when a mail client drops the subject marker', async () => {
+  const bot = await keyPair('bot6@example.org')
+  const contact = await keyPair('contact6@example.net')
+  const h = harness(contact.fingerprint, { assistantText: 'threaded answer' })
+  const bridge = await createBridge(h.ctx, h.cfg, { identity: bot, sender: h.sender, log: () => {} })
+
+  await bridge.process(firstContactMail(contact))
+  const outboundID = parseRawHeaders(h.sent[0].raw).get('message-id')
+  await bridge.process(contactReply(contact, {
+    subject: 'Re: first contact',
+    text: 'threaded',
+    messageId: '<threaded@example.net>',
+    inReplyTo: outboundID,
+  }))
+
+  assert.deepEqual(h.prompted, ['session-1', 'session-1'])
+  assert.equal(h.created.length, 1)
+})
+
+test('!use switches the email thread and prompts the remaining text there', async () => {
+  const bot = await keyPair('bot7@example.org')
+  const contact = await keyPair('contact7@example.net')
+  const existing = {
+    id: 'ses_main',
+    title: 'Main project',
+    projectID: 'p1',
+    location: { directory: '/work/alpha' },
+    time: { updated: 10 },
+  }
+  const h = harness(contact.fingerprint, { assistantText: 'switched answer', sessions: [existing] })
+  const bridge = await createBridge(h.ctx, h.cfg, { identity: bot, sender: h.sender, log: () => {} })
+
+  await bridge.process(firstContactMail(contact))
+  await bridge.process(contactReply(contact, {
+    subject: 'Re: first contact [session:session-1]',
+    text: '!use ses_main please inspect',
+    messageId: '<switch@example.net>',
+  }))
+
+  assert.deepEqual(h.prompted, ['session-1', 'ses_main'])
+  assert.match(h.promptInputs[1].text, /Using session ses_main/)
+  assert.match(h.promptInputs[1].text, /please inspect/)
+  assert.match(parseRawHeaders(h.sent.at(-1).raw).get('subject'), /\[session:ses_main\]/)
+})
+
+test('!sessions lists projects and sessions without prompting the agent', async () => {
+  const bot = await keyPair('bot8@example.org')
+  const contact = await keyPair('contact8@example.net')
+  const existing = {
+    id: 'ses_main',
+    title: 'Main project',
+    projectID: 'p1',
+    location: { directory: '/work/alpha' },
+    time: { updated: 10 },
+  }
+  const h = harness(contact.fingerprint, { sessions: [existing] })
+  const bridge = await createBridge(h.ctx, h.cfg, { identity: bot, sender: h.sender, log: () => {} })
+
+  await bridge.process(firstContactMail(contact))
+  const before = h.sent.length
+  await bridge.process(contactReply(contact, {
+    subject: 'Re: first contact [session:session-1]',
+    text: '!sessions',
+    messageId: '<list@example.net>',
+  }))
+
+  assert.equal(h.prompted.length, 1)
+  assert.equal(h.sent.length, before + 1)
+  const text = await sentText(h.sent, bot)
+  assert.match(text, /OpenCode sessions/)
+  assert.match(text, /ses_main/)
+  assert.match(text, /!use <session-id>/)
 })

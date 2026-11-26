@@ -125,6 +125,10 @@ export function loadConfig(options = {}, env = process.env) {
       inviteUrl: redactInviteUrl(inviteUrl),
       invite,
     },
+    session: {
+      defaultID: String(get('defaultSessionID', 'AC_SESSION_ID', '')).trim(),
+      defaultDirectory: String(get('defaultSessionDirectory', 'AC_SESSION_DIRECTORY', '')).trim(),
+    },
     maxMessageBytes: integer(get('maxMessageBytes', 'AC_MAX_MESSAGE_BYTES'), 20 * 1024 * 1024),
     maxAttachmentBytes: integer(get('maxAttachmentBytes', 'AC_MAX_ATTACHMENT_BYTES'), 10 * 1024 * 1024),
     attachmentDir: path.resolve(String(get('attachmentDir', 'AC_ATTACHMENT_DIR', path.join('.opencode', 'autocrypt-attachments')))),

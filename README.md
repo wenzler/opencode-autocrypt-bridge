@@ -9,6 +9,7 @@ Design rules:
 - **Autocrypt headers stay on:** every outbound message keeps its own `Autocrypt:` header, including after the key has been learned. Autocrypt is stateful, so peers use these headers to track key state, rotations, and recovery. It does not re-run establishment or weaken the pin.
 - **Invite links are local prefill only:** a contact URI can fill the pinned fingerprint/address/name. `i=`/`s=` tokens are ignored, stripped before storage, and never sent on the wire.
 - **No website calls:** the plugin never fetches the domain in an invite URL. All traffic is IMAP/SMTP to the configured mail host.
+- **Session-aware email:** every outbound subject carries `[session:ses_…]`. Delta Chat keeps that subject on replies, so the bridge returns to the same OpenCode session even across projects. Threading headers and explicit email commands are also supported.
 - **Ported transport:** IMAP IDLE/checkpoint and SMTP sending patterns are adapted from the MIT-licensed [`opencode-email-sync`](https://github.com/Sponn/opencode-email-sync).
 
 ## Install
@@ -65,6 +66,34 @@ Use **Send Autocrypt request** in the GUI to trigger the hello again. **Reset co
 
 Every outbound message includes `Chat-Version: 1.0`. This is only a display-compatibility marker: chat clients that filter ordinary email would otherwise hide the hello and its replies. It does not enable any invite or handshake protocol.
 
+## Session routing
+
+The bridge is aware of all OpenCode sessions visible to the server, grouped by project directory. Routing priority for an inbound email is:
+
+1. an explicit command on the first line (`!use`, `!new`, `!default`);
+2. the `[session:ses_…]` marker in the subject;
+3. `In-Reply-To` / `References` matching a message the bridge previously sent;
+4. the default session bound to the pinned contact.
+
+All outbound replies replace any stale marker with the session actually used, so a Delta Chat reply keeps pointing at the right session. The subject may look like:
+
+```text
+Re: Build the parser [session:ses_de802e102]
+```
+
+Send these commands from the pinned contact (they are gated and encrypted like any other prompt):
+
+| Command | Meaning |
+|---|---|
+| `!sessions` | List open projects and sessions with their ids; aliases: `!list`, `!projects` |
+| `!use <session-id>` | Continue this email thread in another session; remaining text on the same line becomes the prompt. Alias: `!session` |
+| `!new <title> in <project-directory>` | Create a session in a listed project and use it for this thread. Alias: `!create` |
+| `!default` | Return this thread to the email-bound default session. Alias: `!reset` |
+| `!status` | Show the bound session and current bridge state |
+| `!help` | Show the command list |
+
+Session switches affect the email thread, not the global default. Use **Settings → Autocrypt Bridge → Sessions** to bind the default session, create a session in a listed project, or set a startup default. The agent also gets an `autocrypt_sessions` tool so it can answer questions about open projects live.
+
 ### Invite URL prefill (optional)
 
 A contact-invite URI such as this is accepted:
@@ -86,7 +115,8 @@ The GUI button **Fill fingerprint and contact** reads only the public fields (le
 - reject plaintext inbound mail (outbound replies stay encrypted when the pinned key is known);
 - generated/imported OpenPGP identity and mutual-encryption preference;
 - TLS verification and IMAP poll interval;
-- live status via RPC events: configured/unconfigured state, learned fingerprint, established state, fingerprint verification, last error;
+- live status via RPC events: configured/unconfigured state, learned fingerprint, established state, fingerprint verification, bound session, last error;
+- **Sessions**: list open projects/sessions, bind the email default, create a session in a listed project, optional startup default;
 - **Send Autocrypt request**, **Rescan inbox**, **Reset contact**, and **Save & restart**.
 
 Saved passwords and private keys are hidden; leaving a password field blank keeps the saved value.
@@ -121,12 +151,14 @@ All fields can be set in the GUI, in the `options` object, or with environment v
 | `prefer-encrypt=mutual` / `preferEncryptMutual` | `AC_PREFER_ENCRYPT_MUTUAL` | Advertise mutual encryption | `true` |
 | Imported private key / `privateKeyArmored` | `AC_PRIVATE_KEY` | Armored bot private key | generated on first run |
 | Key passphrase / `keyPassphrase` | `AC_KEY_PASSPHRASE` | Passphrase for imported key | none |
+| Default session / `defaultSessionID` | `AC_SESSION_ID` | Start with this existing OpenCode session instead of auto-creating one | empty |
+| Default project / `defaultSessionDirectory` | `AC_SESSION_DIRECTORY` | Directory used when auto-creating the email session | plugin location |
 
 ## Messages and attachments
 
 - **Inbound:** supported attachments (`jpg`, `png`, `gif`, `webp`, `html`, `txt`, `md`, `pdf`) are decoded from the possibly encrypted MIME part, written under `AC_ATTACHMENT_DIR` (default `.opencode/autocrypt-attachments`), and passed to `ctx.session.prompt` as file attachments. Oversized or unsupported files are skipped with a log line.
 - **Outbound:** the agent can call `autocrypt_send_file({ path, text })` to attach a file from the current project to that session's reply. Paths outside the project are refused.
-- Each pinned contact gets one OpenCode session; inbound Message-IDs dedupe prompts.
+- Each pinned contact gets one default OpenCode session; subjects, threading headers and `!use`/`!new` can route any thread to any open session. Inbound Message-IDs dedupe prompts.
 
 ## Development
 

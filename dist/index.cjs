@@ -126079,15 +126079,128 @@ async function parseIncoming(raw, cfg, identity2, log2, pinned = cfg.pinned || {
   };
 }
 
+// src/session.js
+var ALIASES = {
+  list: "sessions",
+  projects: "sessions",
+  session: "use",
+  create: "new",
+  reset: "default"
+};
+var SIMPLE_COMMANDS = /* @__PURE__ */ new Set(["sessions", "help", "status", "default"]);
+var SUBJECT_MARKER = /\[session:([^\]]+)\]/i;
+function withSessionSubject(subject, sessionID) {
+  const base = String(subject || "").replace(SUBJECT_MARKER, "").replace(/\s+/g, " ").trim();
+  if (!sessionID) return base;
+  const marker = `[session:${sessionID}]`;
+  return base ? `${base} ${marker}` : marker;
+}
+function sessionFromSubject(subject) {
+  const match8 = SUBJECT_MARKER.exec(String(subject || ""));
+  return match8 ? match8[1].trim() : "";
+}
+function parseSessionCommand(text) {
+  const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+  const first = lines.findIndex((line) => line.trim());
+  if (first < 0) return null;
+  const match8 = /^!([a-z]+)(?:\s+([\s\S]*))?$/i.exec(lines[first].trim());
+  if (!match8) return null;
+  const command = ALIASES[match8[1].toLowerCase()] || match8[1].toLowerCase();
+  const argument = String(match8[2] || "").trim();
+  if (SIMPLE_COMMANDS.has(command)) return { command, argument: "", rest: "" };
+  if (command === "use") {
+    const [id2, ...rest] = argument.split(/\s+/);
+    return { command, argument: id2 || "", rest: rest.join(" ").trim() };
+  }
+  if (command === "new") return { command, argument, rest: "" };
+  return { command, argument, rest: "" };
+}
+function normalizeMessageId(value3) {
+  return String(value3 || "").trim().replace(/^<|>$/g, "");
+}
+function resolveSessionRef(sessions, ref) {
+  const needle = String(ref || "").trim().toLowerCase();
+  if (!needle) return void 0;
+  const exact = sessions.find((session) => String(session.id).toLowerCase() === needle);
+  if (exact) return exact;
+  const matches = sessions.filter((session) => String(session.title || "").toLowerCase().includes(needle) || String(session.directory || "").toLowerCase() === needle || String(session.projectID || "").toLowerCase() === needle);
+  if (matches.length > 1) throw new Error(`Ambiguous session reference "${ref}"; use the full session id`);
+  return matches[0];
+}
+function resolveProjectDirectory(catalog, value3) {
+  const needle = String(value3 || "").trim().toLowerCase();
+  if (!needle) return "";
+  for (const session of catalog.sessions || []) {
+    if (String(session.directory || "").toLowerCase() === needle) return session.directory;
+    if (String(session.projectID || "").toLowerCase() === needle) return session.directory;
+  }
+  for (const project of catalog.projects || []) {
+    if (String(project.directory || "").toLowerCase() === needle) return project.directory;
+    if (String(project.id || "").toLowerCase() === needle) return project.directory;
+  }
+  return "";
+}
+function parseNewSessionArgs(catalog, argument, fallbackDirectory) {
+  const raw = String(argument || "").trim();
+  const match8 = /\s+in\s+(\S.*)$/i.exec(raw);
+  const title = (match8 ? raw.slice(0, match8.index) : raw).trim();
+  const requestedDirectory = match8 ? match8[1].trim() : "";
+  const directory = requestedDirectory ? resolveProjectDirectory(catalog, requestedDirectory) : String(fallbackDirectory || "");
+  if (requestedDirectory && !directory) {
+    throw new Error(`Unknown project "${requestedDirectory}"; use !sessions to list projects`);
+  }
+  return { title: title || "Autocrypt session", directory };
+}
+function formatSessionDirectory(catalog, boundSessionID = "") {
+  const groups = /* @__PURE__ */ new Map();
+  for (const session of catalog.sessions || []) {
+    const key5 = `${session.projectID || ""}\0${session.directory || ""}`;
+    if (!groups.has(key5)) {
+      groups.set(key5, {
+        id: session.projectID || "",
+        directory: session.directory || "(unknown directory)",
+        updated: 0,
+        sessions: []
+      });
+    }
+    const group = groups.get(key5);
+    group.updated = Math.max(group.updated, Number(session.updated) || 0);
+    group.sessions.push(session);
+  }
+  const sortedGroups = [...groups.values()].sort((a, b) => b.updated - a.updated).slice(0, 8);
+  const total2 = (catalog.sessions || []).length;
+  const lines = [`OpenCode sessions (${total2}):`];
+  for (const group of sortedGroups) {
+    lines.push(`Project ${group.directory}${group.id ? ` [${group.id}]` : ""}`);
+    for (const session of group.sessions.slice(0, 12)) {
+      const marker = session.id === boundSessionID ? "  [email-bound]" : "";
+      lines.push(`  ${session.id}  ${session.title || "(untitled)"}${marker}`);
+    }
+  }
+  if (total2 > sortedGroups.reduce((sum3, group) => sum3 + group.sessions.length, 0)) {
+    lines.push(`...and ${total2 - sortedGroups.reduce((sum3, group) => sum3 + group.sessions.length, 0)} more sessions`);
+  }
+  lines.push("");
+  lines.push("Commands:");
+  lines.push("  !sessions                 list projects and sessions");
+  lines.push("  !use <session-id>         continue this email thread in that session");
+  lines.push("  !new <title> in <project> create a session in a listed project");
+  lines.push("  !default                  return this thread to the email-bound session");
+  lines.push("  !status                   show the current bridge binding");
+  return lines.join("\n");
+}
+
 // src/bridge.js
 var hashId = (value3) => `msg_ac_${(0, import_node_crypto3.createHash)("sha256").update(String(value3)).digest("hex").slice(0, 32)}`;
 var STATE_KEY = "autocrypt.state";
 async function loadState(ctx) {
   const stored = await ctx.storage.get(STATE_KEY);
-  const data = stored && typeof stored === "object" ? stored : { sessions: {}, peers: {}, seen: [], meta: {}, handshake: {} };
+  const data = stored && typeof stored === "object" ? stored : { sessions: {}, peers: {}, seen: [], threads: {}, sessionContacts: {}, meta: {}, handshake: {} };
   data.sessions ||= {};
   data.peers ||= {};
   data.seen ||= [];
+  data.threads ||= {};
+  data.sessionContacts ||= {};
   data.meta ||= {};
   data.handshake ||= {};
   return {
@@ -126153,6 +126266,115 @@ async function createBridge(ctx, cfg, options2 = {}) {
     if (state.data.seen.length > 5e3) state.data.seen = state.data.seen.slice(-5e3);
     await state.save();
   }
+  async function sessionExists(sessionID) {
+    if (!sessionID) return false;
+    try {
+      const session = await ctx.session.get({ sessionID });
+      return Boolean(session?.id);
+    } catch {
+      return false;
+    }
+  }
+  async function rememberThread(messageId, sessionID, contact) {
+    if (!messageId || !sessionID) return;
+    const id2 = normalizeMessageId(messageId);
+    state.data.threads[id2] = sessionID;
+    state.data.threads[messageId] = sessionID;
+    if (contact) state.data.sessionContacts[sessionID] = contact;
+    const keys4 = Object.keys(state.data.threads);
+    if (keys4.length > 1e4) {
+      for (const key5 of keys4.slice(0, keys4.length - 1e4)) delete state.data.threads[key5];
+    }
+    await state.save();
+  }
+  function threadRefs(message) {
+    const references = Array.isArray(message.references) ? message.references : String(message.references || "").split(/\s+/);
+    return [message.inReplyTo, ...references].filter(Boolean).map(normalizeMessageId);
+  }
+  async function threadSession(message) {
+    for (const ref of threadRefs(message)) {
+      const sessionID = state.data.threads[ref];
+      if (sessionID && await sessionExists(sessionID)) return sessionID;
+    }
+    return "";
+  }
+  async function listSessions() {
+    let response2;
+    try {
+      response2 = await ctx.session.list({ limit: 100, order: "desc" });
+    } catch {
+      response2 = await ctx.session.list();
+    }
+    const raw = Array.isArray(response2) ? response2 : response2?.data || [];
+    const sessions = raw.map((session) => ({
+      id: String(session.id || ""),
+      title: String(session.title || "(untitled)"),
+      projectID: String(session.projectID || ""),
+      directory: String(session.location?.directory || ""),
+      agent: String(session.agent || ""),
+      model: session.model ? `${session.model.providerID}/${session.model.id}` : "",
+      updated: Number(session.time?.updated) || 0
+    })).filter((session) => session.id);
+    const projects = /* @__PURE__ */ new Map();
+    for (const session of sessions) {
+      const key5 = session.projectID || session.directory || "unknown";
+      if (!projects.has(key5)) {
+        projects.set(key5, {
+          id: session.projectID || "",
+          directory: session.directory || "",
+          sessionCount: 0,
+          updated: 0
+        });
+      }
+      const project = projects.get(key5);
+      project.sessionCount += 1;
+      project.updated = Math.max(project.updated, session.updated);
+    }
+    return {
+      sessions,
+      projects: [...projects.values()].sort((a, b) => b.updated - a.updated),
+      boundSessionID: cfg.pinned.contact ? String(state.data.sessions[cfg.pinned.contact] || "") : "",
+      defaultSessionID: String(cfg.session?.defaultID || "")
+    };
+  }
+  async function bindSession(sessionID) {
+    const candidate = String(sessionID || "").trim();
+    if (!candidate) throw new Error("sessionID is required");
+    const catalog = await listSessions();
+    let resolved = candidate;
+    if (!await sessionExists(candidate)) {
+      const match8 = resolveSessionRef(catalog.sessions, candidate);
+      if (!match8) throw new Error(`Unknown session "${candidate}"; use !sessions to list sessions`);
+      resolved = match8.id;
+    }
+    if (cfg.pinned.contact) {
+      state.data.sessions[cfg.pinned.contact] = resolved;
+      state.data.sessionContacts[resolved] = cfg.pinned.contact;
+    }
+    await state.save();
+    onStatus(await getStatus());
+    return getStatus();
+  }
+  async function createAndBindSession(title, directory, bindDefault = true) {
+    const catalog = await listSessions();
+    const args2 = parseNewSessionArgs(catalog, title, directory || cfg.session?.defaultDirectory || ctx.location.directory);
+    if (!args2.directory || !await sessionDirectoryExists(catalog, args2.directory)) {
+      throw new Error(`Unknown project directory "${args2.directory}"; use !sessions to list projects`);
+    }
+    const session = await ctx.session.create({ title: args2.title, location: { directory: args2.directory } });
+    if (cfg.pinned.contact) {
+      if (bindDefault) state.data.sessions[cfg.pinned.contact] = session.id;
+      state.data.sessionContacts[session.id] = cfg.pinned.contact;
+    }
+    await state.save();
+    log2(`Created OpenCode session ${session.id} in ${args2.directory}`);
+    if (bindDefault) onStatus(await getStatus());
+    return { status: await getStatus(), sessionID: session.id, title: args2.title, directory: args2.directory };
+  }
+  async function sessionDirectoryExists(catalog, directory) {
+    const needle = String(directory || "").trim().toLowerCase();
+    return (catalog.sessions || []).some((session) => String(session.directory || "").toLowerCase() === needle) || String(ctx.location.directory || "").toLowerCase() === needle;
+  }
   async function getStatus() {
     const peer = cfg.pinned.contact ? state.data.peers[cfg.pinned.contact] : void 0;
     let learnedFingerprint = "";
@@ -126161,6 +126383,14 @@ async function createBridge(ctx, cfg, options2 = {}) {
         learnedFingerprint = await keyFingerprint(peer.keydata);
       } catch {
         learnedFingerprint = "";
+      }
+    }
+    const sessionID = cfg.pinned.contact ? String(state.data.sessions[cfg.pinned.contact] || "") : "";
+    let session = null;
+    if (sessionID) {
+      try {
+        session = await ctx.session.get({ sessionID });
+      } catch {
       }
     }
     const handshake = state.data.handshake;
@@ -126173,21 +126403,37 @@ async function createBridge(ctx, cfg, options2 = {}) {
       established: Boolean(handshake.established || peer?.keydata),
       verified: Boolean(handshake.verified),
       handshake: String(handshake.phase || (peer?.keydata ? "ready" : "idle")),
-      lastError: String(handshake.lastError || "")
+      lastError: String(handshake.lastError || ""),
+      sessionID,
+      sessionTitle: String(session?.title || ""),
+      sessionDirectory: String(session?.location?.directory || ""),
+      sessionProjectID: String(session?.projectID || "")
     };
   }
   async function sessionFor(from) {
-    if (state.data.sessions[from]) return state.data.sessions[from];
+    const configured = String(cfg.session?.defaultID || "").trim();
+    const existing = String(state.data.sessions[from] || "").trim();
+    for (const candidate of [configured, existing]) {
+      if (candidate && await sessionExists(candidate)) {
+        state.data.sessions[from] = candidate;
+        state.data.sessionContacts[candidate] = from;
+        await state.save();
+        return candidate;
+      }
+    }
+    const directory = String(cfg.session?.defaultDirectory || "").trim() || ctx.location.directory;
     const session = await ctx.session.create({
       title: `Autocrypt: ${from}`,
-      location: { directory: ctx.location.directory }
+      location: { directory }
     });
     state.data.sessions[from] = session.id;
+    state.data.sessionContacts[session.id] = from;
     await state.save();
-    log2(`Created OpenCode session ${session.id} for ${from}`);
+    log2(`Created OpenCode session ${session.id} for ${from} in ${directory}`);
     return session.id;
   }
   function contactForSession(sessionID) {
+    if (state.data.sessionContacts[sessionID]) return state.data.sessionContacts[sessionID];
     return Object.entries(state.data.sessions).find(([, id2]) => id2 === sessionID)?.[0];
   }
   async function learnPeer(from, autocrypt) {
@@ -126225,7 +126471,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
     }
     return { learned, establishedNow };
   }
-  async function transmit({ to, text, attachments = [], inReplyTo, subject, headers = [], encrypt: encrypt2 = true }) {
+  async function transmit({ to, text, attachments = [], inReplyTo, subject, headers = [], encrypt: encrypt2 = true, sessionID = "" }) {
     const inner = buildInnerMime({ text, attachments });
     let body = inner.body;
     let contentType = inner.contentType;
@@ -126243,23 +126489,27 @@ async function createBridge(ctx, cfg, options2 = {}) {
       log2(`No Autocrypt key for ${to}; sending cleartext so the peer can learn ours`);
     }
     const domain = cfg.address.split("@")[1] || "localhost";
+    const messageId = `${Date.now()}.${(0, import_node_crypto3.randomUUID)()}@${domain}`;
+    const baseSubject = subject || (inReplyTo ? `Re: Message from ${cfg.displayName}` : `Message from ${cfg.displayName}`);
     const raw = buildMail({
       cfg,
       to,
-      subject: subject || (inReplyTo ? `Re: Message from ${cfg.displayName}` : `Message from ${cfg.displayName}`),
+      subject: withSessionSubject(baseSubject, sessionID),
       inReplyTo,
-      messageId: `${Date.now()}.${(0, import_node_crypto3.randomUUID)()}@${domain}`,
+      messageId,
       publicB64: identity2.publicB64,
       contentType,
       body,
       headers
     });
     await sender.send(raw, to);
-    log2(`Sent ${contentType.includes("encrypted") ? "encrypted" : "cleartext"} reply to ${to}`);
+    if (sessionID) await rememberThread(messageId, sessionID, to);
+    log2(`Sent ${contentType.includes("encrypted") ? "encrypted" : "cleartext"} reply to ${to}${sessionID ? ` [session:${sessionID}]` : ""}`);
   }
-  async function sendKeyConfirmation(from, message) {
+  async function sendKeyConfirmation(from, message, sessionID = "") {
     await transmit({
       to: from,
+      sessionID,
       subject: `Re: ${message.subject || "Autocrypt key confirmation"}`,
       inReplyTo: message.messageId,
       headers: ["X-OpenCode-Handshake: autocrypt-confirm"],
@@ -126283,6 +126533,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
     const filename = safeFilename(import_node_path2.default.basename(target));
     await transmit({
       to,
+      sessionID,
       text: String(text || ""),
       attachments: [{ filename, contentType: contentTypeOf(filename), content }]
     });
@@ -126308,6 +126559,74 @@ async function createBridge(ctx, cfg, options2 = {}) {
     });
     return getStatus();
   }
+  async function sendCommandReply(from, message, sessionID, text, kind = "session-command") {
+    await transmit({
+      to: from,
+      sessionID,
+      subject: `Re: ${message.subject || "OpenCode session"}`,
+      inReplyTo: message.messageId,
+      headers: [`X-OpenCode-Command: ${kind}`],
+      text
+    });
+  }
+  async function resolveInboundSession(from, message, command) {
+    if (command?.command === "use") {
+      const catalog = await listSessions();
+      const match8 = resolveSessionRef(catalog.sessions, command.argument);
+      if (!match8) throw new Error(`Unknown session "${command.argument}"; use !sessions to list sessions`);
+      await rememberThread(message.messageId, match8.id, from);
+      return { sessionID: match8.id, reason: "use", note: `Using session ${match8.id} (${match8.title})` };
+    }
+    if (command?.command === "new") {
+      const fallback = await sessionFor(from);
+      let current = null;
+      try {
+        current = await ctx.session.get({ sessionID: fallback });
+      } catch {
+      }
+      const created = await createAndBindSession(command.argument, current?.location?.directory, false);
+      await rememberThread(message.messageId, created.sessionID, from);
+      return {
+        sessionID: created.sessionID,
+        reason: "new",
+        note: `Created session ${created.sessionID} (${created.title}) in ${created.directory}`
+      };
+    }
+    if (command?.command === "default") {
+      const target = await sessionFor(from);
+      await rememberThread(message.messageId, target, from);
+      return { sessionID: target, reason: "default", note: `Returned to default session ${target}` };
+    }
+    const subjectSessionID = sessionFromSubject(message.subject);
+    if (subjectSessionID && await sessionExists(subjectSessionID)) {
+      state.data.sessionContacts[subjectSessionID] = from;
+      await state.save();
+      return { sessionID: subjectSessionID, reason: "subject" };
+    }
+    const threaded = await threadSession(message);
+    if (threaded) return { sessionID: threaded, reason: "thread" };
+    return { sessionID: await sessionFor(from), reason: "default" };
+  }
+  async function commandReplyText(command, catalog, sessionID, resolution) {
+    if (command.command === "sessions" || command.command === "help") {
+      return formatSessionDirectory(catalog, sessionID);
+    }
+    if (command.command === "status") {
+      const status = await getStatus();
+      return [
+        `Email-bound session: ${status.sessionID || "(none)"}`,
+        `Title: ${status.sessionTitle || "(untitled)"}`,
+        `Directory: ${status.sessionDirectory || "(unknown)"}`,
+        `Project: ${status.sessionProjectID || "(none)"}`,
+        `This thread's session: ${sessionID}`,
+        `Established: ${status.established ? "yes" : "no"}`
+      ].join("\n");
+    }
+    return `${resolution.note || `Using session ${sessionID}`}.
+
+Further replies in this subject stay in this session.`;
+  }
+  const LOCAL_COMMANDS = /* @__PURE__ */ new Set(["sessions", "help", "status", "use", "new", "default"]);
   async function handle(raw) {
     let message;
     try {
@@ -126330,15 +126649,38 @@ async function createBridge(ctx, cfg, options2 = {}) {
     }
     if (seenBefore(message.messageId)) return;
     await markSeen(message.messageId);
+    const command = parseSessionCommand(message.text);
     const { establishedNow } = await learnPeer(from, message.autocrypt);
+    let resolution;
+    try {
+      resolution = await resolveInboundSession(from, message, command);
+    } catch (error) {
+      log2(`Session command failed: ${error.message}`);
+      const fallback = await sessionFor(from);
+      await rememberThread(message.messageId, fallback, from);
+      await sendCommandReply(from, message, fallback, `Error: ${error.message}`, "error");
+      return;
+    }
+    const sessionID = resolution.sessionID;
+    await rememberThread(message.messageId, sessionID, from);
     if (establishedNow) {
       try {
-        await sendKeyConfirmation(from, message);
+        await sendKeyConfirmation(from, message, sessionID);
       } catch (error) {
         log2(`Could not send key confirmation: ${error.message}`);
       }
     }
-    const sessionID = await sessionFor(from);
+    if (command && LOCAL_COMMANDS.has(command.command)) {
+      const catalog = await listSessions();
+      const text = await commandReplyText(command, catalog, sessionID, resolution);
+      if (!command.rest) {
+        await sendCommandReply(from, message, sessionID, text);
+        return;
+      }
+      command.rest = `${resolution.note || `Using session ${sessionID}`}
+
+${command.rest}`;
+    }
     await enqueue(sessionID, async () => {
       const files = message.attachments.map((attachment) => ({
         uri: attachment.uri,
@@ -126347,8 +126689,9 @@ async function createBridge(ctx, cfg, options2 = {}) {
       }));
       const promptId = hashId(message.messageId);
       const text = [
-        message.text || "(message contained no plain text)",
+        command?.rest || message.text || "(message contained no plain text)",
         `[Autocrypt email from ${from}${message.fromName ? ` (${message.fromName})` : ""}]`,
+        `[OpenCode session: ${sessionID}${resolution.note ? ` \u2014 ${resolution.note}` : ""}]`,
         ...message.attachments.length ? [`[Attachments: ${message.attachments.map((a) => a.filename).join(", ")}]`] : []
       ].join("\n\n");
       const promptResult = await ctx.session.prompt({
@@ -126356,14 +126699,14 @@ async function createBridge(ctx, cfg, options2 = {}) {
         id: promptId,
         text,
         ...files.length ? { files } : {},
-        metadata: { source: "autocrypt-email", from, messageId: message.messageId }
+        metadata: { source: "autocrypt-email", from, messageId: message.messageId, sessionID }
       });
       const userMessageID = promptResult?.id || promptId;
       await ctx.session.wait({ sessionID });
       const messages = await ctx.session.context({ sessionID });
       const index3 = messages.findIndex((entry) => entry.id === userMessageID);
       const replies = (index3 < 0 ? [] : messages.slice(index3 + 1)).filter((entry) => entry.type === "assistant" && !entry.error).flatMap((entry) => entry.content.filter((part) => part.type === "text").map((part) => part.text)).join("\n\n").trim();
-      if (replies) await transmit({ to: from, text: replies, inReplyTo: message.messageId });
+      if (replies) await transmit({ to: from, text: replies, inReplyTo: message.messageId, sessionID });
       else log2(`No assistant text to send to ${from}`);
     });
   }
@@ -126411,6 +126754,9 @@ async function createBridge(ctx, cfg, options2 = {}) {
     },
     rescanInbox,
     resetContact,
+    listSessions,
+    bindSession,
+    createAndBindSession,
     sendFile,
     getIdentity: () => identity2
   };
@@ -126523,6 +126869,10 @@ function loadConfig(options2 = {}, env = process.env) {
       inviteUrl: redactInviteUrl(inviteUrl),
       invite
     },
+    session: {
+      defaultID: String(get6("defaultSessionID", "AC_SESSION_ID", "")).trim(),
+      defaultDirectory: String(get6("defaultSessionDirectory", "AC_SESSION_DIRECTORY", "")).trim()
+    },
     maxMessageBytes: integer2(get6("maxMessageBytes", "AC_MAX_MESSAGE_BYTES"), 20 * 1024 * 1024),
     maxAttachmentBytes: integer2(get6("maxAttachmentBytes", "AC_MAX_ATTACHMENT_BYTES"), 10 * 1024 * 1024),
     attachmentDir: import_node_path3.default.resolve(String(get6("attachmentDir", "AC_ATTACHMENT_DIR", import_node_path3.default.join(".opencode", "autocrypt-attachments")))),
@@ -126577,7 +126927,9 @@ var settingsProperties = {
   privateKeyArmored: { type: "string" },
   keyPassphrase: { type: "string" },
   generateKey: { type: "boolean" },
-  preferEncryptMutual: { type: "boolean" }
+  preferEncryptMutual: { type: "boolean" },
+  defaultSessionID: { type: "string" },
+  defaultSessionDirectory: { type: "string" }
 };
 var emptyInput = {
   type: "object",
@@ -126608,7 +126960,44 @@ var statusOutput = {
     established: { type: "boolean" },
     verified: { type: "boolean" },
     handshake: { type: "string" },
-    lastError: { type: "string" }
+    lastError: { type: "string" },
+    sessionID: { type: "string" },
+    sessionTitle: { type: "string" },
+    sessionDirectory: { type: "string" },
+    sessionProjectID: { type: "string" }
+  },
+  additionalProperties: false
+};
+var sessionInfo = {
+  type: "object",
+  properties: {
+    id: { type: "string" },
+    title: { type: "string" },
+    projectID: { type: "string" },
+    directory: { type: "string" },
+    agent: { type: "string" },
+    model: { type: "string" },
+    updated: { type: "number" }
+  },
+  additionalProperties: false
+};
+var projectInfo = {
+  type: "object",
+  properties: {
+    id: { type: "string" },
+    directory: { type: "string" },
+    sessionCount: { type: "number" },
+    updated: { type: "number" }
+  },
+  additionalProperties: false
+};
+var sessionsOutput = {
+  type: "object",
+  properties: {
+    sessions: { type: "array", items: sessionInfo },
+    projects: { type: "array", items: projectInfo },
+    boundSessionID: { type: "string" },
+    defaultSessionID: { type: "string" }
   },
   additionalProperties: false
 };
@@ -126660,6 +127049,30 @@ var BridgeRpc = rpc_exports.define({
     resetContact: {
       input: emptyInput,
       output: statusOutput
+    },
+    listSessions: {
+      input: emptyInput,
+      output: sessionsOutput
+    },
+    bindSession: {
+      input: {
+        type: "object",
+        properties: { sessionID: { type: "string" } },
+        required: ["sessionID"],
+        additionalProperties: false
+      },
+      output: statusOutput
+    },
+    createSession: {
+      input: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          directory: { type: "string" }
+        },
+        additionalProperties: false
+      },
+      output: statusOutput
     }
   },
   events: {
@@ -126694,7 +127107,9 @@ var SETTING_KEYS = [
   "privateKeyArmored",
   "keyPassphrase",
   "generateKey",
-  "preferEncryptMutual"
+  "preferEncryptMutual",
+  "defaultSessionID",
+  "defaultSessionDirectory"
 ];
 var SECRET_KEYS = /* @__PURE__ */ new Set(["imapPassword", "smtpPassword", "privateKeyArmored", "keyPassphrase"]);
 var HOST_KEYS = /* @__PURE__ */ new Set(["imapHost", "smtpHost"]);
@@ -126742,6 +127157,10 @@ var index_default = plugin_exports.define({
       verified: false,
       handshake: "idle",
       lastError: "",
+      sessionID: "",
+      sessionTitle: "",
+      sessionDirectory: "",
+      sessionProjectID: "",
       ...status,
       configured: Boolean(runtime.cfg)
     });
@@ -126819,6 +127238,16 @@ var index_default = plugin_exports.define({
       resetContact: async () => {
         if (!runtime.bridge) throw new Error("Autocrypt Bridge is not configured");
         return runtime.bridge.resetContact();
+      },
+      listSessions: async () => runtime.bridge ? runtime.bridge.listSessions() : { sessions: [], projects: [], boundSessionID: "", defaultSessionID: "" },
+      bindSession: async (input) => {
+        if (!runtime.bridge) throw new Error("Autocrypt Bridge is not configured");
+        return runtime.bridge.bindSession(input.sessionID);
+      },
+      createSession: async (input) => {
+        if (!runtime.bridge) throw new Error("Autocrypt Bridge is not configured");
+        const result3 = await runtime.bridge.createAndBindSession(input.title, input.directory);
+        return result3.status;
       }
     });
     const tool = await ctx.tool.transform((editor) => {
@@ -126841,6 +127270,16 @@ var index_default = plugin_exports.define({
             filePath: input.path,
             text: input.text
           });
+        }
+      });
+      editor.add({
+        name: "autocrypt_sessions",
+        description: "List open OpenCode projects and sessions when an email asks which session or project is active.",
+        input: { type: "object", properties: {}, additionalProperties: false },
+        execute: async () => {
+          if (!runtime.bridge) return { content: "The Autocrypt bridge is not configured" };
+          const catalog = await runtime.bridge.listSessions();
+          return { content: formatSessionDirectory(catalog, catalog.boundSessionID) };
         }
       });
     });

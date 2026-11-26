@@ -12,12 +12,22 @@ export default Plugin.define({
       const [status, setStatus] = createSignal(null)
       const [busy, setBusy] = createSignal(false)
       const [message, setMessage] = createSignal("")
+      const [sessions, setSessions] = createSignal(null)
+      const [sessionID, setSessionID] = createSignal("")
+      const [newTitle, setNewTitle] = createSignal("")
+      const [newDirectory, setNewDirectory] = createSignal("")
 
       const reload = async () => {
         try {
-          const [nextSettings, nextStatus] = await Promise.all([rpc().getSettings({}), rpc().getStatus({})])
+          const [nextSettings, nextStatus, nextSessions] = await Promise.all([
+            rpc().getSettings({}),
+            rpc().getStatus({}),
+            rpc().listSessions({}),
+          ])
           setSettings(nextSettings)
           setStatus(nextStatus)
+          setSessions(nextSessions)
+          if (!sessionID()) setSessionID(nextSessions.boundSessionID || "")
           setMessage("")
         } catch (error) {
           setMessage(`Could not load settings: ${error.message || error}`)
@@ -62,6 +72,33 @@ export default Plugin.define({
           setBusy(false)
         }
       }
+
+      const sessionText = () => {
+        const catalog = sessions()
+        if (!catalog) return "Loading…"
+        if (!catalog.sessions?.length) return "No open sessions found."
+        const lines = [
+          `Email-bound session: ${catalog.boundSessionID || "(none)"}`,
+          `Projects: ${catalog.projects?.length || 0} · Sessions: ${catalog.sessions.length}`,
+          "",
+        ]
+        for (const project of (catalog.projects || []).slice(0, 8)) {
+          lines.push(`${project.directory || project.id || "(unknown directory)"} [${project.id || "unknown"}]`)
+          const inProject = catalog.sessions
+            .filter((entry) => entry.projectID === project.id && entry.directory === project.directory)
+            .slice(0, 12)
+          for (const entry of inProject) {
+            lines.push(`  ${entry.id}  ${entry.title}${entry.id === catalog.boundSessionID ? "  [bound]" : ""}`)
+          }
+        }
+        return lines.join("\n")
+      }
+
+      const bindSession = () => run("Session bound", () => rpc().bindSession({ sessionID: sessionID().trim() }))
+      const createSession = () => run("Session created", () => rpc().createSession({
+        title: newTitle().trim(),
+        directory: newDirectory().trim(),
+      }))
 
       const fillFromInvite = async () => {
         setBusy(true)
@@ -108,6 +145,8 @@ export default Plugin.define({
           keyPassphrase: value("keyPassphrase"),
           generateKey: checked("generateKey"),
           preferEncryptMutual: checked("preferEncryptMutual"),
+          defaultSessionID: value("defaultSessionID"),
+          defaultSessionDirectory: value("defaultSessionDirectory"),
         }
         return run("Settings saved", () => rpc().updateSettings(payload))
       }
@@ -123,6 +162,8 @@ export default Plugin.define({
           `Learned fingerprint: ${current.learnedFingerprint || "(none)"}`,
           `Established: ${current.established ? "yes" : "no"}`,
           `Fingerprint verified: ${current.verified ? "yes" : "no"}`,
+          `Session: ${current.sessionID || "(none)"}${current.sessionTitle ? ` — ${current.sessionTitle}` : ""}`,
+          `Session directory: ${current.sessionDirectory || "(unknown)"}`,
           `State: ${current.handshake}`,
           ...(current.lastError ? [`Last error: ${current.lastError}`] : []),
         ]
@@ -241,6 +282,31 @@ export default Plugin.define({
             </ui.SettingsRow>
           </ui.SettingsSection>
 
+          <ui.SettingsSection title="Sessions">
+            <ui.SettingsRow id="sessions" title="Open projects and sessions" description="Every outbound email carries [session:ses_…] in its subject, so Delta Chat replies stay in that OpenCode session. Email commands: !sessions, !use <id>, !new <title> in <project>, !default, !status.">
+              <ui.Code content={sessionText()} language="text" />
+            </ui.SettingsRow>
+            <ui.SettingsRow title="Bind email default to session" description="Changes the session used by new, unthreaded email. Existing subjects keep their own session.">
+              <div>
+                <ui.TextInput label="Session ID" value={sessionID()} onInput={(v) => setSessionID(v)} placeholder="ses_..." />
+                <ui.Button size="small" disabled={busy() || !sessionID().trim()} onClick={() => void bindSession()}>Bind session</ui.Button>
+              </div>
+            </ui.SettingsRow>
+            <ui.SettingsRow title="Create and bind a session" description="Creates a session in a listed project directory and makes it the email default.">
+              <div>
+                <ui.TextInput label="Session title" value={newTitle()} onInput={(v) => setNewTitle(v)} />
+                <ui.TextInput label="Project directory" value={newDirectory()} onInput={(v) => setNewDirectory(v)} placeholder="/path/to/project" />
+                <ui.Button size="small" disabled={busy() || !newTitle().trim()} onClick={() => void createSession()}>Create & bind</ui.Button>
+              </div>
+            </ui.SettingsRow>
+            <ui.SettingsRow title="Default session on startup" description="Optional. Overrides the auto-created email session; leave blank to keep the current behavior.">
+              <div>
+                <ui.TextInput label="Default session ID" value={value("defaultSessionID")} onInput={(v) => setField("defaultSessionID", v)} placeholder="ses_..." />
+                <ui.TextInput label="Default project directory" value={value("defaultSessionDirectory")} onInput={(v) => setField("defaultSessionDirectory", v)} placeholder="/path/to/project" />
+              </div>
+            </ui.SettingsRow>
+          </ui.SettingsSection>
+
           <ui.SettingsSection title="Status" footer={message() ? <ui.Markdown text={message()} /> : undefined}>
             <ui.SettingsRow title="Current state" description="Fill the fields above and click Save & restart. Until the required mail and pinned-contact fields are valid, the bridge stays unconfigured and sends nothing.">
               <ui.Code content={statusText()} language="text" />
@@ -260,6 +326,8 @@ export default Plugin.define({
         { id: "address", title: "Bot address", keywords: "imap smtp email" },
         { id: "pinnedContact", title: "Pinned contact", keywords: "fingerprint gate openpgp" },
         { id: "inviteUrl", title: "Contact invite URL", keywords: "fingerprint prefill" },
+        { id: "sessions", title: "Open sessions", keywords: "session project routing" },
+        { id: "defaultSessionID", title: "Default session", keywords: "session project binding" },
       ],
       render: () => <Settings />,
     })

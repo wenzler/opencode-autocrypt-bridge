@@ -3,12 +3,14 @@ import { createBridge } from './bridge.js'
 import { loadConfig, normalizeHost } from './config.js'
 import { parseInviteUrl, redactInviteUrl } from './headers.js'
 import { BridgeRpc } from './rpc.js'
+import { formatSessionDirectory } from './session.js'
 
 const SETTING_KEYS = [
   'address', 'displayName', 'imapHost', 'imapPort', 'imapSecurity', 'imapUser', 'imapPassword', 'imapMailbox',
   'smtpHost', 'smtpPort', 'smtpSecurity', 'smtpUser', 'smtpPassword', 'pinnedContact',
   'pinnedFingerprint', 'pinnedContactKey', 'inviteUrl', 'requireEncrypted',
   'pollIntervalMs', 'verifyCertificate', 'privateKeyArmored', 'keyPassphrase', 'generateKey', 'preferEncryptMutual',
+  'defaultSessionID', 'defaultSessionDirectory',
 ]
 
 const SECRET_KEYS = new Set(['imapPassword', 'smtpPassword', 'privateKeyArmored', 'keyPassphrase'])
@@ -67,6 +69,10 @@ export default Plugin.define({
       verified: false,
       handshake: 'idle',
       lastError: '',
+      sessionID: '',
+      sessionTitle: '',
+      sessionDirectory: '',
+      sessionProjectID: '',
       ...status,
       configured: Boolean(runtime.cfg),
     })
@@ -158,6 +164,18 @@ export default Plugin.define({
         if (!runtime.bridge) throw new Error('Autocrypt Bridge is not configured')
         return runtime.bridge.resetContact()
       },
+      listSessions: async () => (runtime.bridge
+        ? runtime.bridge.listSessions()
+        : { sessions: [], projects: [], boundSessionID: '', defaultSessionID: '' }),
+      bindSession: async (input) => {
+        if (!runtime.bridge) throw new Error('Autocrypt Bridge is not configured')
+        return runtime.bridge.bindSession(input.sessionID)
+      },
+      createSession: async (input) => {
+        if (!runtime.bridge) throw new Error('Autocrypt Bridge is not configured')
+        const result = await runtime.bridge.createAndBindSession(input.title, input.directory)
+        return result.status
+      },
     })
 
     const tool = await ctx.tool.transform((editor) => {
@@ -180,6 +198,16 @@ export default Plugin.define({
             filePath: input.path,
             text: input.text,
           })
+        },
+      })
+      editor.add({
+        name: 'autocrypt_sessions',
+        description: 'List open OpenCode projects and sessions when an email asks which session or project is active.',
+        input: { type: 'object', properties: {}, additionalProperties: false },
+        execute: async () => {
+          if (!runtime.bridge) return { content: 'The Autocrypt bridge is not configured' }
+          const catalog = await runtime.bridge.listSessions()
+          return { content: formatSessionDirectory(catalog, catalog.boundSessionID) }
         },
       })
     })
