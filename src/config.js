@@ -154,6 +154,13 @@ export function loadConfig(options = {}, env = process.env) {
       sendFiles: boolean(get('emailSendFiles', 'AC_EMAIL_SEND_FILES'), true),
       watch: boolean(get('emailWatch', 'AC_EMAIL_WATCH'), true),
       readReceipts: boolean(get('emailReadReceipts', 'AC_EMAIL_READ_RECEIPTS'), true),
+      // Progressive text while the agent works. Throttled well below the
+      // provider's practical ~220 messages/hour ceiling.
+      progress: boolean(get('emailProgress', 'AC_EMAIL_PROGRESS'), true),
+      progressIntervalMs: Math.max(5_000, integer(
+        get('emailProgressIntervalMs', 'AC_EMAIL_PROGRESS_INTERVAL_MS'),
+        20_000,
+      )),
     },
     maxMessageBytes: integer(get('maxMessageBytes', 'AC_MAX_MESSAGE_BYTES'), 20 * 1024 * 1024),
     maxAttachmentBytes: integer(get('maxAttachmentBytes', 'AC_MAX_ATTACHMENT_BYTES'), 10 * 1024 * 1024),

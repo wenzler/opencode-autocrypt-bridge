@@ -38,7 +38,8 @@ test('inner MIME carries text and a jpeg attachment', () => {
   const entity = mime.entity.toString('utf8')
   assert.match(entity, /Content-Type: multipart\/mixed; boundary=/)
   assert.match(entity, /Content-Type: text\/plain; charset=utf-8/)
-  assert.match(entity, /Content-Type: image\/jpeg; charset=utf-8; name="photo.jpg"/)
+  assert.match(entity, /Content-Type: image\/jpeg; name="photo.jpg"/)
+  assert.doesNotMatch(entity, /image\/jpeg; charset/)
   assert.match(entity, /Content-Disposition: attachment; filename="photo.jpg"/)
   assert.equal(Buffer.from('aGVsbG8=', 'base64').toString('utf8'), 'hello')
 })
@@ -141,6 +142,31 @@ test('deleteAfterRead is opt-in through settings or env', () => {
     AC_DELETE_AFTER_READ: 'on',
   })
   assert.equal(fromEnv.imap.deleteAfterRead, true)
+})
+
+test('progressive replies default on with a clamped interval', () => {
+  const values = {
+    address: 'bot@example.org',
+    imapHost: 'imap.example.org',
+    imapPassword: 'secret',
+    smtpHost: 'smtp.example.org',
+    smtpPassword: 'secret',
+    pinnedContact: 'me@example.net',
+    pinnedFingerprint: '669AE77C1D829C65258FC4F8F220CFCAEAA9A4CE',
+  }
+  assert.equal(loadConfig(values, {}).remote.progress, true)
+  assert.equal(loadConfig(values, {}).remote.progressIntervalMs, 20000)
+  const fast = loadConfig({ ...values, emailProgressIntervalMs: 1000 }, {})
+  assert.equal(fast.remote.progressIntervalMs, 5000)
+  const fromEnv = loadConfig({}, {
+    ...baseEnv,
+    AC_PINNED_CONTACT: 'me@example.net',
+    AC_PINNED_FINGERPRINT: '669AE77C1D829C65258FC4F8F220CFCAEAA9A4CE',
+    AC_EMAIL_PROGRESS: 'off',
+    AC_EMAIL_PROGRESS_INTERVAL_MS: '30000',
+  })
+  assert.equal(fromEnv.remote.progress, false)
+  assert.equal(fromEnv.remote.progressIntervalMs, 30000)
 })
 
 const fingerprint = '669AE77C1D829C65258FC4F8F220CFCAEAA9A4CE'

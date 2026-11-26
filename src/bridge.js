@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   classifyPermission,
   decisionCode,
@@ -18,7 +19,14 @@ import {
   loadIdentity,
   validatePublicKey,
 } from './crypto.js'
-import { createSender, parseIncoming, rescanMailbox, secureJoinFrom, startImap } from './mail.js'
+import {
+  ALLOWED_ATTACHMENT_TYPES,
+  createSender,
+  parseIncoming,
+  rescanMailbox,
+  secureJoinFrom,
+  startImap,
+} from './mail.js'
 import {
   buildInnerMime,
   buildMail,
@@ -109,6 +117,7 @@ export async function createBridge(ctx, cfg, options = {}) {
   const inFlight = new Set()
   const sessionStatus = new Map()
   const lastWatchNotify = new Map()
+  const progress = new Map()
   const announcedDecisions = new Set()
   const announcingQuestions = new Set()
   let started = false
@@ -121,6 +130,7 @@ export async function createBridge(ctx, cfg, options = {}) {
     'form.cancelled',
     'session.status',
     'session.idle',
+    'message.part.delta',
     'session.execution.succeeded',
     'session.execution.failed',
     'session.step.failed',
@@ -590,6 +600,49 @@ export async function createBridge(ctx, cfg, options = {}) {
     await sendSessionNotice(sessionID, subject, text, kind)
   }
 
+  /** Drop only the text already mailed, even if streamed deltas were reformatted. */
+  function unreportedRemainder(finalText, mailedText) {
+    const final = String(finalText || '')
+    const mailed = String(mailedText || '')
+    let shared = 0
+    while (shared < final.length && shared < mailed.length && final[shared] === mailed[shared]) shared += 1
+    return final.slice(shared).trim()
+  }
+
+  /** Send throttled working updates while one prompted session is running. */
+  async function handleProgressEvent(event) {
+    if (cfg.remote.progress === false) return
+    const data = event.data || {}
+    const sessionID = String(data.sessionID || '')
+    const active = progress.get(sessionID)
+    if (!active || String(data.field || 'text') !== 'text') return
+    const created = Number(event.created)
+    if (Number.isFinite(created) && created < active.startedAt) return
+    const messageID = String(data.messageID || '')
+    if (messageID && messageID === active.userMessageID) return
+    const delta = String(data.delta || '')
+    if (!delta) return
+    active.text += delta
+    const configuredInterval = Number(cfg.remote.progressIntervalMs)
+    const interval = Number.isFinite(configuredInterval) && configuredInterval >= 0
+      ? configuredInterval
+      : 20_000
+    const now = Date.now()
+    if (now - active.lastSentAt < interval) return
+    const chunk = active.text.slice(active.sentLength).trim()
+    if (!chunk) return
+    active.lastSentAt = now
+    active.sentLength = active.text.length
+    await transmit({
+      to: active.from,
+      sessionID,
+      inReplyTo: active.inReplyTo,
+      subject: active.subject,
+      headers: ['X-OpenCode-Notice: progress'],
+      text: `[Working on ${sessionID}…]\n\n${chunk}`,
+    })
+  }
+
   async function handleEvent(event) {
     const data = event.data || {}
     switch (event.type) {
@@ -598,6 +651,7 @@ export async function createBridge(ctx, cfg, options = {}) {
       case 'form.created': return handleFormCreated(data)
       case 'form.replied':
       case 'form.cancelled': return handleFormSettled(data)
+      case 'message.part.delta': return handleProgressEvent(event)
       case 'session.status':
       case 'session.idle':
       case 'session.execution.succeeded':
@@ -699,7 +753,11 @@ export async function createBridge(ctx, cfg, options = {}) {
     const finalSubject = withSessionSubject(baseSubject, sessionID)
     const receiptHeaders = cfg.remote?.readReceipts === false
       ? []
-      : [`Chat-Disposition-Notification-To: ${cfg.address}`]
+      : [
+        // RFC 8098 for ordinary mail clients; Delta Chat reads the Chat- form.
+        `Disposition-Notification-To: ${cfg.address}`,
+        `Chat-Disposition-Notification-To: ${cfg.address}`,
+      ]
     const raw = buildMail({
       cfg,
       to,
@@ -717,10 +775,13 @@ export async function createBridge(ctx, cfg, options = {}) {
     log(`Sent ${protectedBody.contentType.includes('encrypted') ? 'encrypted' : 'cleartext'} reply to ${to}${sessionID ? ` [session:${sessionID}]` : ''}`)
   }
 
-  /** Send a Delta Chat-compatible MDN for a message that requested one. */
+  /** Send an RFC 8098 MDN that is also a Delta Chat-compatible receipt. */
   async function sendReadReceipt(to, originalMessageID) {
     if (cfg.remote?.readReceipts === false) return
-    const receipt = buildReadReceiptMime({ originalMessageID })
+    // Final-Recipient identifies the mailbox that received the original mail,
+    // i.e. this bridge, not the address the MDN is being sent to.
+    const finalRecipient = String(cfg.address || '').replace(/[\r\n]/g, '')
+    const receipt = buildReadReceiptMime({ originalMessageID, recipient: finalRecipient })
     const protectedBody = await protect(receipt, to)
     const domain = cfg.address.split('@')[1] || 'localhost'
     const messageId = `${Date.now()}.${randomUUID()}@${domain}`
@@ -738,7 +799,9 @@ export async function createBridge(ctx, cfg, options = {}) {
         `X-OpenCode-Read-Receipt: ${id}`,
       ],
     })
-    await sender.send(raw, to)
+    // RFC 8098: an MDN must not request another MDN and must use a null
+    // envelope sender so no delivery status notification bounces back.
+    await sender.send(raw, to, { envelopeFrom: '' })
     log(`Sent read receipt to ${to} for ${id}`)
   }
 
@@ -797,6 +860,50 @@ export async function createBridge(ctx, cfg, options = {}) {
       attachments: [{ filename, contentType: contentTypeOf(filename), content }],
     })
     return { content: `Sent ${filename} to ${to}` }
+  }
+
+  /**
+   * Attach files the session produced (mockups, screenshots, PDFs, text) to the
+   * final reply. Only files inside the session project are eligible: remote or
+   * out-of-sandbox paths stay high-risk and are never attached automatically.
+   */
+  async function attachmentsFromSession(messages, sessionID) {
+    if (cfg.remote.sendFiles === false) return []
+    const root = await sessionRoot(sessionID)
+    const collected = []
+    const seen = new Set()
+    for (const entry of messages) {
+      if (entry.type !== 'assistant' || entry.error) continue
+      for (const part of entry.content || []) {
+        if (part?.type !== 'file') continue
+        let candidate = ''
+        if (part.source?.type === 'file' && part.source.path) {
+          candidate = String(part.source.path)
+        } else if (part.url) {
+          candidate = String(part.url).startsWith('file://') ? fileURLToPath(part.url) : String(part.url)
+        }
+        if (!candidate || !path.isAbsolute(candidate)) continue
+        const target = path.resolve(candidate)
+        if (target !== root && !target.startsWith(`${root}${path.sep}`)) continue
+        const filename = safeFilename(part.filename || path.basename(target))
+        const contentType = contentTypeOf(filename, part.mime)
+        if (!ALLOWED_ATTACHMENT_TYPES.has(contentType)) continue
+        let content
+        try {
+          content = await readFile(target)
+        } catch (error) {
+          log(`Skipping session file ${filename}: ${error.message}`)
+          continue
+        }
+        if (!content.byteLength || content.byteLength > cfg.maxAttachmentBytes) continue
+        const key = `${filename}:${content.byteLength}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        collected.push({ filename, contentType, content })
+        if (collected.length >= 8) return collected
+      }
+    }
+    return collected
   }
 
   /** SecureJoin v3: this bridge joins the invite supplied by the pinned contact. */
@@ -1250,6 +1357,7 @@ export async function createBridge(ctx, cfg, options = {}) {
           `High-risk email approval: ${cfg.remote.highRiskDecisions ? 'on' : 'off'}`,
           `Session watch: ${cfg.remote.watch ? 'on' : 'off'}`,
           `Read receipts: ${cfg.remote.readReceipts === false ? 'off' : 'on'}`,
+          `Progressive replies: ${cfg.remote.progress === false ? 'off' : `on (${cfg.remote.progressIntervalMs || 20000} ms)`}`,
         ].join('\n')
       }
       case 'peek': {
@@ -1369,7 +1477,7 @@ export async function createBridge(ctx, cfg, options = {}) {
     const { establishedNow } = await learnPeer(from, message.autocrypt)
     if (message.wantsReceipt) {
       try {
-        await sendReadReceipt(from, message.messageId)
+        await sendReadReceipt(message.receiptTarget || from, message.messageId)
       } catch (error) {
         log(`Could not send read receipt: ${error.message}`)
       }
@@ -1448,16 +1556,49 @@ export async function createBridge(ctx, cfg, options = {}) {
           return
         }
         const userMessageID = promptResult?.id || promptId
-        await ctx.session.wait({ sessionID })
-        const messages = await ctx.session.context({ sessionID })
-        const index = messages.findIndex((entry) => entry.id === userMessageID)
-        const replies = (index < 0 ? [] : messages.slice(index + 1))
-          .filter((entry) => entry.type === 'assistant' && !entry.error)
-          .flatMap((entry) => entry.content.filter((part) => part.type === 'text').map((part) => part.text))
-          .join('\n\n')
-          .trim()
-        if (replies) await transmit({ to: from, text: replies, inReplyTo: message.messageId, sessionID })
-        else log(`No assistant text to send to ${from}`)
+        const finalSubject = withSessionSubject(`Re: Message from ${cfg.displayName}`, sessionID)
+        const active = cfg.remote.progress === false ? null : {
+          from,
+          sessionID,
+          inReplyTo: message.messageId,
+          // Progressive and final mails share one subject and thread.
+          subject: finalSubject,
+          userMessageID,
+          startedAt: Date.now(),
+          lastSentAt: Date.now(),
+          text: '',
+          sentLength: 0,
+        }
+        if (active) progress.set(sessionID, active)
+        try {
+          await ctx.session.wait({ sessionID })
+          const messages = await ctx.session.context({ sessionID })
+          const index = messages.findIndex((entry) => entry.id === userMessageID)
+          const assistantMessages = (index < 0 ? [] : messages.slice(index + 1))
+            .filter((entry) => entry.type === 'assistant' && !entry.error)
+          const replies = assistantMessages
+            .flatMap((entry) => entry.content.filter((part) => part.type === 'text').map((part) => part.text))
+            .join('\n\n')
+            .trim()
+          const sentProgress = Boolean(active?.sentLength)
+          const remaining = active ? unreportedRemainder(replies, active.text) : replies
+          const attachments = await attachmentsFromSession(assistantMessages, sessionID)
+          const terminalText = remaining || (sentProgress ? `Completed in session ${sessionID}.` : '')
+          if (terminalText || attachments.length) {
+            await transmit({
+              to: from,
+              text: terminalText,
+              attachments,
+              inReplyTo: message.messageId,
+              subject: active ? active.subject : finalSubject,
+              sessionID,
+            })
+          } else {
+            log(`No assistant text to send to ${from}`)
+          }
+        } finally {
+          progress.delete(sessionID)
+        }
       } finally {
         inFlight.delete(sessionID)
       }

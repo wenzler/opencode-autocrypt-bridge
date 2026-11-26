@@ -10,7 +10,7 @@ import { decryptMessage, keyFingerprint } from './crypto.js'
 import { parseAutocryptHeader } from './headers.js'
 import { extractArmored, headerValues, isEncrypted, parseDispositionNotification, parseRawHeaders, safeFilename } from './mime.js'
 
-const ALLOWED_ATTACHMENT_TYPES = new Set([
+export const ALLOWED_ATTACHMENT_TYPES = new Set([
   'image/jpeg', 'image/png', 'image/gif', 'image/webp',
   'text/html', 'text/plain', 'text/markdown', 'application/pdf',
 ])
@@ -216,10 +216,13 @@ export function createSender(cfg) {
     socketTimeout: 20_000,
   }
   return {
-    async send(raw, to) {
+    async send(raw, to, sendOptions = {}) {
       const transport = nodemailer.createTransport(options)
       try {
-        await transport.sendMail({ envelope: { from: cfg.address, to: [to] }, raw })
+        // RFC 8098 requires a null envelope sender for MDNs so that no DSN is
+        // generated in response. Nodemailer encodes '' as MAIL FROM:<>.
+        const envelopeFrom = sendOptions.envelopeFrom ?? cfg.address
+        await transport.sendMail({ envelope: { from: envelopeFrom, to: [to] }, raw })
       } finally {
         transport.close()
       }
@@ -320,17 +323,22 @@ export async function parseIncoming(raw, cfg, identity, log, pinned = cfg.pinned
   }
 
   // Delta Chat puts Chat-Disposition-Notification-To in the encrypted inner
-  // MIME, and it names the sending contact (not this bridge). Plain MDN
-  // requests can also name either endpoint, so accept both.
+  // MIME and names the sender; RFC 8098 clients use Disposition-Notification-To
+  // in the outer headers and name the sender or this bridge. Accept all forms
+  // from the pinned contact, and always address the MDN back to that contact.
   const innerHeaders = parseRawHeaders(entity)
-  const receiptRequest = [
-    rawHeaders.get('chat-disposition-notification-to'),
-    rawHeaders.get('disposition-notification-to'),
-    innerHeaders.get('chat-disposition-notification-to'),
-    innerHeaders.get('disposition-notification-to'),
-  ].filter(Boolean).join(',').toLowerCase()
+  const receiptAddresses = [
+    ...headerValues(raw, 'chat-disposition-notification-to'),
+    ...headerValues(raw, 'disposition-notification-to'),
+    ...headerValues(entity, 'chat-disposition-notification-to'),
+    ...headerValues(entity, 'disposition-notification-to'),
+  ].flatMap((value) => String(value).split(',').map((entry) => {
+    const match = /<([^<>\s@]+@[^<>\s>]+)>|([^\s<>,;@]+@[^\s<>,;]+)/.exec(entry)
+    return String(match?.[1] || match?.[2] || '').trim().toLowerCase()
+  })).filter(Boolean)
   const receiptTargets = [cfg.address, sender].filter(Boolean).map((value) => String(value).toLowerCase())
-  const wantsReceipt = receiptTargets.some((target) => receiptRequest.includes(target))
+  const wantsReceipt = receiptAddresses.some((address) => receiptTargets.includes(address))
+  const receiptTarget = receiptAddresses.find((address) => address === sender) || sender
   const receipt = parseDispositionNotification(entity)
 
   const parsed = await simpleParser(entity, { skipHtmlToText: true, skipTextToHtml: true })
@@ -397,6 +405,7 @@ export async function parseIncoming(raw, cfg, identity, log, pinned = cfg.pinned
     secureJoin,
     gossip,
     wantsReceipt,
+    receiptTarget,
     mdn: receipt,
   }
 }

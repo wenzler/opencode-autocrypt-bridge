@@ -123,6 +123,8 @@ export default Plugin.define({
         emailSendFiles: true,
         emailWatch: true,
         emailReadReceipts: true,
+        emailProgress: true,
+        emailProgressIntervalMs: 20000,
       }
       const setField = (key, value) => setSettings((prev) => ({ ...prev, [key]: value }))
       const value = (key) => settings()[key] ?? ""
@@ -265,6 +267,8 @@ export default Plugin.define({
           emailSendFiles: checked("emailSendFiles"),
           emailWatch: checked("emailWatch"),
           emailReadReceipts: checked("emailReadReceipts"),
+          emailProgress: checked("emailProgress"),
+          emailProgressIntervalMs: number("emailProgressIntervalMs", 20000),
         }
         return run("Settings saved", () => rpc().updateSettings(payload))
       }
@@ -468,8 +472,14 @@ export default Plugin.define({
             <ui.SettingsRow title="Session watch subscriptions" description="Allow !watch and !unwatch to email completion, failure and idle notices for a session.">
               <ui.Switch label="Session watch subscriptions" hideLabel checked={checked("emailWatch")} onChange={(v) => setField("emailWatch", v)} />
             </ui.SettingsRow>
-            <ui.SettingsRow title="Read receipts" description="Request encrypted read receipts for bridge mail and reply with an encrypted receipt when the pinned contact asks for one.">
+            <ui.SettingsRow title="Read receipts" description="Request RFC 8098 read receipts for bridge mail and reply with an encrypted receipt when the pinned contact asks for one.">
               <ui.Switch label="Read receipts" hideLabel checked={checked("emailReadReceipts")} onChange={(v) => setField("emailReadReceipts", v)} />
+            </ui.SettingsRow>
+            <ui.SettingsRow title="Progressive replies" description="Send throttled working updates while OpenCode is still running. The final mail contains only the text not already mailed.">
+              <ui.Switch label="Progressive replies" hideLabel checked={checked("emailProgress")} onChange={(v) => setField("emailProgress", v)} />
+            </ui.SettingsRow>
+            <ui.SettingsRow title="Progress interval (ms)" description="Minimum gap between progressive mails. Default 20000 (about 180 mails/hour).">
+              <ui.TextInput label="Progress interval" value={String(value("emailProgressIntervalMs") || 20000)} onInput={(v) => setField("emailProgressIntervalMs", Number(v))} />
             </ui.SettingsRow>
             <ui.SettingsRow
               title="Command reference"
@@ -543,6 +553,7 @@ export default Plugin.define({
         { id: "emailDecisions", title: "Remote controls", keywords: "permission decision question answer watch danger" },
         { id: "emailHighRiskDecisions", title: "High-risk email approval", keywords: "danger shell file access" },
         { id: "emailReadReceipts", title: "Read receipts", keywords: "mdn receipt confirmation" },
+        { id: "emailProgress", title: "Progressive replies", keywords: "partial streaming updates working" },
         { id: "deleteAfterRead", title: "Delete after processing", keywords: "imap expunge mailbox cleanup" },
       ],
       render: () => <Settings />,

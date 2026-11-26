@@ -99527,6 +99527,7 @@ var Event18 = { Updated: Updated14, Resolved, Definitions: inventory(Updated14, 
 var import_node_crypto5 = require("node:crypto");
 var import_promises2 = require("node:fs/promises");
 var import_node_path3 = __toESM(require("node:path"), 1);
+var import_node_url2 = require("node:url");
 
 // src/commands.js
 var import_node_crypto = require("node:crypto");
@@ -99697,7 +99698,8 @@ function formatRemoteHelp(remote = {}, details = {}) {
   lines.push(`Permission decisions by email: ${remote.decisions ? "on" : "off"}`);
   lines.push(`Multiple-choice answers by email: ${remote.questions ? "on" : "off"}`);
   lines.push(`High-risk decisions by email: ${remote.highRiskDecisions ? "on" : "off"} (out-of-project file access and shell-like actions are high risk)`);
-  lines.push(`Read receipts: ${remote.readReceipts === false ? "off" : "on"}`);
+  lines.push(`Read receipts (RFC 8098 MDN): ${remote.readReceipts === false ? "off" : "on"}`);
+  lines.push(`Progressive replies: ${remote.progress === false ? "off" : "on"}${remote.progress === false ? "" : ` (every ${remote.progressIntervalMs || 2e4} ms)`}`);
   if (Array.isArray(details.commands) && details.commands.length) {
     lines.push("");
     lines.push(`OpenCode commands also available at the desk: ${details.commands.slice(0, 24).join(", ")}`);
@@ -126029,8 +126031,9 @@ function textPart(text) {
 function attachmentPart(attachment) {
   const filename = safeFilename(attachment.filename);
   const contentType = contentTypeOf(filename, attachment.contentType);
+  const charset = contentType.startsWith("text/") ? "; charset=utf-8" : "";
   return [
-    `Content-Type: ${contentType}; charset=utf-8; name="${filename}"${CRLF}`,
+    `Content-Type: ${contentType}${charset}; name="${filename}"${CRLF}`,
     `Content-Disposition: attachment; filename="${filename}"${CRLF}`,
     `Content-Transfer-Encoding: base64${CRLF}`,
     CRLF,
@@ -126055,9 +126058,16 @@ function buildInnerMime({ text, attachments = [], headers: extraHeaders = [] }) 
     entity: Buffer.concat([Buffer.from(headers, "utf8"), Buffer.from(body, "utf8")])
   };
 }
-function buildReadReceiptMime({ originalMessageID }) {
+function buildReadReceiptMime({ originalMessageID, recipient = "" }) {
   const boundary = `opencode-mdn-${(0, import_node_crypto3.randomUUID)()}`;
   const original = String(originalMessageID || "").trim().replace(/^<|>$/g, "").replace(/[\r\n]/g, "");
+  const finalRecipient = String(recipient || "").trim().replace(/[\r\n]/g, "");
+  const fields = [
+    "Reporting-UA: opencode-autocrypt-bridge",
+    ...finalRecipient ? [`Final-Recipient: rfc822; ${finalRecipient}`] : [],
+    `Original-Message-ID: <${original}>`,
+    "Disposition: manual-action/MDN-sent-automatically; displayed"
+  ].join(CRLF);
   const body = [
     `--${boundary}`,
     "Content-Type: text/plain; charset=utf-8",
@@ -126066,9 +126076,9 @@ function buildReadReceiptMime({ originalMessageID }) {
     "This is a receipt notification.",
     `--${boundary}`,
     "Content-Type: message/disposition-notification",
+    "Content-Transfer-Encoding: 7bit",
     "",
-    `Original-Message-ID: <${original}>`,
-    "Disposition: manual-action/MDN-sent-automatically; displayed",
+    fields,
     "",
     `--${boundary}--`,
     ""
@@ -126439,10 +126449,11 @@ function createSender(cfg) {
     socketTimeout: 2e4
   };
   return {
-    async send(raw, to) {
+    async send(raw, to, sendOptions = {}) {
       const transport = import_nodemailer.default.createTransport(options2);
       try {
-        await transport.sendMail({ envelope: { from: cfg.address, to: [to] }, raw });
+        const envelopeFrom = sendOptions.envelopeFrom ?? cfg.address;
+        await transport.sendMail({ envelope: { from: envelopeFrom, to: [to] }, raw });
       } finally {
         transport.close();
       }
@@ -126532,14 +126543,18 @@ async function parseIncoming(raw, cfg, identity2, log2, pinned = cfg.pinned || {
     throw new Error("plaintext message rejected because AC_REQUIRE_ENCRYPTED is enabled");
   }
   const innerHeaders = parseRawHeaders(entity);
-  const receiptRequest = [
-    rawHeaders.get("chat-disposition-notification-to"),
-    rawHeaders.get("disposition-notification-to"),
-    innerHeaders.get("chat-disposition-notification-to"),
-    innerHeaders.get("disposition-notification-to")
-  ].filter(Boolean).join(",").toLowerCase();
+  const receiptAddresses = [
+    ...headerValues(raw, "chat-disposition-notification-to"),
+    ...headerValues(raw, "disposition-notification-to"),
+    ...headerValues(entity, "chat-disposition-notification-to"),
+    ...headerValues(entity, "disposition-notification-to")
+  ].flatMap((value3) => String(value3).split(",").map((entry) => {
+    const match8 = /<([^<>\s@]+@[^<>\s>]+)>|([^\s<>,;@]+@[^\s<>,;]+)/.exec(entry);
+    return String(match8?.[1] || match8?.[2] || "").trim().toLowerCase();
+  })).filter(Boolean);
   const receiptTargets = [cfg.address, sender].filter(Boolean).map((value3) => String(value3).toLowerCase());
-  const wantsReceipt = receiptTargets.some((target) => receiptRequest.includes(target));
+  const wantsReceipt = receiptAddresses.some((address) => receiptTargets.includes(address));
+  const receiptTarget = receiptAddresses.find((address) => address === sender) || sender;
   const receipt = parseDispositionNotification(entity);
   const parsed = await (0, import_mailparser.simpleParser)(entity, { skipHtmlToText: true, skipTextToHtml: true });
   const innerAutocrypt = parseAutocryptHeader(
@@ -126600,6 +126615,7 @@ async function parseIncoming(raw, cfg, identity2, log2, pinned = cfg.pinned || {
     secureJoin,
     gossip,
     wantsReceipt,
+    receiptTarget,
     mdn: receipt
   };
 }
@@ -126795,6 +126811,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
   const inFlight = /* @__PURE__ */ new Set();
   const sessionStatus = /* @__PURE__ */ new Map();
   const lastWatchNotify = /* @__PURE__ */ new Map();
+  const progress = /* @__PURE__ */ new Map();
   const announcedDecisions = /* @__PURE__ */ new Set();
   const announcingQuestions = /* @__PURE__ */ new Set();
   let started = false;
@@ -126806,6 +126823,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
     "form.cancelled",
     "session.status",
     "session.idle",
+    "message.part.delta",
     "session.execution.succeeded",
     "session.execution.failed",
     "session.step.failed"
@@ -127232,6 +127250,45 @@ async function createBridge(ctx, cfg, options2 = {}) {
     lastWatchNotify.set(sessionID, Date.now());
     await sendSessionNotice(sessionID, subject, text, kind);
   }
+  function unreportedRemainder(finalText, mailedText) {
+    const final = String(finalText || "");
+    const mailed = String(mailedText || "");
+    let shared = 0;
+    while (shared < final.length && shared < mailed.length && final[shared] === mailed[shared]) shared += 1;
+    return final.slice(shared).trim();
+  }
+  async function handleProgressEvent(event) {
+    if (cfg.remote.progress === false) return;
+    const data = event.data || {};
+    const sessionID = String(data.sessionID || "");
+    const active = progress.get(sessionID);
+    if (!active || String(data.field || "text") !== "text") return;
+    const created = Number(event.created);
+    if (Number.isFinite(created) && created < active.startedAt) return;
+    const messageID = String(data.messageID || "");
+    if (messageID && messageID === active.userMessageID) return;
+    const delta = String(data.delta || "");
+    if (!delta) return;
+    active.text += delta;
+    const configuredInterval = Number(cfg.remote.progressIntervalMs);
+    const interval = Number.isFinite(configuredInterval) && configuredInterval >= 0 ? configuredInterval : 2e4;
+    const now3 = Date.now();
+    if (now3 - active.lastSentAt < interval) return;
+    const chunk = active.text.slice(active.sentLength).trim();
+    if (!chunk) return;
+    active.lastSentAt = now3;
+    active.sentLength = active.text.length;
+    await transmit({
+      to: active.from,
+      sessionID,
+      inReplyTo: active.inReplyTo,
+      subject: active.subject,
+      headers: ["X-OpenCode-Notice: progress"],
+      text: `[Working on ${sessionID}\u2026]
+
+${chunk}`
+    });
+  }
   async function handleEvent(event) {
     const data = event.data || {};
     switch (event.type) {
@@ -127244,6 +127301,8 @@ async function createBridge(ctx, cfg, options2 = {}) {
       case "form.replied":
       case "form.cancelled":
         return handleFormSettled(data);
+      case "message.part.delta":
+        return handleProgressEvent(event);
       case "session.status":
       case "session.idle":
       case "session.execution.succeeded":
@@ -127340,7 +127399,11 @@ async function createBridge(ctx, cfg, options2 = {}) {
     const messageId = `${Date.now()}.${(0, import_node_crypto5.randomUUID)()}@${domain}`;
     const baseSubject = subject || (inReplyTo ? `Re: Message from ${cfg.displayName}` : `Message from ${cfg.displayName}`);
     const finalSubject = withSessionSubject(baseSubject, sessionID);
-    const receiptHeaders = cfg.remote?.readReceipts === false ? [] : [`Chat-Disposition-Notification-To: ${cfg.address}`];
+    const receiptHeaders = cfg.remote?.readReceipts === false ? [] : [
+      // RFC 8098 for ordinary mail clients; Delta Chat reads the Chat- form.
+      `Disposition-Notification-To: ${cfg.address}`,
+      `Chat-Disposition-Notification-To: ${cfg.address}`
+    ];
     const raw = buildMail({
       cfg,
       to,
@@ -127359,7 +127422,8 @@ async function createBridge(ctx, cfg, options2 = {}) {
   }
   async function sendReadReceipt(to, originalMessageID) {
     if (cfg.remote?.readReceipts === false) return;
-    const receipt = buildReadReceiptMime({ originalMessageID });
+    const finalRecipient = String(cfg.address || "").replace(/[\r\n]/g, "");
+    const receipt = buildReadReceiptMime({ originalMessageID, recipient: finalRecipient });
     const protectedBody = await protect(receipt, to);
     const domain = cfg.address.split("@")[1] || "localhost";
     const messageId = `${Date.now()}.${(0, import_node_crypto5.randomUUID)()}@${domain}`;
@@ -127377,7 +127441,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
         `X-OpenCode-Read-Receipt: ${id2}`
       ]
     });
-    await sender.send(raw, to);
+    await sender.send(raw, to, { envelopeFrom: "" });
     log2(`Sent read receipt to ${to} for ${id2}`);
   }
   async function handleReadReceipt(from, receipt) {
@@ -127432,6 +127496,44 @@ async function createBridge(ctx, cfg, options2 = {}) {
       attachments: [{ filename, contentType: contentTypeOf(filename), content }]
     });
     return { content: `Sent ${filename} to ${to}` };
+  }
+  async function attachmentsFromSession(messages, sessionID) {
+    if (cfg.remote.sendFiles === false) return [];
+    const root = await sessionRoot(sessionID);
+    const collected = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const entry of messages) {
+      if (entry.type !== "assistant" || entry.error) continue;
+      for (const part of entry.content || []) {
+        if (part?.type !== "file") continue;
+        let candidate = "";
+        if (part.source?.type === "file" && part.source.path) {
+          candidate = String(part.source.path);
+        } else if (part.url) {
+          candidate = String(part.url).startsWith("file://") ? (0, import_node_url2.fileURLToPath)(part.url) : String(part.url);
+        }
+        if (!candidate || !import_node_path3.default.isAbsolute(candidate)) continue;
+        const target = import_node_path3.default.resolve(candidate);
+        if (target !== root && !target.startsWith(`${root}${import_node_path3.default.sep}`)) continue;
+        const filename = safeFilename(part.filename || import_node_path3.default.basename(target));
+        const contentType = contentTypeOf(filename, part.mime);
+        if (!ALLOWED_ATTACHMENT_TYPES.has(contentType)) continue;
+        let content;
+        try {
+          content = await (0, import_promises2.readFile)(target);
+        } catch (error) {
+          log2(`Skipping session file ${filename}: ${error.message}`);
+          continue;
+        }
+        if (!content.byteLength || content.byteLength > cfg.maxAttachmentBytes) continue;
+        const key5 = `${filename}:${content.byteLength}`;
+        if (seen.has(key5)) continue;
+        seen.add(key5);
+        collected.push({ filename, contentType, content });
+        if (collected.length >= 8) return collected;
+      }
+    }
+    return collected;
   }
   function emailFromHeader(value3) {
     const text = String(value3 || "");
@@ -127862,7 +127964,8 @@ Use !help for the full remote-control list.`;
           `Multiple-choice answers: ${cfg.remote.questions ? "on" : "off"}`,
           `High-risk email approval: ${cfg.remote.highRiskDecisions ? "on" : "off"}`,
           `Session watch: ${cfg.remote.watch ? "on" : "off"}`,
-          `Read receipts: ${cfg.remote.readReceipts === false ? "off" : "on"}`
+          `Read receipts: ${cfg.remote.readReceipts === false ? "off" : "on"}`,
+          `Progressive replies: ${cfg.remote.progress === false ? "off" : `on (${cfg.remote.progressIntervalMs || 2e4} ms)`}`
         ].join("\n");
       }
       case "peek": {
@@ -127985,7 +128088,7 @@ Further replies in this subject stay in this session.`;
     const { establishedNow } = await learnPeer(from, message.autocrypt);
     if (message.wantsReceipt) {
       try {
-        await sendReadReceipt(from, message.messageId);
+        await sendReadReceipt(message.receiptTarget || from, message.messageId);
       } catch (error) {
         log2(`Could not send read receipt: ${error.message}`);
       }
@@ -128064,12 +128167,45 @@ ${command.rest}`;
           return;
         }
         const userMessageID = promptResult?.id || promptId;
-        await ctx.session.wait({ sessionID });
-        const messages = await ctx.session.context({ sessionID });
-        const index3 = messages.findIndex((entry) => entry.id === userMessageID);
-        const replies = (index3 < 0 ? [] : messages.slice(index3 + 1)).filter((entry) => entry.type === "assistant" && !entry.error).flatMap((entry) => entry.content.filter((part) => part.type === "text").map((part) => part.text)).join("\n\n").trim();
-        if (replies) await transmit({ to: from, text: replies, inReplyTo: message.messageId, sessionID });
-        else log2(`No assistant text to send to ${from}`);
+        const finalSubject = withSessionSubject(`Re: Message from ${cfg.displayName}`, sessionID);
+        const active = cfg.remote.progress === false ? null : {
+          from,
+          sessionID,
+          inReplyTo: message.messageId,
+          // Progressive and final mails share one subject and thread.
+          subject: finalSubject,
+          userMessageID,
+          startedAt: Date.now(),
+          lastSentAt: Date.now(),
+          text: "",
+          sentLength: 0
+        };
+        if (active) progress.set(sessionID, active);
+        try {
+          await ctx.session.wait({ sessionID });
+          const messages = await ctx.session.context({ sessionID });
+          const index3 = messages.findIndex((entry) => entry.id === userMessageID);
+          const assistantMessages = (index3 < 0 ? [] : messages.slice(index3 + 1)).filter((entry) => entry.type === "assistant" && !entry.error);
+          const replies = assistantMessages.flatMap((entry) => entry.content.filter((part) => part.type === "text").map((part) => part.text)).join("\n\n").trim();
+          const sentProgress = Boolean(active?.sentLength);
+          const remaining = active ? unreportedRemainder(replies, active.text) : replies;
+          const attachments = await attachmentsFromSession(assistantMessages, sessionID);
+          const terminalText = remaining || (sentProgress ? `Completed in session ${sessionID}.` : "");
+          if (terminalText || attachments.length) {
+            await transmit({
+              to: from,
+              text: terminalText,
+              attachments,
+              inReplyTo: message.messageId,
+              subject: active ? active.subject : finalSubject,
+              sessionID
+            });
+          } else {
+            log2(`No assistant text to send to ${from}`);
+          }
+        } finally {
+          progress.delete(sessionID);
+        }
       } finally {
         inFlight.delete(sessionID);
       }
@@ -128266,7 +128402,14 @@ function loadConfig(options2 = {}, env = process.env) {
       tail: boolean2(get6("emailTail", "AC_EMAIL_TAIL"), true),
       sendFiles: boolean2(get6("emailSendFiles", "AC_EMAIL_SEND_FILES"), true),
       watch: boolean2(get6("emailWatch", "AC_EMAIL_WATCH"), true),
-      readReceipts: boolean2(get6("emailReadReceipts", "AC_EMAIL_READ_RECEIPTS"), true)
+      readReceipts: boolean2(get6("emailReadReceipts", "AC_EMAIL_READ_RECEIPTS"), true),
+      // Progressive text while the agent works. Throttled well below the
+      // provider's practical ~220 messages/hour ceiling.
+      progress: boolean2(get6("emailProgress", "AC_EMAIL_PROGRESS"), true),
+      progressIntervalMs: Math.max(5e3, integer2(
+        get6("emailProgressIntervalMs", "AC_EMAIL_PROGRESS_INTERVAL_MS"),
+        2e4
+      ))
     },
     maxMessageBytes: integer2(get6("maxMessageBytes", "AC_MAX_MESSAGE_BYTES"), 20 * 1024 * 1024),
     maxAttachmentBytes: integer2(get6("maxAttachmentBytes", "AC_MAX_ATTACHMENT_BYTES"), 10 * 1024 * 1024),
@@ -128340,7 +128483,9 @@ var settingsProperties = {
   emailTail: { type: "boolean" },
   emailSendFiles: { type: "boolean" },
   emailWatch: { type: "boolean" },
-  emailReadReceipts: { type: "boolean" }
+  emailReadReceipts: { type: "boolean" },
+  emailProgress: { type: "boolean" },
+  emailProgressIntervalMs: { type: "number" }
 };
 var emptyInput = {
   type: "object",
@@ -128602,7 +128747,7 @@ var BridgeRpc = rpc_exports.define({
 });
 
 // src/index.js
-var PLUGIN_VERSION = "0.5.16";
+var PLUGIN_VERSION = "0.5.17";
 var SETTING_KEYS = [
   "address",
   "displayName",

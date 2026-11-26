@@ -40,6 +40,8 @@ const settingsProperties = {
   emailSendFiles: { type: 'boolean' },
   emailWatch: { type: 'boolean' },
   emailReadReceipts: { type: 'boolean' },
+  emailProgress: { type: 'boolean' },
+  emailProgressIntervalMs: { type: 'number' },
 }
 
 const emptyInput = {

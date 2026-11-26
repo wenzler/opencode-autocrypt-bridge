@@ -126,9 +126,11 @@ Shell-like actions and access outside the session's project directory are **HIGH
 
 OpenCode's native question tool appears as a `form.created` event with `metadata.kind === "question"`. The bridge converts its fields into a numbered menu and emails it with another short code. Reply `!answer CODE 1` (or `1;2,3` for several questions, commas for multi-select). The server plugin cannot complete a native form itself: it emits an encrypted `questionAnswer` RPC event, and the OpenCode Desktop GUI forwards the answer through its main-process IPC to `session.form.reply`. The desktop must be running for the form to be completed. A single terminal notice follows on the same email thread: completed, or failed with a retry hint. Duplicate `!answer` deliveries and duplicate `session.form.reply` calls are ignored, so one answer never produces both a completion and an error mail.
 
-Read receipts use the Delta Chat-compatible encrypted MDN format. Every outbound mail asks the pinned contact for a receipt, and every inbound mail that asks for one gets an encrypted `multipart/report` receipt back. Incoming receipts are recorded in the bridge state and shown as **Last read receipt** in GUI status; they never generate another chat message. Receipts can be turned off in **Remote controls**.
+Read receipts follow **RFC 8098** (the current MDN standard, obsoleting RFC 3798) with Delta Chat's `Chat-Disposition-Notification-To` extension alongside the standard `Disposition-Notification-To` header. Every outbound mail asks the pinned contact for a receipt; every inbound request gets one encrypted `multipart/report` MDN with `Final-Recipient`, `Original-Message-ID`, `Disposition`, `Reporting-UA` and a null SMTP envelope sender. Incoming receipts are recorded in bridge state and shown as **Last read receipt** in GUI status; they never generate another chat message. Receipts can be turned off in **Remote controls**. Ordinary RFC 8098 mail clients are supported; plaintext receipts from non-pinned senders are still rejected by the hard gate.
 
 If a session is busy, the next prompt is queued with OpenCode's `delivery: "queue"` and the phone gets a short acknowledgement. `!watch` subscribes the thread to completion, failure, idle and decision notices so queued work can be followed without polling.
+
+While a session is working, `message.part.delta` text is sent as throttled "Working on …" emails on the same thread. The final mail contains only the text not already mailed, so one prompt never produces a duplicate terminal answer. The default interval is 20 seconds (about 180 mails/hour, below the practical 220/hour ceiling); it is configurable with `emailProgress` / `AC_EMAIL_PROGRESS` and `emailProgressIntervalMs` / `AC_EMAIL_PROGRESS_INTERVAL_MS`.
 
 ### Invite URL and manual parameters
 
@@ -155,7 +157,7 @@ OPENPGP4FPR:FPR#v=3&s=AUTHCODE&a=you%40example.org&n=Bot+contact
 - TLS verification and IMAP poll interval;
 - live status via RPC events: configured/unconfigured state, remote mode, learned fingerprint, established state, fingerprint verification, SecureJoin status, bound session, last error;
 - **Email session**: list open projects/sessions and switch the email thread to a session by title; the switch is announced as a new email thread. Session-screen command and location-menu item switch to the current session;
-- **Remote controls**: independent gates for permission decisions, high-risk email approval, questions, session output, terminal tail, project file sending, watch subscriptions, and read receipts;
+- **Remote controls**: independent gates for permission decisions, high-risk email approval, questions, session output, terminal tail, project file sending, watch subscriptions, read receipts, and progressive replies with an adjustable interval;
 - **Delete mail after processing** (off by default), **Rescan inbox**, **Reset contact**, and **Save & restart**.
 
 Saved passwords and private keys are hidden; leaving a password field blank keeps the saved value.
@@ -203,13 +205,16 @@ All fields can be set in the GUI, in the `options` object, or with environment v
 | Terminal tail / `emailTail` | `AC_EMAIL_TAIL` | Allow `!tail` | `true` |
 | Send project files / `emailSendFiles` | `AC_EMAIL_SEND_FILES` | Allow `!send` for files inside the session project | `true` |
 | Watch subscriptions / `emailWatch` | `AC_EMAIL_WATCH` | Allow `!watch` and `!unwatch` notices | `true` |
-| Read receipts / `emailReadReceipts` | `AC_EMAIL_READ_RECEIPTS` | Request encrypted receipts for outbound mail and answer receipt requests | `true` |
+| Read receipts / `emailReadReceipts` | `AC_EMAIL_READ_RECEIPTS` | Request RFC 8098 encrypted receipts for outbound mail and answer receipt requests | `true` |
+| Progressive replies / `emailProgress` | `AC_EMAIL_PROGRESS` | Mail throttled working updates while the agent runs | `true` |
+| Progress interval / `emailProgressIntervalMs` | `AC_EMAIL_PROGRESS_INTERVAL_MS` | Minimum milliseconds between progressive mails | `20000` |
 | Delete after processing / `deleteAfterRead` | `AC_DELETE_AFTER_READ` | Expunge each successfully handled message from the IMAP server | `false` |
 
 ## Messages and attachments
 
 - **Inbound:** supported attachments (`jpg`, `png`, `gif`, `webp`, `html`, `txt`, `md`, `pdf`) are decoded from the possibly encrypted MIME part, written under `AC_ATTACHMENT_DIR` (default `.opencode/autocrypt-attachments`), and passed to `ctx.session.prompt` as file attachments. Oversized or unsupported files are skipped with a log line.
 - **Outbound:** the agent can call `autocrypt_send_file({ path, text })` to attach a file from the current project to that session's reply. Paths outside the project are refused. The pinned contact can request the same with `!send <project-file>` when file sending is enabled.
+- **Session artifacts:** files created inside the session project (mockup `html`, screenshots `png`/`jpg`, `pdf`, `txt`/`md`) appear as `file` parts in the session context and are attached to the final reply automatically when file sending is enabled. Images no longer carry an invalid `charset` parameter, so Delta Chat and ordinary mail clients render them. Files outside the project or over `AC_MAX_ATTACHMENT_BYTES` are skipped.
 - Each pinned contact gets one default OpenCode session; subjects, threading headers and `!use`/`!new` can route any thread to any open session. Inbound Message-IDs dedupe prompts.
 
 ## Development

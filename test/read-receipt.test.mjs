@@ -6,6 +6,7 @@ import { decryptMessage, encryptMime, keyFingerprint } from '../src/crypto.js'
 import { loadConfig } from '../src/config.js'
 import { armorToBase64, autocryptHeader } from '../src/headers.js'
 import {
+  buildInnerMime,
   buildPgpMime,
   buildReadReceiptMime,
   extractArmored,
@@ -75,7 +76,7 @@ function harness(fingerprint, options = {}) {
   }
   const sent = []
   const sender = {
-    async send(raw, to) { sent.push({ raw: raw.toString('utf8'), to }) },
+    async send(raw, to, options = {}) { sent.push({ raw: raw.toString('utf8'), to, options }) },
   }
   return { cfg, ctx, values, sent, sender, session, questionAnswers }
 }
@@ -222,7 +223,9 @@ test('outbound mail requests an encrypted read receipt from the pinned contact',
 
   await bridge.process(contactMail(contact))
 
+  assert.equal(parseRawHeaders(h.sent[0].raw).get('disposition-notification-to'), 'bot@example.org')
   assert.equal(parseRawHeaders(h.sent[0].raw).get('chat-disposition-notification-to'), 'bot@example.org')
+  assert.equal(parseRawHeaders(h.sent.at(-1).raw).get('disposition-notification-to'), 'bot@example.org')
   assert.equal(parseRawHeaders(h.sent.at(-1).raw).get('chat-disposition-notification-to'), 'bot@example.org')
 })
 
@@ -248,7 +251,12 @@ test('an inbound receipt request produces an encrypted Delta Chat MDN', async ()
   assert.equal(receipt.get('auto-submitted'), 'auto-replied')
   assert.equal(receipt.get('in-reply-to'), undefined)
   assert.equal(receipt.get('chat-disposition-notification-to'), undefined)
-  const parsed = parseDispositionNotification(await decryptedSent(h.sent, receiptIndex, bot))
+  assert.equal(receipt.get('disposition-notification-to'), undefined, 'MDNs must not request another MDN')
+  assert.equal(h.sent[receiptIndex].options.envelopeFrom, '', 'MDN uses a null envelope sender')
+  const receiptMime = await decryptedSent(h.sent, receiptIndex, bot)
+  assert.match(receiptMime.toString('utf8'), /Reporting-UA: opencode-autocrypt-bridge/)
+  assert.match(receiptMime.toString('utf8'), /Final-Recipient: rfc822; bot@example\.org/)
+  const parsed = parseDispositionNotification(receiptMime)
   assert.deepEqual(parsed, {
     disposition: 'manual-action/MDN-sent-automatically; displayed',
     originalMessageID: '<contact-receipt@example.net>',
@@ -282,6 +290,28 @@ test('an encrypted inner Delta Chat receipt request produces exactly one MDN', a
     originalMessageID: '<contact-inner-receipt@example.net>',
   })
   assert.ok(headers.some((entry) => entry.get('x-opencode-command') === 'session-command'))
+})
+
+test('an RFC 8098 Disposition-Notification-To request produces one MDN', async () => {
+  const bot = await keyPair('bot@example.org')
+  const contact = await keyPair('contact@example.net')
+  const h = harness(contact.fingerprint)
+  const bridge = await createBridge(h.ctx, h.cfg, {
+    identity: bot, sender: h.sender, log: () => {},
+  })
+
+  await bridge.process(contactMail(contact, {
+    text: '!status',
+    messageId: '<standard-receipt@example.net>',
+    headers: ['Disposition-Notification-To: contact@example.net'],
+  }))
+
+  const headers = h.sent.map((entry) => parseRawHeaders(entry.raw))
+  const receipts = headers.filter((entry) => entry.get('subject') === 'Receipt Notification')
+  assert.equal(receipts.length, 1)
+  const receiptIndex = headers.findIndex((entry) => entry.get('subject') === 'Receipt Notification')
+  const parsed = parseDispositionNotification(await decryptedSent(h.sent, receiptIndex, bot))
+  assert.equal(parsed.originalMessageID, '<standard-receipt@example.net>')
 })
 
 test('an inbound MDN confirms the outbound message without generating mail', async () => {
@@ -444,4 +474,15 @@ test('a failed desktop reply can be retried and still produces one notice per at
   assert.equal(headers.filter((entry) => entry.get('x-opencode-command') === 'error').length, 1)
   assert.equal(headers.filter((entry) => entry.get('x-opencode-command') === 'question-answered').length, 1)
   assert.equal(parseRawHeaders(h.sent.at(-1).raw).get('x-opencode-command'), 'question-answered')
+})
+
+test('image attachments do not carry an invalid text charset', () => {
+  const inner = buildInnerMime({
+    text: 'mockup',
+    attachments: [{ filename: 'mockup.png', contentType: 'image/png', content: Buffer.from('png') }],
+  })
+  const raw = inner.entity.toString('utf8')
+  assert.match(raw, /Content-Type: image\/png; name="mockup\.png"/)
+  assert.doesNotMatch(raw, /image\/png; charset/)
+  assert.match(raw, /Content-Type: text\/plain; charset=utf-8/)
 })

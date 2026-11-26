@@ -46,8 +46,11 @@ function textPart(text) {
 function attachmentPart(attachment) {
   const filename = safeFilename(attachment.filename)
   const contentType = contentTypeOf(filename, attachment.contentType)
+  // A charset parameter is only meaningful for text/* parts. Sending it on
+  // image/pdf parts makes some mail clients refuse to render the attachment.
+  const charset = contentType.startsWith('text/') ? '; charset=utf-8' : ''
   return [
-    `Content-Type: ${contentType}; charset=utf-8; name="${filename}"${CRLF}`,
+    `Content-Type: ${contentType}${charset}; name="${filename}"${CRLF}`,
     `Content-Disposition: attachment; filename="${filename}"${CRLF}`,
     `Content-Transfer-Encoding: base64${CRLF}`,
     CRLF,
@@ -75,10 +78,22 @@ export function buildInnerMime({ text, attachments = [], headers: extraHeaders =
   }
 }
 
-/** Build an RFC 8098 read receipt shaped like Delta Chat's MDN. */
-export function buildReadReceiptMime({ originalMessageID }) {
+/**
+ * Build an RFC 8098 MDN that also satisfies Delta Chat's read-receipt format.
+ * RFC 8098 requires Final-Recipient and recommends Reporting-UA; Delta Chat
+ * requires the displayed disposition and the exact Original-Message-ID.
+ */
+export function buildReadReceiptMime({ originalMessageID, recipient = '' }) {
   const boundary = `opencode-mdn-${randomUUID()}`
   const original = String(originalMessageID || '').trim().replace(/^<|>$/g, '').replace(/[\r\n]/g, '')
+  // RFC 8098 Final-Recipient is the original recipient, not the MDN destination.
+  const finalRecipient = String(recipient || '').trim().replace(/[\r\n]/g, '')
+  const fields = [
+    'Reporting-UA: opencode-autocrypt-bridge',
+    ...(finalRecipient ? [`Final-Recipient: rfc822; ${finalRecipient}`] : []),
+    `Original-Message-ID: <${original}>`,
+    'Disposition: manual-action/MDN-sent-automatically; displayed',
+  ].join(CRLF)
   const body = [
     `--${boundary}`,
     'Content-Type: text/plain; charset=utf-8',
@@ -87,9 +102,9 @@ export function buildReadReceiptMime({ originalMessageID }) {
     'This is a receipt notification.',
     `--${boundary}`,
     'Content-Type: message/disposition-notification',
+    'Content-Transfer-Encoding: 7bit',
     '',
-    `Original-Message-ID: <${original}>`,
-    'Disposition: manual-action/MDN-sent-automatically; displayed',
+    fields,
     '',
     `--${boundary}--`,
     '',

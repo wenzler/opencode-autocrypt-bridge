@@ -182,7 +182,8 @@ export function formatRemoteHelp(remote = {}, details = {}) {
   lines.push(`Permission decisions by email: ${remote.decisions ? 'on' : 'off'}`)
   lines.push(`Multiple-choice answers by email: ${remote.questions ? 'on' : 'off'}`)
   lines.push(`High-risk decisions by email: ${remote.highRiskDecisions ? 'on' : 'off'} (out-of-project file access and shell-like actions are high risk)`)
-  lines.push(`Read receipts: ${remote.readReceipts === false ? 'off' : 'on'}`)
+  lines.push(`Read receipts (RFC 8098 MDN): ${remote.readReceipts === false ? 'off' : 'on'}`)
+  lines.push(`Progressive replies: ${remote.progress === false ? 'off' : 'on'}${remote.progress === false ? '' : ` (every ${remote.progressIntervalMs || 20000} ms)`}`)
   if (Array.isArray(details.commands) && details.commands.length) {
     lines.push('')
     lines.push(`OpenCode commands also available at the desk: ${details.commands.slice(0, 24).join(', ')}`)
