@@ -120,7 +120,7 @@ export function armorToBase64(armored) {
   const data = lines
     .slice(start + 1, end)
     .map((line) => line.trim())
-    .filter((line) => line && !line.includes(':') && /^[A-Za-z0-9+/=]+$/.test(line))
+    .filter((line) => line && !line.startsWith('=') && !line.includes(':') && /^[A-Za-z0-9+/]+={0,2}$/.test(line))
     .join('')
   if (!data) throw new Error('Empty armored public key')
   return data

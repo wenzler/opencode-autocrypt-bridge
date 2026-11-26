@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { autocryptHeader, unfold, parseAutocryptHeader, parseInviteUrl, redactInviteUrl } from '../src/headers.js'
+import { armorToBase64, autocryptHeader, unfold, parseAutocryptHeader, parseInviteUrl, redactInviteUrl } from '../src/headers.js'
 import { buildInnerMime, buildPgpMime, buildMail, parseRawHeaders, contentTypeOf } from '../src/mime.js'
 import { loadConfig, normalizeHost } from '../src/config.js'
 
@@ -10,6 +10,17 @@ test('autocrypt header folds keydata and unfolds cleanly', () => {
   assert.ok(header.startsWith('addr=bot@example.org; prefer-encrypt=mutual; keydata='))
   assert.ok(header.includes('\r\n '))
   assert.equal(unfold(header).endsWith(`keydata=${key}`), true)
+})
+
+test('armorToBase64 drops the CRC24 checksum line', () => {
+  const armored = [
+    '-----BEGIN PGP PUBLIC KEY BLOCK-----',
+    '',
+    'QUJDRA==',
+    '=abcd',
+    '-----END PGP PUBLIC KEY BLOCK-----',
+  ].join('\n')
+  assert.equal(armorToBase64(armored), 'QUJDRA==')
 })
 
 test('autocrypt header parses peer key and mutual preference', () => {

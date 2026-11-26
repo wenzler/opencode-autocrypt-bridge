@@ -125809,7 +125809,7 @@ function armorToBase64(armored) {
   const start = lines.findIndex((line) => line.startsWith("-----BEGIN PGP PUBLIC KEY BLOCK-----"));
   const end = lines.findIndex((line, index3) => index3 > start && line.startsWith("-----END PGP PUBLIC KEY BLOCK-----"));
   if (start < 0 || end <= start) throw new Error("Invalid armored public key");
-  const data = lines.slice(start + 1, end).map((line) => line.trim()).filter((line) => line && !line.includes(":") && /^[A-Za-z0-9+/=]+$/.test(line)).join("");
+  const data = lines.slice(start + 1, end).map((line) => line.trim()).filter((line) => line && !line.startsWith("=") && !line.includes(":") && /^[A-Za-z0-9+/]+={0,2}$/.test(line)).join("");
   if (!data) throw new Error("Empty armored public key");
   return data;
 }
