@@ -14,6 +14,7 @@ function fakeContext(storageValues, handlersOut, emitted) {
   }
   return {
     options: {},
+    storageValues,
     storage: {
       async get(key) { return storageValues.get(key) },
       async set(key, value) { storageValues.set(key, value) },
@@ -177,7 +178,7 @@ test('session RPC and agent tool are registered for project awareness', async ()
   await dispose()
 })
 
-test('reloading the plugin keeps RPC registered while replacing the mail bridge', async () => {
+test('reloading the plugin keeps RPC registered and old handlers use the current runtime', async () => {
   const firstOut = { value: null }
   const firstCtx = fakeContext(new Map(), firstOut, [])
   const firstDispose = await plugin.setup(firstCtx)
@@ -186,14 +187,22 @@ test('reloading the plugin keeps RPC registered while replacing the mail bridge'
 
   // A hot reload or GUI attach creates a second setup in the same process.
   const secondOut = { value: null }
-  const secondCtx = fakeContext(new Map(), secondOut, [])
+  const secondValues = new Map()
+  const secondCtx = fakeContext(secondValues, secondOut, [])
   const secondDispose = await plugin.setup(secondCtx)
 
   assert.notStrictEqual(secondOut.value, firstHandlers, 'new instance owns the active handlers')
   assert.deepEqual(firstCtx.disposals, [], 'reload does not tear down the RPC registration')
   assert.ok(await secondOut.value.getStatus({}), 'RPC stays callable after the reload')
 
+  // The stale registration must not read or write the superseded runtime.
+  await firstHandlers.updateSettings({ address: 'bot@example.org' })
+  assert.equal(secondValues.get('autocrypt.settings').address, 'bot@example.org')
+  assert.equal(firstCtx.storageValues.has('autocrypt.settings'), false)
+  assert.equal((await firstHandlers.getSettings({})).address, 'bot@example.org')
+  assert.equal((await secondOut.value.getSettings({})).address, 'bot@example.org')
+
   await firstDispose()
-  assert.equal(firstCtx.disposals.length, 2, 'late cleanup of the old instance is a no-op')
+  assert.deepEqual(firstCtx.disposals, [], 'late cleanup of the old instance is a no-op')
   await secondDispose()
 })

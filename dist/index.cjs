@@ -128359,6 +128359,7 @@ var settingsOutput = {
 var statusOutput = {
   type: "object",
   properties: {
+    pluginVersion: { type: "string" },
     running: { type: "boolean" },
     configured: { type: "boolean" },
     remoteMode: { type: "string", enum: ["securejoin", "autocrypt"] },
@@ -128597,6 +128598,7 @@ var BridgeRpc = rpc_exports.define({
 });
 
 // src/index.js
+var PLUGIN_VERSION = "0.5.15";
 var SETTING_KEYS = [
   "address",
   "displayName",
@@ -128666,7 +128668,7 @@ var STORAGE_KEY = "autocrypt.settings";
 var RUNTIME_KEY = Symbol.for("opencode-autocrypt-bridge.runtime");
 function runtimeSlot() {
   if (!globalThis[RUNTIME_KEY]) {
-    globalThis[RUNTIME_KEY] = { token: null, stop: null };
+    globalThis[RUNTIME_KEY] = { token: null, stop: null, runtime: null };
   }
   return globalThis[RUNTIME_KEY];
 }
@@ -128712,12 +128714,19 @@ async function setupInstance(ctx, slot) {
   slot.token = token;
   slot.stop = null;
   if (previousStop) previousStop();
-  const options2 = ctx.options || {};
-  const optionValues = storedSettings(options2);
-  let stored = storedSettings(await ctx.storage.get(STORAGE_KEY));
-  const runtime = { cfg: null, bridge: null, registration: null, configError: "" };
-  const configFrom = (values2) => loadConfig({ ...options2, ...values2 }, process.env);
-  const statusView = (status) => ({
+  const runtime = {
+    ctx,
+    options: ctx.options || {},
+    optionValues: storedSettings(ctx.options || {}),
+    stored: storedSettings(await ctx.storage.get(STORAGE_KEY)),
+    cfg: null,
+    bridge: null,
+    registration: null,
+    configError: ""
+  };
+  slot.runtime = runtime;
+  const statusView = (status, current = slot.runtime) => ({
+    pluginVersion: PLUGIN_VERSION,
     running: false,
     remoteMode: "securejoin",
     address: "",
@@ -128743,11 +128752,11 @@ async function setupInstance(ctx, slot) {
     sessionDirectory: "",
     sessionProjectID: "",
     ...status,
-    configured: Boolean(runtime.cfg)
+    configured: Boolean(current?.cfg)
   });
-  const visibleValues = () => ({ ...optionValues, ...stored });
-  const unconfiguredStatus = () => {
-    const view = settingsView(visibleValues());
+  const visibleValues = (current = slot.runtime) => ({ ...current.optionValues, ...current.stored });
+  const unconfiguredStatus = (current = slot.runtime) => {
+    const view = settingsView(visibleValues(current));
     return statusView({
       address: view.address,
       pinnedContact: view.pinnedContact,
@@ -128762,54 +128771,63 @@ async function setupInstance(ctx, slot) {
         createdAt: 0
       },
       handshake: "unconfigured",
-      lastError: runtime.configError || "Finish setup in Settings \u2192 Autocrypt Bridge"
-    });
+      lastError: current.configError || "Finish setup in Settings \u2192 Autocrypt Bridge"
+    }, current);
   };
   const emit = (name, data) => {
-    if (!runtime.registration) return;
+    const current = slot.runtime;
+    if (!current?.registration) return;
     const eventName = typeof name === "string" ? name : "status";
-    const payload = typeof name === "string" ? data : statusView(name);
+    const payload = typeof name === "string" ? data : statusView(name, current);
     if (!payload) return;
-    void runtime.registration.events.emit(eventName, payload).catch(() => {
+    void current.registration.events.emit(eventName, payload).catch(() => {
     });
   };
-  const currentStatus = async () => runtime.bridge ? statusView(await runtime.bridge.getStatus()) : unconfiguredStatus();
+  const currentStatus = async () => {
+    const current = slot.runtime;
+    if (!current) return statusView({ lastError: "Autocrypt Bridge is not loaded" });
+    return current.bridge ? statusView(await current.bridge.getStatus(), current) : unconfiguredStatus(current);
+  };
   const stopBridge = () => {
-    runtime.bridge?.stop();
-    runtime.bridge = null;
+    const current = slot.runtime;
+    current?.bridge?.stop();
+    if (current) current.bridge = null;
     if (slot.stop === stopBridge) slot.stop = null;
   };
-  const restart = async () => {
+  const restart = async (guarded = false) => {
+    const current = slot.runtime;
+    if (!current) return currentStatus();
     stopBridge();
-    stored = storedSettings(await ctx.storage.get(STORAGE_KEY));
-    if (slot.token !== token) return currentStatus();
+    current.stored = storedSettings(await current.ctx.storage.get(STORAGE_KEY));
+    if (guarded && (slot.token !== token || slot.runtime !== current)) return currentStatus();
     try {
-      runtime.cfg = configFrom(stored);
-      runtime.configError = "";
-      runtime.bridge = await createBridge(ctx, runtime.cfg, {
+      current.cfg = loadConfig({ ...current.options, ...current.stored }, process.env);
+      current.configError = "";
+      current.bridge = await createBridge(current.ctx, current.cfg, {
         onStatus: emit,
         onQuestion: (question) => emit("question", question),
         onQuestionAnswer: (answer) => emit("questionAnswer", answer)
       });
-      if (slot.token !== token) {
-        runtime.bridge.stop();
-        runtime.bridge = null;
+      if (guarded && (slot.token !== token || slot.runtime !== current)) {
+        current.bridge.stop();
+        current.bridge = null;
         return currentStatus();
       }
-      runtime.bridge.start();
+      current.bridge.start();
       slot.stop = stopBridge;
     } catch (error) {
-      runtime.cfg = null;
-      runtime.configError = error.message;
-      emit(unconfiguredStatus());
+      current.cfg = null;
+      current.configError = error.message;
+      emit(unconfiguredStatus(current));
     }
     return currentStatus();
   };
   runtime.registration = await ctx.rpc.register(BridgeRpc, {
     getSettings: async () => settingsView(visibleValues()),
     updateSettings: async (input) => {
-      const values2 = { ...stored };
-      const previousInvite = String(stored.inviteUrl || "");
+      const current = slot.runtime;
+      const values2 = { ...current.stored };
+      const previousInvite = String(current.stored.inviteUrl || "");
       const previousRedacted = redactInviteUrl(previousInvite);
       for (const key5 of SETTING_KEYS) {
         const value3 = input[key5];
@@ -128821,8 +128839,8 @@ async function setupInstance(ctx, slot) {
         if (storedValue === "") delete values2[key5];
         else values2[key5] = storedValue;
       }
-      await ctx.storage.set(STORAGE_KEY, values2);
-      stored = values2;
+      await current.ctx.storage.set(STORAGE_KEY, values2);
+      current.stored = values2;
       return restart();
     },
     getStatus: currentStatus,
@@ -128840,34 +128858,34 @@ async function setupInstance(ctx, slot) {
       };
     },
     startSecureJoin: async () => {
-      if (!runtime.bridge) throw new Error("Autocrypt Bridge is not configured");
-      return runtime.bridge.startSecureJoin();
+      if (!slot.runtime?.bridge) throw new Error("Autocrypt Bridge is not configured");
+      return slot.runtime.bridge.startSecureJoin();
     },
     startHandshake: async () => {
-      if (!runtime.bridge) throw new Error("Autocrypt Bridge is not configured");
-      return runtime.bridge.startHandshake();
+      if (!slot.runtime?.bridge) throw new Error("Autocrypt Bridge is not configured");
+      return slot.runtime.bridge.startHandshake();
     },
     rescanInbox: async () => {
-      if (!runtime.bridge) throw new Error("Autocrypt Bridge is not configured");
-      return runtime.bridge.rescanInbox();
+      if (!slot.runtime?.bridge) throw new Error("Autocrypt Bridge is not configured");
+      return slot.runtime.bridge.rescanInbox();
     },
     resetContact: async () => {
-      if (!runtime.bridge) throw new Error("Autocrypt Bridge is not configured");
-      return runtime.bridge.resetContact();
+      if (!slot.runtime?.bridge) throw new Error("Autocrypt Bridge is not configured");
+      return slot.runtime.bridge.resetContact();
     },
-    listSessions: async () => runtime.bridge ? runtime.bridge.listSessions() : { sessions: [], projects: [], boundSessionID: "" },
+    listSessions: async () => slot.runtime?.bridge ? slot.runtime.bridge.listSessions() : { sessions: [], projects: [], boundSessionID: "" },
     bindSession: async (input) => {
-      if (!runtime.bridge) throw new Error("Autocrypt Bridge is not configured");
-      return runtime.bridge.bindSession(input.sessionID);
+      if (!slot.runtime?.bridge) throw new Error("Autocrypt Bridge is not configured");
+      return slot.runtime.bridge.bindSession(input.sessionID);
     },
     createSession: async (input) => {
-      if (!runtime.bridge) throw new Error("Autocrypt Bridge is not configured");
-      const result3 = await runtime.bridge.createAndBindSession(input.title, input.directory);
+      if (!slot.runtime?.bridge) throw new Error("Autocrypt Bridge is not configured");
+      const result3 = await slot.runtime.bridge.createAndBindSession(input.title, input.directory);
       return result3.status;
     },
     reportQuestionReply: async (input) => {
-      if (!runtime.bridge) throw new Error("Autocrypt Bridge is not configured");
-      await runtime.bridge.confirmQuestionReply({
+      if (!slot.runtime?.bridge) throw new Error("Autocrypt Bridge is not configured");
+      await slot.runtime.bridge.confirmQuestionReply({
         formID: input.formID,
         ok: Boolean(input.ok),
         error: String(input.error || "")
@@ -128889,8 +128907,8 @@ async function setupInstance(ctx, slot) {
         additionalProperties: false
       },
       execute: async (input, context3) => {
-        if (!runtime.bridge) return { content: "The Autocrypt bridge is not configured" };
-        return runtime.bridge.sendFile({
+        if (!slot.runtime?.bridge) return { content: "The Autocrypt bridge is not configured" };
+        return slot.runtime.bridge.sendFile({
           sessionID: context3.sessionID,
           filePath: input.path,
           text: input.text
@@ -128902,24 +128920,24 @@ async function setupInstance(ctx, slot) {
       description: "List open OpenCode projects and sessions when an email asks which session or project is active.",
       input: { type: "object", properties: {}, additionalProperties: false },
       execute: async () => {
-        if (!runtime.bridge) return { content: "The Autocrypt bridge is not configured" };
-        const catalog = await runtime.bridge.listSessions();
+        if (!slot.runtime?.bridge) return { content: "The Autocrypt bridge is not configured" };
+        const catalog = await slot.runtime.bridge.listSessions();
         return { content: formatSessionDirectory(catalog, catalog.boundSessionID) };
       }
     });
   });
-  await restart();
+  await restart(true);
   let disposed = false;
   const dispose = async () => {
     if (disposed) return;
     disposed = true;
+    if (slot.runtime !== runtime || slot.token !== token) return;
     stopBridge();
     await tool.dispose();
     await runtime.registration.dispose();
-    if (slot.token === token) {
-      slot.token = null;
-      if (slot.stop === stopBridge) slot.stop = null;
-    }
+    slot.token = null;
+    if (slot.stop === stopBridge) slot.stop = null;
+    slot.runtime = null;
   };
   return dispose;
 }

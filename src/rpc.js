@@ -65,6 +65,7 @@ const settingsOutput = {
 const statusOutput = {
   type: 'object',
   properties: {
+    pluginVersion: { type: 'string' },
     running: { type: 'boolean' },
     configured: { type: 'boolean' },
     remoteMode: { type: 'string', enum: ['securejoin', 'autocrypt'] },
