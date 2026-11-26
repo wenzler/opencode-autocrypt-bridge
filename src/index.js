@@ -5,7 +5,7 @@ import { parseInviteUrl, redactInviteUrl } from './headers.js'
 import { BridgeRpc } from './rpc.js'
 import { formatSessionDirectory } from './session.js'
 
-const PLUGIN_VERSION = '0.5.17'
+const PLUGIN_VERSION = '0.5.18'
 const SETTING_KEYS = [
   'address', 'displayName', 'imapHost', 'imapPort', 'imapSecurity', 'imapUser', 'imapPassword', 'imapMailbox',
   'smtpHost', 'smtpPort', 'smtpSecurity', 'smtpUser', 'smtpPassword', 'pinnedContact',
@@ -15,6 +15,7 @@ const SETTING_KEYS = [
   'pollIntervalMs', 'verifyCertificate', 'deleteAfterRead', 'privateKeyArmored', 'keyPassphrase', 'generateKey', 'preferEncryptMutual',
   'emailDecisions', 'emailHighRiskDecisions', 'emailQuestions',
   'emailPeek', 'emailTail', 'emailSendFiles', 'emailWatch', 'emailReadReceipts',
+  'emailProgress', 'emailProgressIntervalMs',
 ]
 
 const SECRET_KEYS = new Set([
@@ -36,6 +37,8 @@ const UI_DEFAULTS = {
   emailSendFiles: true,
   emailWatch: true,
   emailReadReceipts: true,
+  emailProgress: true,
+  emailProgressIntervalMs: 20000,
 }
 const STORAGE_KEY = 'autocrypt.settings'
 const RUNTIME_KEY = Symbol.for('opencode-autocrypt-bridge.runtime')

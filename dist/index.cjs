@@ -128747,7 +128747,7 @@ var BridgeRpc = rpc_exports.define({
 });
 
 // src/index.js
-var PLUGIN_VERSION = "0.5.17";
+var PLUGIN_VERSION = "0.5.18";
 var SETTING_KEYS = [
   "address",
   "displayName",
@@ -128787,7 +128787,9 @@ var SETTING_KEYS = [
   "emailTail",
   "emailSendFiles",
   "emailWatch",
-  "emailReadReceipts"
+  "emailReadReceipts",
+  "emailProgress",
+  "emailProgressIntervalMs"
 ];
 var SECRET_KEYS = /* @__PURE__ */ new Set([
   "imapPassword",
@@ -128811,7 +128813,9 @@ var UI_DEFAULTS = {
   emailTail: true,
   emailSendFiles: true,
   emailWatch: true,
-  emailReadReceipts: true
+  emailReadReceipts: true,
+  emailProgress: true,
+  emailProgressIntervalMs: 2e4
 };
 var STORAGE_KEY = "autocrypt.settings";
 var RUNTIME_KEY = Symbol.for("opencode-autocrypt-bridge.runtime");

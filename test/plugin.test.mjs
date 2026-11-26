@@ -106,6 +106,9 @@ test('GUI defaults to key generation and stores hostnames without URL schemes', 
   assert.equal(initial.emailTail, true)
   assert.equal(initial.emailSendFiles, true)
   assert.equal(initial.emailWatch, true)
+  assert.equal(initial.emailReadReceipts, true)
+  assert.equal(initial.emailProgress, true)
+  assert.equal(initial.emailProgressIntervalMs, 20000)
   assert.equal(typeof handlers.rescanInbox, 'function')
   assert.equal(typeof handlers.reportQuestionReply, 'function')
 
@@ -115,6 +118,8 @@ test('GUI defaults to key generation and stores hostnames without URL schemes', 
     generateKey: false,
     emailHighRiskDecisions: true,
     emailWatch: false,
+    emailProgress: false,
+    emailProgressIntervalMs: 30000,
   })
   const saved = await handlers.getSettings({})
   assert.equal(saved.imapHost, 'imap.example.org')
@@ -122,6 +127,8 @@ test('GUI defaults to key generation and stores hostnames without URL schemes', 
   assert.equal(saved.generateKey, false)
   assert.equal(saved.emailHighRiskDecisions, true)
   assert.equal(saved.emailWatch, false)
+  assert.equal(saved.emailProgress, false)
+  assert.equal(saved.emailProgressIntervalMs, 30000)
 
   await dispose()
 })
