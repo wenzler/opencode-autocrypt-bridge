@@ -1,9 +1,16 @@
 import { Schema } from "effect"
 import { Ipc } from "@opencode/plugin/gui"
 
+const AnswerValue = Schema.Union([
+  Schema.String,
+  Schema.Number,
+  Schema.Boolean,
+  Schema.Array(Schema.String),
+])
+
 const AnswerEntry = Schema.Struct({
   key: Schema.String,
-  values: Schema.Array(Schema.String),
+  value: AnswerValue,
 })
 
 /**

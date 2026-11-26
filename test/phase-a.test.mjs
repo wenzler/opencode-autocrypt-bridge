@@ -176,13 +176,35 @@ test('permission classification treats shell-like and out-of-project access as h
 
 test('numbered choices map to OpenCode form answers', () => {
   const fields = [
-    { key: 'q0', options: [{ value: 'diff', label: 'Diff' }, { value: 'code', label: 'Code' }] },
-    { key: 'q1', options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }] },
+    {
+      key: 'q0',
+      type: 'string',
+      options: [{ value: 'diff', label: 'Diff' }, { value: 'code', label: 'Code' }],
+    },
+    {
+      key: 'q1',
+      type: 'multiselect',
+      options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }],
+    },
   ]
-  assert.deepEqual(parseQuestionAnswers(fields, '1;2'), {
-    answer: { q0: ['diff'], q1: ['b'] },
+  assert.deepEqual(parseQuestionAnswers(fields, '1;1,2'), {
+    answer: { q0: 'diff', q1: ['a', 'b'] },
   })
   assert.match(parseQuestionAnswers(fields, '7').error, /not listed/)
+})
+
+test('question answers use the field type expected by session.form.reply', () => {
+  const fields = [
+    { key: 'q0', type: 'number' },
+    { key: 'q1', type: 'integer' },
+    { key: 'q2', type: 'boolean' },
+    { key: 'q3', type: 'string' },
+  ]
+  assert.deepEqual(parseQuestionAnswers(fields, '1.5;2;yes;custom'), {
+    answer: { q0: 1.5, q1: 2, q2: true, q3: 'custom' },
+  })
+  assert.match(parseQuestionAnswers([fields[1]], '1.5').error, /whole number/)
+  assert.match(parseQuestionAnswers([fields[2]], 'maybe').error, /true.*false/)
 })
 
 test('dynamic help shows the live gate state', () => {
@@ -297,6 +319,7 @@ test('multiple-choice answers are forwarded to the GUI form responder', async ()
           {
             key: 'q0',
             title: 'Format',
+            type: 'string',
             options: [
               { value: 'diff', label: 'Diff' },
               { value: 'html', label: 'HTML' },
@@ -315,7 +338,7 @@ test('multiple-choice answers are forwarded to the GUI form responder', async ()
   assert.deepEqual(h.questionAnswers, [{
     formID: 'frm-1',
     sessionID: 'session-1',
-    answer: [{ key: 'q0', values: ['html'] }],
+    answer: [{ key: 'q0', value: 'html' }],
   }])
   await bridge.confirmQuestionReply({ formID: 'frm-1', ok: true })
   assert.ok(h.sent.some((entry) => entry.raw.includes('X-OpenCode-Command: question-answered')))

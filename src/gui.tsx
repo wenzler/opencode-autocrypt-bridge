@@ -402,7 +402,7 @@ export default Plugin.define({
     const provider = ctx.provide(QuestionBridge, {
       async reply(input) {
         const answer = Object.fromEntries(
-          input.answer.map((entry) => [entry.key, entry.values]),
+          input.answer.map((entry) => [entry.key, entry.value]),
         )
         let ok = true
         let error = ""

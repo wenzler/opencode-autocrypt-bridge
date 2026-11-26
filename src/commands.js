@@ -255,7 +255,11 @@ export function formatQuestionRequest({ code, title, fields = [], sessionID }) {
 
 /**
  * Convert numbered email choices into an OpenCode form answer map.
- * The question tool expects arrays for every field, keyed by field.key (q0, q1, …).
+ *
+ * OpenCode validates each answer against its field type: a single-choice
+ * question (type "string", even when it offers options) needs a string, while
+ * only type "multiselect" accepts an array. Number, integer and boolean fields
+ * are coerced to their native types.
  */
 export function parseQuestionAnswers(fields = [], text = '') {
   const raw = String(text || '').trim()
@@ -266,31 +270,67 @@ export function parseQuestionAnswers(fields = [], text = '') {
     const key = String(field?.key || `q${index}`)
     const group = groups[Math.min(index, groups.length - 1)] || ''
     if (!group) continue
+    const type = String(field?.type || 'string')
     const options = Array.isArray(field?.options) ? field.options : []
-    if (!options.length) {
-      answer[key] = [group]
+
+    if (type === 'multiselect') {
+      const values = []
+      for (const token of group.split(',').map((part) => part.trim()).filter(Boolean)) {
+        const numeric = /^\d+$/.exec(token)
+        let selected
+        if (numeric) {
+          selected = options[Number(numeric[0]) - 1]
+          if (!selected) return { error: `Choice ${token} is not listed for question ${index + 1}.` }
+        } else if (options.length) {
+          const needle = token.toLowerCase()
+          selected = options.find((option) => (
+            String(option?.label || '').toLowerCase() === needle
+            || String(option?.value || '').toLowerCase() === needle
+          ))
+          if (!selected) return { error: `Choice "${token}" is not listed for question ${index + 1}.` }
+        } else {
+          selected = { value: token }
+        }
+        values.push(String(selected.value ?? selected.label))
+      }
+      answer[key] = values
       continue
     }
-    const tokens = group.split(',').map((part) => part.trim()).filter(Boolean)
-    const values = []
-    for (const token of tokens) {
-      const numeric = /^\d+$/.exec(token)
-      let selected
-      if (numeric) {
-        const position = Number(numeric[0]) - 1
-        selected = options[position]
-        if (!selected) return { error: `Choice ${token} is not listed for question ${index + 1}.` }
-      } else {
-        const needle = token.toLowerCase()
-        selected = options.find((option) => (
-          String(option?.label || '').toLowerCase() === needle
-          || String(option?.value || '').toLowerCase() === needle
-        ))
-        if (!selected) return { error: `Choice "${token}" is not listed for question ${index + 1}.` }
-      }
-      values.push(String(selected.value ?? selected.label))
+
+    if (type === 'boolean') {
+      const normalized = group.toLowerCase()
+      if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) answer[key] = true
+      else if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) answer[key] = false
+      else return { error: `Answer "true" or "false" for question ${index + 1}.` }
+      continue
     }
-    answer[key] = values
+
+    if (type === 'number' || type === 'integer') {
+      const numeric = Number(group)
+      if (!Number.isFinite(numeric)) return { error: `Question ${index + 1} needs a number.` }
+      if (type === 'integer' && !Number.isInteger(numeric)) return { error: `Question ${index + 1} needs a whole number.` }
+      answer[key] = numeric
+      continue
+    }
+
+    if (!options.length) {
+      answer[key] = group
+      continue
+    }
+    const numeric = /^\d+$/.exec(group)
+    let selected
+    if (numeric) {
+      selected = options[Number(numeric[0]) - 1]
+      if (!selected) return { error: `Choice ${group} is not listed for question ${index + 1}.` }
+    } else {
+      const needle = group.toLowerCase()
+      selected = options.find((option) => (
+        String(option?.label || '').toLowerCase() === needle
+        || String(option?.value || '').toLowerCase() === needle
+      ))
+      if (!selected) return { error: `Choice "${group}" is not listed for question ${index + 1}.` }
+    }
+    answer[key] = String(selected.value ?? selected.label)
   }
   if (!Object.keys(answer).length) return { error: 'No answer supplied. Use !answer <code> <choice>.' }
   return { answer }

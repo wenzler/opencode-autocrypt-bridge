@@ -99773,28 +99773,57 @@ function parseQuestionAnswers(fields = [], text = "") {
     const key5 = String(field2?.key || `q${index3}`);
     const group = groups[Math.min(index3, groups.length - 1)] || "";
     if (!group) continue;
+    const type = String(field2?.type || "string");
     const options2 = Array.isArray(field2?.options) ? field2.options : [];
-    if (!options2.length) {
-      answer[key5] = [group];
+    if (type === "multiselect") {
+      const values2 = [];
+      for (const token of group.split(",").map((part) => part.trim()).filter(Boolean)) {
+        const numeric2 = /^\d+$/.exec(token);
+        let selected2;
+        if (numeric2) {
+          selected2 = options2[Number(numeric2[0]) - 1];
+          if (!selected2) return { error: `Choice ${token} is not listed for question ${index3 + 1}.` };
+        } else if (options2.length) {
+          const needle = token.toLowerCase();
+          selected2 = options2.find((option3) => String(option3?.label || "").toLowerCase() === needle || String(option3?.value || "").toLowerCase() === needle);
+          if (!selected2) return { error: `Choice "${token}" is not listed for question ${index3 + 1}.` };
+        } else {
+          selected2 = { value: token };
+        }
+        values2.push(String(selected2.value ?? selected2.label));
+      }
+      answer[key5] = values2;
       continue;
     }
-    const tokens = group.split(",").map((part) => part.trim()).filter(Boolean);
-    const values2 = [];
-    for (const token of tokens) {
-      const numeric = /^\d+$/.exec(token);
-      let selected;
-      if (numeric) {
-        const position = Number(numeric[0]) - 1;
-        selected = options2[position];
-        if (!selected) return { error: `Choice ${token} is not listed for question ${index3 + 1}.` };
-      } else {
-        const needle = token.toLowerCase();
-        selected = options2.find((option3) => String(option3?.label || "").toLowerCase() === needle || String(option3?.value || "").toLowerCase() === needle);
-        if (!selected) return { error: `Choice "${token}" is not listed for question ${index3 + 1}.` };
-      }
-      values2.push(String(selected.value ?? selected.label));
+    if (type === "boolean") {
+      const normalized = group.toLowerCase();
+      if (["1", "true", "yes", "y", "on"].includes(normalized)) answer[key5] = true;
+      else if (["0", "false", "no", "n", "off"].includes(normalized)) answer[key5] = false;
+      else return { error: `Answer "true" or "false" for question ${index3 + 1}.` };
+      continue;
     }
-    answer[key5] = values2;
+    if (type === "number" || type === "integer") {
+      const numeric2 = Number(group);
+      if (!Number.isFinite(numeric2)) return { error: `Question ${index3 + 1} needs a number.` };
+      if (type === "integer" && !Number.isInteger(numeric2)) return { error: `Question ${index3 + 1} needs a whole number.` };
+      answer[key5] = numeric2;
+      continue;
+    }
+    if (!options2.length) {
+      answer[key5] = group;
+      continue;
+    }
+    const numeric = /^\d+$/.exec(group);
+    let selected;
+    if (numeric) {
+      selected = options2[Number(numeric[0]) - 1];
+      if (!selected) return { error: `Choice ${group} is not listed for question ${index3 + 1}.` };
+    } else {
+      const needle = group.toLowerCase();
+      selected = options2.find((option3) => String(option3?.label || "").toLowerCase() === needle || String(option3?.value || "").toLowerCase() === needle);
+      if (!selected) return { error: `Choice "${group}" is not listed for question ${index3 + 1}.` };
+    }
+    answer[key5] = String(selected.value ?? selected.label);
   }
   if (!Object.keys(answer).length) return { error: "No answer supplied. Use !answer <code> <choice>." };
   return { answer };
@@ -127231,7 +127260,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
 Use: !answer ${pending.code} 1`, "error");
       return;
     }
-    const entries3 = Object.entries(parsed.answer).map(([key5, values2]) => ({ key: key5, values: values2 }));
+    const entries3 = Object.entries(parsed.answer).map(([key5, value3]) => ({ key: key5, value: value3 }));
     try {
       await onQuestionAnswer({
         formID: pending.formID,
@@ -127245,7 +127274,7 @@ Use: !answer ${pending.code} 1`, "error");
     pending.submittedAt = Date.now();
     pending.lastAnswer = entries3;
     await state.save();
-    const chosen = Object.values(parsed.answer).flat().join(", ");
+    const chosen = Object.values(parsed.answer).flat().map(String).join(", ");
     await sendCommandReply(from, message, pending.sessionID, `Answer forwarded for ${pending.code}: ${chosen}. The desktop form will be completed when OpenCode Desktop handles it.`);
   }
   async function confirmQuestionReply({ formID, ok, error = "" }) {
@@ -127831,6 +127860,14 @@ var questionEvent = {
   },
   additionalProperties: false
 };
+var answerValueSchema = {
+  anyOf: [
+    { type: "string" },
+    { type: "number" },
+    { type: "boolean" },
+    { type: "array", items: { type: "string" } }
+  ]
+};
 var questionAnswerEvent = {
   type: "object",
   properties: {
@@ -127842,7 +127879,7 @@ var questionAnswerEvent = {
         type: "object",
         properties: {
           key: { type: "string" },
-          values: { type: "array", items: { type: "string" } }
+          value: answerValueSchema
         },
         additionalProperties: false
       }

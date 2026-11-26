@@ -810,7 +810,7 @@ export async function createBridge(ctx, cfg, options = {}) {
       await sendCommandReply(from, message, pending.sessionID, `${parsed.error}\n\nUse: !answer ${pending.code} 1`, 'error')
       return
     }
-    const entries = Object.entries(parsed.answer).map(([key, values]) => ({ key, values }))
+    const entries = Object.entries(parsed.answer).map(([key, value]) => ({ key, value }))
     try {
       await onQuestionAnswer({
         formID: pending.formID,
@@ -824,7 +824,7 @@ export async function createBridge(ctx, cfg, options = {}) {
     pending.submittedAt = Date.now()
     pending.lastAnswer = entries
     await state.save()
-    const chosen = Object.values(parsed.answer).flat().join(', ')
+    const chosen = Object.values(parsed.answer).flat().map(String).join(', ')
     await sendCommandReply(from, message, pending.sessionID, `Answer forwarded for ${pending.code}: ${chosen}. The desktop form will be completed when OpenCode Desktop handles it.`)
   }
 

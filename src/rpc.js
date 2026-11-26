@@ -147,6 +147,15 @@ const questionEvent = {
   additionalProperties: false,
 }
 
+const answerValueSchema = {
+  anyOf: [
+    { type: 'string' },
+    { type: 'number' },
+    { type: 'boolean' },
+    { type: 'array', items: { type: 'string' } },
+  ],
+}
+
 const questionAnswerEvent = {
   type: 'object',
   properties: {
@@ -158,7 +167,7 @@ const questionAnswerEvent = {
         type: 'object',
         properties: {
           key: { type: 'string' },
-          values: { type: 'array', items: { type: 'string' } },
+          value: answerValueSchema,
         },
         additionalProperties: false,
       },
