@@ -80,6 +80,36 @@ export async function encryptMime(bytes, identity, peerKeys) {
   })
 }
 
+/** Encrypt an inner MIME entity with a shared secret, as SecureJoin v3 uses. */
+export async function encryptMimeWithPassword(bytes, sharedSecret, identity) {
+  const message = await openpgp.createMessage({ binary: Uint8Array.from(bytes) })
+  return openpgp.encrypt({
+    message,
+    passwords: [String(sharedSecret)],
+    signingKeys: identity?.privateKey,
+    format: 'armored',
+  })
+}
+
+/**
+ * Decrypt a SecureJoin v3 message that was encrypted with a shared secret.
+ * If verificationKeyB64 is supplied, any signature must be from that key.
+ */
+export async function decryptMessageWithPassword(armored, sharedSecret, verificationKeyB64) {
+  const message = await openpgp.readMessage({ armoredMessage: armored })
+  const verificationKeys = verificationKeyB64 ? [await readPeerKey(verificationKeyB64)] : undefined
+  const result = await openpgp.decrypt({
+    message,
+    passwords: [String(sharedSecret)],
+    ...(verificationKeys ? { verificationKeys } : {}),
+    format: 'binary',
+  })
+  if (verificationKeyB64 && result.signatures?.length) {
+    await Promise.all(result.signatures.map((signature) => signature.verified))
+  }
+  return Buffer.from(result.data)
+}
+
 /**
  * Decrypt PGP/MIME. When verificationKeyB64 is supplied, require a valid
  * signature from that exact key.

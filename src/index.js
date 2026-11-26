@@ -8,7 +8,7 @@ import { formatSessionDirectory } from './session.js'
 const SETTING_KEYS = [
   'address', 'displayName', 'imapHost', 'imapPort', 'imapSecurity', 'imapUser', 'imapPassword', 'imapMailbox',
   'smtpHost', 'smtpPort', 'smtpSecurity', 'smtpUser', 'smtpPassword', 'pinnedContact',
-  'pinnedFingerprint', 'pinnedContactKey', 'inviteUrl', 'requireEncrypted',
+  'pinnedFingerprint', 'pinnedContactKey', 'inviteUrl', 'remoteMode', 'requireEncrypted',
   'pollIntervalMs', 'verifyCertificate', 'privateKeyArmored', 'keyPassphrase', 'generateKey', 'preferEncryptMutual',
   'defaultSessionID', 'defaultSessionDirectory',
   'emailDecisions', 'emailHighRiskDecisions', 'emailQuestions',
@@ -18,6 +18,7 @@ const SETTING_KEYS = [
 const SECRET_KEYS = new Set(['imapPassword', 'smtpPassword', 'privateKeyArmored', 'keyPassphrase'])
 const HOST_KEYS = new Set(['imapHost', 'smtpHost'])
 const UI_DEFAULTS = {
+  remoteMode: 'securejoin',
   verifyCertificate: true,
   generateKey: true,
   preferEncryptMutual: true,
@@ -98,7 +99,9 @@ async function setupInstance(ctx, slot) {
 
     const statusView = (status) => ({
       running: false,
+      remoteMode: 'securejoin',
       address: '',
+      selfFingerprint: '',
       pinnedContact: '',
       pinnedFingerprint: '',
       learnedFingerprint: '',
@@ -209,6 +212,10 @@ async function setupInstance(ctx, slot) {
           name: invite.name,
           version: invite.version,
         }
+      },
+      getSecureJoinQr: async () => {
+        if (!runtime.bridge) throw new Error('Autocrypt Bridge is not configured')
+        return runtime.bridge.getSecureJoinQr()
       },
       startHandshake: async () => {
         if (!runtime.bridge) throw new Error('Autocrypt Bridge is not configured')

@@ -132,6 +132,9 @@ export function loadConfig(options = {}, env = process.env) {
     // Email remote controls. High-risk approvals stay off by default: the
     // bridge must never become a remote shell.
     remote: {
+      // SecureJoin is the default for Delta Chat; Autocrypt is the legacy
+      // plaintext-bootstrap mode for generic OpenPGP mail clients.
+      mode: String(get('remoteMode', 'AC_REMOTE_MODE', 'securejoin')).toLowerCase(),
       decisions: boolean(get('emailDecisions', 'AC_EMAIL_DECISIONS'), true),
       highRiskDecisions: boolean(get('emailHighRiskDecisions', 'AC_EMAIL_HIGH_RISK_DECISIONS'), false),
       questions: boolean(get('emailQuestions', 'AC_EMAIL_QUESTIONS'), true),
@@ -167,6 +170,9 @@ export function loadConfig(options = {}, env = process.env) {
   }
   if (!['tls', 'starttls', 'plain'].includes(cfg.smtp.security)) {
     throw new Error(`${PREFIX} smtpSecurity must be tls, starttls or plain`)
+  }
+  if (!['securejoin', 'autocrypt'].includes(cfg.remote.mode)) {
+    throw new Error(`${PREFIX} remoteMode must be securejoin or autocrypt`)
   }
   return cfg
 }

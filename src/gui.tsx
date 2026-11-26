@@ -41,6 +41,7 @@ export default Plugin.define({
       const [sessionID, setSessionID] = createSignal("")
       const [newTitle, setNewTitle] = createSignal("")
       const [newDirectory, setNewDirectory] = createSignal("")
+      const [secureJoinUri, setSecureJoinUri] = createSignal("")
 
       const reload = async () => {
         try {
@@ -66,6 +67,7 @@ export default Plugin.define({
       })
 
       const defaults = {
+        remoteMode: "securejoin",
         generateKey: true,
         preferEncryptMutual: true,
         verifyCertificate: true,
@@ -84,6 +86,7 @@ export default Plugin.define({
         const current = settings()[key]
         return current === undefined ? Boolean(defaults[key]) : Boolean(current)
       }
+      const mode = () => String(value("remoteMode") || "securejoin")
       const hostValue = (key) => {
         const text = String(value(key)).trim()
         return text.replace(/^[a-z][a-z\d+.-]*:\/\//i, "").replace(/^.*@/, "").split(/[/?#]/, 1)[0].toLowerCase()
@@ -175,6 +178,7 @@ export default Plugin.define({
           pinnedFingerprint: value("pinnedFingerprint"),
           pinnedContactKey: value("pinnedContactKey"),
           inviteUrl: value("inviteUrl"),
+          remoteMode: mode(),
           requireEncrypted: checked("requireEncrypted"),
           pollIntervalMs: number("pollIntervalMs", 30000),
           verifyCertificate: checked("verifyCertificate"),
@@ -202,14 +206,17 @@ export default Plugin.define({
         const lines = [
           `Configured: ${current.configured ? "yes" : "no"}`,
           `Running: ${current.running ? "yes" : "no"}`,
+          `Remote type: ${value("remoteMode") || "securejoin"}`,
+          `Bridge fingerprint (QR): ${current.selfFingerprint || "(none)"}`,
           `Pinned contact: ${current.pinnedContact || "(none)"}`,
-          `Pinned fingerprint: ${current.pinnedFingerprint || "(none)"}`,
-          `Learned fingerprint: ${current.learnedFingerprint || "(none)"}`,
+          `Pinned contact fingerprint: ${current.pinnedFingerprint || "(none)"}`,
+          `Learned contact fingerprint: ${current.learnedFingerprint || "(none)"}`,
           `Established: ${current.established ? "yes" : "no"}`,
           `Fingerprint verified: ${current.verified ? "yes" : "no"}`,
           `Session: ${current.sessionID || "(none)"}${current.sessionTitle ? ` — ${current.sessionTitle}` : ""}`,
           `Session directory: ${current.sessionDirectory || "(unknown)"}`,
           `State: ${current.handshake}`,
+          `SecureJoin: ${current.secureJoin?.status || "idle"}`,
           `Last read receipt: ${current.lastReceiptAt ? new Date(current.lastReceiptAt).toLocaleString() : "(none)"}`,
           ...(current.lastError ? [`Last error: ${current.lastError}`] : []),
         ]
@@ -275,6 +282,17 @@ export default Plugin.define({
           </ui.SettingsSection>
 
           <ui.SettingsSection title="Contact gate">
+            <ui.SettingsRow id="remoteMode" title="Remote type" description="SecureJoin is for Delta Chat and performs a QR handshake. Autocrypt is the legacy mode for generic OpenPGP mail clients.">
+              <ui.Select
+                label="Remote type"
+                value={mode()}
+                onChange={(v) => setField("remoteMode", v)}
+                options={[
+                  { value: "securejoin", label: "SecureJoin (Delta Chat)" },
+                  { value: "autocrypt", label: "Autocrypt" },
+                ]}
+              />
+            </ui.SettingsRow>
             <ui.SettingsRow id="inviteUrl" title="Contact invite URL (optional)" description="Local prefill only. The fingerprint, address and name are read from it; i=/s= are ignored and never stored. Nothing is fetched.">
               <ui.TextInput label="Contact invite URL" value={value("inviteUrl")} onInput={(v) => setField("inviteUrl", v)} placeholder="https://i.delta.chat/#FPR&v=3&a=you%40example.org" />
             </ui.SettingsRow>
@@ -284,21 +302,39 @@ export default Plugin.define({
             <ui.SettingsRow id="pinnedContact" title="Pinned contact" description="Required. Only this address may drive OpenCode.">
               <ui.TextInput label="Pinned contact" value={value("pinnedContact")} onInput={(v) => setField("pinnedContact", v)} placeholder="you@example.org" />
             </ui.SettingsRow>
-            <ui.SettingsRow id="pinnedFingerprint" title="Pinned fingerprint" description="Required. The contact's OpenPGP fingerprint. An invite-style link fills this and the pinned address locally.">
+            <ui.SettingsRow id="pinnedFingerprint" title="Pinned fingerprint" description="Required for both modes. The contact's OpenPGP fingerprint. An invite-style link fills this and the pinned address locally.">
               <ui.TextInput label="Pinned fingerprint" value={value("pinnedFingerprint")} onInput={(v) => setField("pinnedFingerprint", v)} placeholder="669AE77C…" />
             </ui.SettingsRow>
-            <ui.SettingsRow id="pinnedContactKey" title="Pinned public key (optional)" description={settings().hasPinnedContactKey ? "A key is saved; leave blank to keep it. It must match the fingerprint." : "Bootstrap key; otherwise learned from the Autocrypt header."}>
+            <ui.SettingsRow id="pinnedContactKey" title="Pinned public key (optional)" description={settings().hasPinnedContactKey ? "A key is saved; leave blank to keep it. It must match the fingerprint." : "Bootstrap key; otherwise learned during setup."}>
               <ui.TextInput label="Pinned public key" type="password" value="" onInput={(v) => setField("pinnedContactKey", v)} placeholder={settings().hasPinnedContactKey ? "Saved" : "Armored key or base64 keydata"} />
-            </ui.SettingsRow>
-            <ui.SettingsRow id="requireEncrypted" title="Reject plaintext inbound mail" description="When on, only encrypted prompts from the pinned contact are accepted. This does not disable encryption for replies: replies stay OpenPGP-encrypted whenever the pinned Autocrypt key is known.">
-              <ui.Switch label="Reject plaintext inbound mail" hideLabel checked={checked("requireEncrypted")} onChange={(v) => setField("requireEncrypted", v)} />
             </ui.SettingsRow>
           </ui.SettingsSection>
 
-          <ui.SettingsSection title="Key establishment">
-            <ui.SettingsRow title="Autocrypt request" description="Sends a plaintext hello with this bridge’s Autocrypt header. When the pinned contact replies with a matching fingerprint, the key is learned and confirmed by an encrypted reply.">
-              <ui.Button size="small" disabled={busy()} onClick={() => void run("Autocrypt request sent", () => rpc().startHandshake({}))}>Send Autocrypt request</ui.Button>
-            </ui.SettingsRow>
+          {mode() === "securejoin" ? (
+            <ui.SettingsSection title="SecureJoin setup (Delta Chat)">
+              <ui.SettingsRow title="SecureJoin QR" description="Creates a one-time QR invite carrying this bridge’s fingerprint (shown in status above), not the pinned contact fingerprint. Scan it in Delta Chat; the contact key is accepted only if it matches the pinned fingerprint. After verification, plaintext mail is ignored.">
+                <div>
+                  <ui.Button size="small" disabled={busy()} onClick={() => void run("SecureJoin QR created", async () => {
+                    const invite = await rpc().getSecureJoinQr({})
+                    setSecureJoinUri(invite.uri)
+                    return undefined
+                  })}>Create SecureJoin QR</ui.Button>
+                  {secureJoinUri() ? <ui.TextInput label="SecureJoin invite URI" value={secureJoinUri()} onInput={() => {}} /> : null}
+                </div>
+              </ui.SettingsRow>
+            </ui.SettingsSection>
+          ) : (
+            <ui.SettingsSection title="Autocrypt setup">
+              <ui.SettingsRow title="Autocrypt request" description="Sends a plaintext hello with this bridge’s Autocrypt header. When the pinned contact replies with a matching fingerprint, the key is learned and confirmed by an encrypted reply.">
+                <ui.Button size="small" disabled={busy()} onClick={() => void run("Autocrypt request sent", () => rpc().startHandshake({}))}>Send Autocrypt request</ui.Button>
+              </ui.SettingsRow>
+              <ui.SettingsRow id="requireEncrypted" title="Reject plaintext inbound mail" description="When on, only encrypted prompts from the pinned contact are accepted. Replies stay OpenPGP-encrypted whenever the pinned key is known.">
+                <ui.Switch label="Reject plaintext inbound mail" hideLabel checked={checked("requireEncrypted")} onChange={(v) => setField("requireEncrypted", v)} />
+              </ui.SettingsRow>
+            </ui.SettingsSection>
+          )}
+
+          <ui.SettingsSection title="Mailbox tools">
             <ui.SettingsRow title="Rescan existing mail" description="Reads mail already in the mailbox, including replies received before the bridge started. Duplicate prompts are ignored.">
               <ui.Button size="small" disabled={busy()} onClick={() => void run("Inbox rescanned", () => rpc().rescanInbox({}))}>Rescan inbox</ui.Button>
             </ui.SettingsRow>
@@ -401,6 +437,7 @@ export default Plugin.define({
       entries: [
         { id: "address", title: "Bot address", keywords: "imap smtp email" },
         { id: "pinnedContact", title: "Pinned contact", keywords: "fingerprint gate openpgp" },
+        { id: "remoteMode", title: "Remote type", keywords: "securejoin deltachat autocrypt" },
         { id: "inviteUrl", title: "Contact invite URL", keywords: "fingerprint prefill" },
         { id: "sessions", title: "Open sessions", keywords: "session project routing" },
         { id: "defaultSessionID", title: "Default session", keywords: "session project binding" },

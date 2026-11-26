@@ -4,10 +4,10 @@ An OpenCode **V2** plugin that drives OpenCode from a standard OpenPGP-capable e
 
 Design rules:
 
-- **One standard flow:** Autocrypt Level 1 key discovery (`Autocrypt:` headers) plus OpenPGP/MIME (RFC 3156). `Chat-Version: 1.0` is only a display-compatibility marker, not a handshake signal.
-- **Hard gate:** `pinnedContact` plus the contact's OpenPGP `pinnedFingerprint` are mandatory. Messages from any other address are rejected before attachments are written.
+- **Two remote modes:** SecureJoin (default, for Delta Chat) performs a one-time QR verification; Autocrypt (legacy) discovers keys from `Autocrypt:` headers. Both use OpenPGP/MIME (RFC 3156). `Chat-Version: 1.0` is only a display-compatibility marker, not a handshake signal.
+- **Hard gate:** `pinnedContact` plus the contact's OpenPGP `pinnedFingerprint` are mandatory in both modes. Messages from any other address are rejected before attachments are written.
 - **Autocrypt headers stay on:** every outbound message keeps its own `Autocrypt:` header, including after the key has been learned. Autocrypt is stateful, so peers use these headers to track key state, rotations, and recovery. It does not re-run establishment or weaken the pin.
-- **Invite links are local prefill only:** a contact URI can fill the pinned fingerprint/address/name. `i=`/`s=` tokens are ignored, stripped before storage, and never sent on the wire.
+- **Invite links are local prefill only:** a contact URI supplied in settings can fill the pinned fingerprint/address/name. Its `i=`/`s=` tokens are ignored, stripped before storage, and never sent on the wire. A separately generated SecureJoin QR uses its own `s` authcode only in local bridge handshake state.
 - **No website calls:** the plugin never fetches the domain in an invite URL. All traffic is IMAP/SMTP to the configured mail host.
 - **Session-aware email:** every outbound subject carries `[session:ses_…]`. Delta Chat keeps that subject on replies, so the bridge returns to the same OpenCode session even across projects. Threading headers and explicit email commands are also supported.
 - **No remote shell:** encrypted email can answer OpenCode permission requests, answer native multiple-choice question forms, read session output, send project files, and subscribe to session notices. It never exposes arbitrary shell execution.
@@ -57,15 +57,28 @@ OpenCode Desktop loads the plugin and **Settings → Autocrypt Bridge** appears.
 
 ## Establish the pinned contact
 
+Choose **Remote type** in the GUI first. Pinning is common to both modes. Two fingerprints are involved in SecureJoin: the pinned contact fingerprint (the key you allow to drive OpenCode) and the bridge fingerprint carried by the generated QR (the key Delta Chat verifies). They are intentionally different.
+
+### SecureJoin (Delta Chat, default)
+
+1. Fill `pinnedContact` and `pinnedFingerprint`, then choose **Create SecureJoin QR**. The QR advertises **this bridge's** OpenPGP fingerprint and a fresh authcode; it does not fetch anything.
+2. Scan the QR in Delta Chat. Delta Chat sends a symmetrically encrypted `vc-request-pubkey`; the bridge answers with its signed public key.
+3. Delta Chat sends a signed, encrypted `vc-request-with-auth` containing its own key and fingerprint. The bridge accepts it only when that fingerprint matches `pinnedFingerprint`.
+4. The bridge stores the contact key, sends a signed, encrypted `vc-contact-confirm`, and marks the contact verified. After that, plaintext from the pinned contact is ignored.
+
+The generated authcode is stored only in local bridge state and expires after one hour. A QR from someone else, pasted into **Contact invite URL**, is still only a pin prefill; its tokens are never used.
+
+### Autocrypt (legacy)
+
 1. On startup, if no key is known for the pinned contact, the bridge sends one plaintext **Connect …** message carrying its own `Autocrypt:` header (at most once per day).
 2. The pinned contact replies with an `Autocrypt:` header containing its public key.
 3. The bridge computes the key's OpenPGP fingerprint and accepts it **only** if it matches `pinnedFingerprint`.
 4. The bridge stores the key, marks the contact established, and immediately sends a signed + encrypted OpenPGP/MIME confirmation. That first message includes the live `!help` command list.
 5. All subsequent replies from OpenCode are signed and encrypted to that key. The outbound `Autocrypt:` header remains present on every message.
 
-Use **Send Autocrypt request** in the GUI to trigger the hello again. **Reset contact** removes the learned key and returns the bridge to `idle`.
+Use **Send Autocrypt request** to trigger the hello again, and optionally enable **Reject plaintext inbound mail** after the key is known. **Reset contact** removes the learned key and returns the bridge to `idle`.
 
-Every outbound message includes `Chat-Version: 1.0`. This is only a display-compatibility marker: chat clients that filter ordinary email would otherwise hide the hello and its replies. It does not enable any invite or handshake protocol.
+Every outbound message includes `Chat-Version: 1.0`. This is only a display-compatibility marker: chat clients that filter ordinary email would otherwise hide handshake mail and replies. It does not enable any invite or handshake protocol.
 
 ## Session routing
 
@@ -123,7 +136,7 @@ A contact-invite URI such as this is accepted:
 https://i.delta.chat/#FPR&v=3&i=…&s=…&a=you%40example.org&n=Bot+contact
 ```
 
-The GUI button **Fill fingerprint and contact** reads only the public fields (leading fingerprint, `a=`, `n=`, `v=`). `i=`, `j=`, and `s=` are discarded locally: they are neither stored nor used on the wire. Explicit pinned settings still win and must agree with the invite. An armored public key can also be supplied as `pinnedContactKey`; it must match the pinned fingerprint and is used only as bootstrap material.
+The GUI button **Fill fingerprint and contact** reads only the public fields (leading fingerprint, `a=`, `n=`, `v=`) from a URI you paste in. `i=`, `j=`, and `s=` are discarded locally: they are neither stored nor used on the wire. Explicit pinned settings still win and must agree with the invite. An armored public key can also be supplied as `pinnedContactKey`; it must match the pinned fingerprint and is used only as bootstrap material. The bridge's own **Create SecureJoin QR** button is separate: its generated `s` authcode stays in local handshake state.
 
 ## GUI settings
 
@@ -131,15 +144,16 @@ The GUI button **Fill fingerprint and contact** reads only the public fields (le
 
 - bot address, display name;
 - IMAP/SMTP hostname (no `https://` or path), port, security, login, and passwords;
+- **Remote type**: SecureJoin (Delta Chat) or Autocrypt; setup controls are grouped by mode;
 - pinned contact, pinned fingerprint, optional pinned public key;
 - optional invite URL and **Fill fingerprint and contact**;
-- reject plaintext inbound mail (outbound replies stay encrypted when the pinned key is known);
+- **Create SecureJoin QR** in SecureJoin mode; **Send Autocrypt request** and reject plaintext inbound mail in Autocrypt mode (outbound replies stay encrypted when the pinned key is known);
 - generated/imported OpenPGP identity and mutual-encryption preference;
 - TLS verification and IMAP poll interval;
-- live status via RPC events: configured/unconfigured state, learned fingerprint, established state, fingerprint verification, bound session, last error;
+- live status via RPC events: configured/unconfigured state, remote mode, learned fingerprint, established state, fingerprint verification, SecureJoin status, bound session, last error;
 - **Sessions**: list open projects/sessions, bind the email default, create a session in a listed project, optional startup default;
 - **Remote controls**: independent gates for permission decisions, high-risk email approval, questions, session output, terminal tail, project file sending, watch subscriptions, and read receipts;
-- **Send Autocrypt request**, **Rescan inbox**, **Reset contact**, and **Save & restart**.
+- **Rescan inbox**, **Reset contact**, and **Save & restart**.
 
 Saved passwords and private keys are hidden; leaving a password field blank keeps the saved value.
 
@@ -162,9 +176,10 @@ All fields can be set in the GUI, in the `options` object, or with environment v
 | SMTP security / `smtpSecurity` | `AC_SMTP_SECURITY` | `tls`, `starttls`, `plain` | `tls` |
 | SMTP user / `smtpUser` | `AC_SMTP_USER` | SMTP login | address |
 | SMTP password / `smtpPassword` | `AC_SMTP_PASSWORD` | SMTP password | required |
+| Remote type / `remoteMode` | `AC_REMOTE_MODE` | `securejoin` (Delta Chat) or `autocrypt` (legacy) | `securejoin` |
 | Pinned contact / `pinnedContact` | `AC_PINNED_CONTACT` | The only address allowed to drive OpenCode | required |
-| Pinned fingerprint / `pinnedFingerprint` | `AC_PINNED_FINGERPRINT` | Contact's OpenPGP fingerprint | required unless `pinnedContactKey` is set |
-| Pinned public key / `pinnedContactKey` | `AC_PINNED_CONTACT_KEY` | Optional bootstrap key; must match the fingerprint | learned from Autocrypt |
+| Pinned fingerprint / `pinnedFingerprint` | `AC_PINNED_FINGERPRINT` | Contact's OpenPGP fingerprint | required |
+| Pinned public key / `pinnedContactKey` | `AC_PINNED_CONTACT_KEY` | Optional bootstrap key; must match the fingerprint | learned during setup |
 | Invite URL / `inviteUrl` | `AC_INVITE_URL` | Local pin prefill only; `i=`/`s=` stripped | empty |
 | Reject plaintext inbound / `requireEncrypted` | `AC_REQUIRE_ENCRYPTED` | Reject plaintext inbound prompts; does not turn off outbound encryption | `false` |
 | Poll interval / `pollIntervalMs` | `AC_POLL_INTERVAL_MS` | IMAP reconciliation interval | `30000` |
@@ -193,7 +208,7 @@ All fields can be set in the GUI, in the `options` object, or with environment v
 ## Development
 
 ```sh
-npm test          # helpers, config, crypto, Autocrypt flow
+npm test          # helpers, config, crypto, Autocrypt and SecureJoin flows
 npm run build     # rebuild dist/gui-experimental.cjs and dist/index.cjs
 ```
 
@@ -202,9 +217,9 @@ The IMAP/SMTP checkpoint logic is ported from `opencode-email-sync` (MIT); see [
 ## Limitations
 
 - The GUI plugin API is experimental and tied to the pinned `@opencode/plugin` version.
-- This is Autocrypt Level 1: opportunistic encryption gated by a pinned fingerprint, not a verified-chat protocol.
+- In Autocrypt mode this is Autocrypt Level 1: opportunistic encryption gated by a pinned fingerprint, not a verified-chat protocol. SecureJoin mode performs a verified handshake for the pinned contact.
 - OpenPGP/MIME exposes `To`, `Subject`, and `Date` on the outside; there is no header protection.
-- No invite handshake protocol, group chats, reactions, or read receipts.
+- No group chats or reactions. Encrypted read receipts are supported.
 - Native multiple-choice answers require OpenCode Desktop: the server plugin emits the answer event and the GUI performs `session.form.reply`.
 - High-risk email approval is an explicit opt-in. It can approve shell-like permission prompts, so leave it off unless the phone is a trusted control surface.
 - Do not run the bot account simultaneously in another mail client, otherwise IMAP checkpoints can race.

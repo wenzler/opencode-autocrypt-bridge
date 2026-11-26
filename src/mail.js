@@ -8,7 +8,7 @@ import { simpleParser } from 'mailparser'
 import nodemailer from 'nodemailer'
 import { decryptMessage, keyFingerprint } from './crypto.js'
 import { parseAutocryptHeader } from './headers.js'
-import { extractArmored, isEncrypted, parseDispositionNotification, parseRawHeaders, safeFilename } from './mime.js'
+import { extractArmored, headerValues, isEncrypted, parseDispositionNotification, parseRawHeaders, safeFilename } from './mime.js'
 
 const ALLOWED_ATTACHMENT_TYPES = new Set([
   'image/jpeg', 'image/png', 'image/gif', 'image/webp',
@@ -262,6 +262,24 @@ async function resolvePinnedVerificationKey(outerAutocrypt, pinned, knownKeyB64)
   throw new Error('cannot verify encrypted message: no key with the pinned fingerprint is available')
 }
 
+/** Read SecureJoin v3 headers from either the outer or protected inner entity. */
+export function secureJoinFrom(outerHeaders, innerHeaders) {
+  const value = (name) => {
+    for (const headers of [innerHeaders, outerHeaders]) {
+      const found = headers instanceof Map ? headers.get(name) : headers?.[name]
+      if (found) return String(found).trim()
+    }
+    return ''
+  }
+  const step = value('secure-join')
+  if (!step) return undefined
+  return {
+    step,
+    auth: value('secure-join-auth'),
+    fingerprint: value('secure-join-fingerprint'),
+  }
+}
+
 /** Receive a raw RFC 822 message and return normalized text, attachments and peer key. */
 export async function parseIncoming(raw, cfg, identity, log, pinned = cfg.pinned || {}, knownKeyB64 = '') {
   const rawHeaders = parseRawHeaders(raw)
@@ -339,6 +357,11 @@ export async function parseIncoming(raw, cfg, identity, log, pinned = cfg.pinned
 
   const messageId = parsed.messageId || rawHeaders.get('message-id') || `<${createHash('sha256').update(raw).digest('hex')}@local>`
   const attachments = await saveAttachments(cfg, parsed, messageId, log)
+  const secureJoin = secureJoinFrom(rawHeaders, innerHeaders)
+  const gossip = [
+    ...headerValues(raw, 'autocrypt-gossip'),
+    ...headerValues(entity, 'autocrypt-gossip'),
+  ]
   return {
     from,
     fromName: parsed.from?.value?.[0]?.name || '',
@@ -352,6 +375,8 @@ export async function parseIncoming(raw, cfg, identity, log, pinned = cfg.pinned
     autocrypt,
     encrypted,
     signatureVerified,
+    secureJoin,
+    gossip,
     wantsReceipt,
     mdn: receipt,
   }

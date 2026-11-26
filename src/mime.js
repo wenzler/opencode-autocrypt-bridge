@@ -56,12 +56,18 @@ function attachmentPart(attachment) {
 }
 
 /** Build the inner MIME entity that is sent in the clear or encrypted as PGP/MIME. */
-export function buildInnerMime({ text, attachments = [] }) {
+export function buildInnerMime({ text, attachments = [], headers: extraHeaders = [] }) {
   const boundary = `opencode-${randomUUID()}`
   const parts = [textPart(text), ...attachments.map(attachmentPart)]
   const body = parts.map((part) => `--${boundary}${CRLF}${part}${CRLF}`).join('') + `--${boundary}--${CRLF}`
   const contentType = `multipart/mixed; boundary="${boundary}"`
-  const headers = `MIME-Version: 1.0${CRLF}Content-Type: ${contentType}${CRLF}${CRLF}`
+  const headers = [
+    ...extraHeaders.filter(Boolean),
+    `MIME-Version: 1.0`,
+    `Content-Type: ${contentType}`,
+    '',
+    '',
+  ].join(CRLF)
   return {
     contentType,
     body: Buffer.from(body, 'utf8'),
@@ -129,18 +135,20 @@ export function buildMail({
   contentType,
   body,
   headers = [],
+  from,
+  autocryptAddress,
 }) {
   const name = String(cfg.displayName || '').replace(/"/g, '')
   const fromName = /^[\x20-\x7e]*$/.test(name) ? `"${name}"` : encodeHeader(name)
   const headerLines = [
-    `From: ${fromName} <${cfg.address}>`,
+    `From: ${from || `${fromName} <${cfg.address}>`}`,
     `To: <${to}>`,
     `Subject: ${encodeHeader(subject)}`,
     `Date: ${new Date().toUTCString()}`,
     `Message-ID: <${messageId}>`,
     ...(inReplyTo ? [`In-Reply-To: ${inReplyTo}`, `References: ${inReplyTo}`] : []),
     ...(publicB64
-      ? [`Autocrypt: ${autocryptHeader(cfg.address, publicB64, cfg.key.preferEncryptMutual)}`]
+      ? [`Autocrypt: ${autocryptHeader(autocryptAddress || cfg.address, publicB64, cfg.key.preferEncryptMutual)}`]
       : []),
     // Display-compatibility marker only. It is not a handshake signal and
     // never enables invite-protocol behavior.
@@ -174,6 +182,32 @@ export function parseRawHeaders(raw) {
     headers.set(current, line.slice(colon + 1).trim())
   }
   return headers
+}
+
+/** Return every unfolded value of one header, preserving repeated headers. */
+export function headerValues(raw, name) {
+  const text = Buffer.isBuffer(raw) ? raw.toString('latin1') : String(raw)
+  const separator = text.indexOf('\r\n\r\n')
+  const lfSeparator = text.indexOf('\n\n')
+  const end = separator >= 0 ? separator : (lfSeparator >= 0 ? lfSeparator : text.length)
+  const wanted = String(name).toLowerCase()
+  const values = []
+  let current = ''
+  for (const line of text.slice(0, end).split(/\r?\n/)) {
+    if (/^[ \t]/.test(line)) {
+      if (current) values[values.length - 1] += line.trim()
+      continue
+    }
+    const colon = line.indexOf(':')
+    if (colon <= 0) {
+      current = ''
+      continue
+    }
+    const key = line.slice(0, colon).trim().toLowerCase()
+    current = key === wanted ? line.slice(colon + 1).trim() : ''
+    if (current) values.push(current)
+  }
+  return values
 }
 
 /** Read the machine-readable part of an MDN, including Delta Chat's variant. */
