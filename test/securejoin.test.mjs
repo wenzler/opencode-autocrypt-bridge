@@ -10,7 +10,7 @@ import {
   keyFingerprint,
 } from '../src/crypto.js'
 import { loadConfig } from '../src/config.js'
-import { armorToBase64, autocryptHeader, autocryptGossipHeader } from '../src/headers.js'
+import { armorToBase64, autocryptGossipHeader, autocryptHeader } from '../src/headers.js'
 import { buildInnerMime, buildMail, buildPgpMime, extractArmored, parseRawHeaders } from '../src/mime.js'
 
 const AUTH = 'NJFZBXGwoQh6B_kDQlJrj2nP'
@@ -223,6 +223,11 @@ test('SecureJoin joins the contact invite, verifies the pin and then rejects pla
   assert.equal(authInner.get('secure-join-auth'), AUTH)
   assert.equal(authInner.get('secure-join-fingerprint'), h.bot.fingerprint)
   assert.match(authInner.get('autocrypt'), /keydata=/)
+  const flatten = (value) => String(value).replace(/\s+/g, '')
+  assert.equal(
+    flatten(authInner.get('autocrypt-gossip')),
+    flatten(autocryptGossipHeader('contact@example.net', contact.publicB64)),
+  )
   const beforeConfirm = await h.bridge.getStatus()
   assert.equal(beforeConfirm.secureJoin.status, 'auth-sent')
   assert.equal(beforeConfirm.established, false)

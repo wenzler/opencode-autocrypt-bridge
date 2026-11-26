@@ -125737,6 +125737,9 @@ function autocryptHeader(address, publicB64, preferEncryptMutual, lineWidth = 76
   const prefix = `addr=${address}; ${preferEncryptMutual ? "prefer-encrypt=mutual; " : ""}keydata=`;
   return foldKeydata(prefix, publicB64, lineWidth);
 }
+function autocryptGossipHeader(address, publicB64, lineWidth = 76) {
+  return foldKeydata(`addr=${address}; keydata=`, publicB64, lineWidth);
+}
 function unfold(value3) {
   return String(value3 || "").replace(/\r?\n[ \t]+/g, "");
 }
@@ -127499,6 +127502,10 @@ async function createBridge(ctx, cfg, options2 = {}) {
         `Secure-Join-Auth: ${auth}`,
         `Secure-Join-Fingerprint: ${selfFingerprint}`,
         `Autocrypt: ${autocryptHeader(cfg.address, identity2.publicB64, true)}`,
+        // Delta Chat requires a signed Autocrypt-Gossip header carrying its
+        // own public key before it accepts vc-request-with-auth. Without this,
+        // Alice ignores the message as "No self addr+pubkey gossip found".
+        `Autocrypt-Gossip: ${autocryptGossipHeader(to, peerKeyB64)}`,
         "Chat-Version: 1.0"
       ]
     });

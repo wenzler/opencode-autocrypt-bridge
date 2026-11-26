@@ -30,7 +30,7 @@ import {
   parseRawHeaders,
   safeFilename,
 } from './mime.js'
-import { autocryptHeader, parseAutocryptHeader } from './headers.js'
+import { autocryptGossipHeader, autocryptHeader, parseAutocryptHeader } from './headers.js'
 import {
   formatSessionDirectory,
   normalizeMessageId,
@@ -902,6 +902,10 @@ export async function createBridge(ctx, cfg, options = {}) {
         `Secure-Join-Auth: ${auth}`,
         `Secure-Join-Fingerprint: ${selfFingerprint}`,
         `Autocrypt: ${autocryptHeader(cfg.address, identity.publicB64, true)}`,
+        // Delta Chat requires a signed Autocrypt-Gossip header carrying its
+        // own public key before it accepts vc-request-with-auth. Without this,
+        // Alice ignores the message as "No self addr+pubkey gossip found".
+        `Autocrypt-Gossip: ${autocryptGossipHeader(to, peerKeyB64)}`,
         'Chat-Version: 1.0',
       ],
     })
