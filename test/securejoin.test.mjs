@@ -144,10 +144,12 @@ test('SecureJoin v3 verifies the pinned key and then rejects plaintext', async (
   const invite = await bridge.getSecureJoinQr()
   assert.match(invite.uri, /^OPENPGP4FPR:[0-9A-F]{40}#/)
   assert.ok(invite.uri.startsWith(`OPENPGP4FPR:${bot.fingerprint}#`))
+  assert.equal(invite.address, 'bot@example.org')
+  assert.equal(invite.pinnedContact, 'contact@example.net')
   const params = new URLSearchParams(invite.uri.split('#')[1])
   const auth = params.get('s')
   assert.ok(auth && auth.length > 10)
-  assert.equal(params.get('a'), 'contact@example.net')
+  assert.equal(params.get('a'), 'bot@example.org')
   assert.equal(params.get('v'), '3')
   const secret = `securejoin/${bot.fingerprint}/${auth}`
 

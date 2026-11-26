@@ -789,7 +789,7 @@ export async function createBridge(ctx, cfg, options = {}) {
     if (cfg.remote.mode !== 'securejoin') return undefined
     const invite = state.data.handshake.secureJoin
     if (!invite || !invite.auth || invite.fingerprint !== selfFingerprint) return undefined
-    if (invite.address && invite.address !== cfg.pinned.contact) return undefined
+    if (invite.address && invite.address !== cfg.address) return undefined
     if (Date.now() - Number(invite.createdAt || 0) > 60 * 60 * 1000) return undefined
     return invite
   }
@@ -804,21 +804,22 @@ export async function createBridge(ctx, cfg, options = {}) {
     const auth = randomBytes(18).toString('base64url')
     state.data.handshake.secureJoin = {
       auth,
-      address: cfg.pinned.contact,
+      address: cfg.address,
       fingerprint: selfFingerprint,
       createdAt: Date.now(),
       status: 'awaiting-scan',
     }
     await state.save()
     const uri = `OPENPGP4FPR:${selfFingerprint}`
-      + `#a=${encodeURIComponent(cfg.pinned.contact)}`
+      + `#a=${encodeURIComponent(cfg.address)}`
       + `&n=${encodeURIComponent(cfg.displayName || 'OpenCode')}`
       + `&s=${auth}&v=3`
     onStatus(await getStatus())
     return {
       uri,
       fingerprint: selfFingerprint,
-      address: cfg.pinned.contact,
+      address: cfg.address,
+      pinnedContact: cfg.pinned.contact,
       status: 'awaiting-scan',
     }
   }

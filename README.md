@@ -61,7 +61,7 @@ Choose **Remote type** in the GUI first. Pinning is common to both modes. Two fi
 
 ### SecureJoin (Delta Chat, default)
 
-1. Fill `pinnedContact` and `pinnedFingerprint`, then choose **Create SecureJoin QR**. The QR advertises **this bridge's** OpenPGP fingerprint and a fresh authcode; it does not fetch anything.
+1. Fill `pinnedContact` and `pinnedFingerprint`, then choose **Create SecureJoin QR**. The QR advertises **this bridge's** OpenPGP fingerprint, email address and display name plus a fresh authcode; it does not fetch anything.
 2. Scan the QR in Delta Chat. Delta Chat sends a symmetrically encrypted `vc-request-pubkey`; the bridge answers with its signed public key.
 3. Delta Chat sends a signed, encrypted `vc-request-with-auth` containing its own key and fingerprint. The bridge accepts it only when that fingerprint matches `pinnedFingerprint`.
 4. The bridge stores the contact key, sends a signed, encrypted `vc-contact-confirm`, and marks the contact verified. After that, plaintext from the pinned contact is ignored.

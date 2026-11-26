@@ -312,7 +312,7 @@ export default Plugin.define({
 
           {mode() === "securejoin" ? (
             <ui.SettingsSection title="SecureJoin setup (Delta Chat)">
-              <ui.SettingsRow title="SecureJoin QR" description="Creates a one-time QR invite carrying this bridge’s fingerprint (shown in status above), not the pinned contact fingerprint. Scan it in Delta Chat; the contact key is accepted only if it matches the pinned fingerprint. After verification, plaintext mail is ignored.">
+              <ui.SettingsRow title="SecureJoin QR" description="Creates a one-time QR invite carrying this bridge’s fingerprint and address (shown in status above), not the pinned contact details. Scan it in Delta Chat; the contact key is accepted only if it matches the pinned fingerprint. After verification, plaintext mail is ignored.">
                 <div>
                   <ui.Button size="small" disabled={busy()} onClick={() => void run("SecureJoin QR created", async () => {
                     const invite = await rpc().getSecureJoinQr({})

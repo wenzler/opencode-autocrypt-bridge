@@ -127364,7 +127364,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
     if (cfg.remote.mode !== "securejoin") return void 0;
     const invite = state.data.handshake.secureJoin;
     if (!invite || !invite.auth || invite.fingerprint !== selfFingerprint) return void 0;
-    if (invite.address && invite.address !== cfg.pinned.contact) return void 0;
+    if (invite.address && invite.address !== cfg.address) return void 0;
     if (Date.now() - Number(invite.createdAt || 0) > 60 * 60 * 1e3) return void 0;
     return invite;
   }
@@ -127378,18 +127378,19 @@ async function createBridge(ctx, cfg, options2 = {}) {
     const auth = (0, import_node_crypto4.randomBytes)(18).toString("base64url");
     state.data.handshake.secureJoin = {
       auth,
-      address: cfg.pinned.contact,
+      address: cfg.address,
       fingerprint: selfFingerprint,
       createdAt: Date.now(),
       status: "awaiting-scan"
     };
     await state.save();
-    const uri = `OPENPGP4FPR:${selfFingerprint}#a=${encodeURIComponent(cfg.pinned.contact)}&n=${encodeURIComponent(cfg.displayName || "OpenCode")}&s=${auth}&v=3`;
+    const uri = `OPENPGP4FPR:${selfFingerprint}#a=${encodeURIComponent(cfg.address)}&n=${encodeURIComponent(cfg.displayName || "OpenCode")}&s=${auth}&v=3`;
     onStatus(await getStatus());
     return {
       uri,
       fingerprint: selfFingerprint,
-      address: cfg.pinned.contact,
+      address: cfg.address,
+      pinnedContact: cfg.pinned.contact,
       status: "awaiting-scan"
     };
   }
@@ -128398,6 +128399,7 @@ var BridgeRpc = rpc_exports.define({
           uri: { type: "string" },
           fingerprint: { type: "string" },
           address: { type: "string" },
+          pinnedContact: { type: "string" },
           status: { type: "string" }
         },
         additionalProperties: false

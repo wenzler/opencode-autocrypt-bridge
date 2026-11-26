@@ -242,6 +242,7 @@ export const BridgeRpc = Rpc.define({
           uri: { type: 'string' },
           fingerprint: { type: 'string' },
           address: { type: 'string' },
+          pinnedContact: { type: 'string' },
           status: { type: 'string' },
         },
         additionalProperties: false,
