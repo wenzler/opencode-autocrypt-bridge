@@ -31,6 +31,18 @@ const UI_DEFAULTS = {
   emailReadReceipts: true,
 }
 const STORAGE_KEY = 'autocrypt.settings'
+const RUNTIME_KEY = Symbol.for('opencode-autocrypt-bridge.runtime')
+
+/**
+ * OpenCode can load a plugin more than once (hot reload / GUI attach). Keep one
+ * bridge per process: every new setup waits for and disposes the previous one.
+ */
+function runtimeSlot() {
+  if (!globalThis[RUNTIME_KEY]) {
+    globalThis[RUNTIME_KEY] = { chain: Promise.resolve(), activeDispose: null }
+  }
+  return globalThis[RUNTIME_KEY]
+}
 
 function storedSettings(stored) {
   const result = {}
@@ -66,7 +78,20 @@ function settingsView(values) {
 export default Plugin.define({
   id: 'autocrypt-bridge',
   async setup(ctx) {
-    const options = ctx.options || {}
+    const slot = runtimeSlot()
+    const run = slot.chain.catch(() => {}).then(() => setupInstance(ctx, slot))
+    slot.chain = run.catch(() => {})
+    return run
+  },
+})
+
+async function setupInstance(ctx, slot) {
+  if (slot.activeDispose) {
+    const previous = slot.activeDispose
+    slot.activeDispose = null
+    await previous().catch(() => {})
+  }
+  const options = ctx.options || {}
     const optionValues = storedSettings(options)
     let stored = storedSettings(await ctx.storage.get(STORAGE_KEY))
     const runtime = { cfg: null, bridge: null, registration: null, configError: '' }
@@ -246,10 +271,15 @@ export default Plugin.define({
 
     await restart()
 
-    return async () => {
-      runtime.bridge?.stop()
-      await tool.dispose()
-      await runtime.registration.dispose()
-    }
-  },
-})
+  let disposed = false
+  const dispose = async () => {
+    if (disposed) return
+    disposed = true
+    runtime.bridge?.stop()
+    await tool.dispose()
+    await runtime.registration.dispose()
+    if (slot.activeDispose === dispose) slot.activeDispose = null
+  }
+  slot.activeDispose = dispose
+  return dispose
+}

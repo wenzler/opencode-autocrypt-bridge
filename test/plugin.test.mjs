@@ -4,12 +4,13 @@ import plugin from '../src/index.js'
 
 function fakeContext(storageValues, handlersOut, emitted) {
   const tools = []
-  const toolApi = { add(definition) { tools.push(definition) }, async dispose() {} }
+  const disposals = []
+  const toolApi = { add(definition) { tools.push(definition) }, async dispose() { disposals.push('tool') } }
   const registration = {
     events: {
       async emit(name, status) { emitted.push({ name, status }) },
     },
-    async dispose() {},
+    async dispose() { disposals.push('registration') },
   }
   return {
     options: {},
@@ -44,6 +45,7 @@ function fakeContext(storageValues, handlersOut, emitted) {
     },
     location: { directory: '/tmp' },
     tools,
+    disposals,
   }
 }
 
@@ -154,4 +156,25 @@ test('session RPC and agent tool are registered for project awareness', async ()
   assert.equal(saved.defaultSessionDirectory, '/tmp/project')
 
   await dispose()
+})
+
+test('reloading the plugin disposes the previous bridge before starting another', async () => {
+  const firstOut = { value: null }
+  const firstCtx = fakeContext(new Map(), firstOut, [])
+  const firstDispose = await plugin.setup(firstCtx)
+  const firstHandlers = firstOut.value
+  assert.ok(firstHandlers)
+
+  // A hot reload or GUI attach creates a second setup in the same process.
+  const secondOut = { value: null }
+  const secondCtx = fakeContext(new Map(), secondOut, [])
+  await plugin.setup(secondCtx)
+
+  assert.ok(firstCtx.disposals.includes('tool'), 'previous tool registration is disposed')
+  assert.ok(firstCtx.disposals.includes('registration'), 'previous RPC registration is disposed')
+  assert.notStrictEqual(secondOut.value, firstHandlers, 'new instance owns the active handlers')
+  await firstDispose()
+  assert.equal(firstCtx.disposals.length, 2, 'late cleanup of the old instance is a no-op')
+
+  await plugin.setup(fakeContext(new Map(), { value: null }, []))
 })

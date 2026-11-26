@@ -128196,6 +128196,13 @@ var UI_DEFAULTS = {
   emailReadReceipts: true
 };
 var STORAGE_KEY = "autocrypt.settings";
+var RUNTIME_KEY = Symbol.for("opencode-autocrypt-bridge.runtime");
+function runtimeSlot() {
+  if (!globalThis[RUNTIME_KEY]) {
+    globalThis[RUNTIME_KEY] = { chain: Promise.resolve(), activeDispose: null };
+  }
+  return globalThis[RUNTIME_KEY];
+}
 function storedSettings(stored) {
   const result3 = {};
   if (!stored || typeof stored !== "object") return result3;
@@ -128223,171 +128230,191 @@ function settingsView(values2) {
 var index_default = plugin_exports.define({
   id: "autocrypt-bridge",
   async setup(ctx) {
-    const options2 = ctx.options || {};
-    const optionValues = storedSettings(options2);
-    let stored = storedSettings(await ctx.storage.get(STORAGE_KEY));
-    const runtime = { cfg: null, bridge: null, registration: null, configError: "" };
-    const configFrom = (values2) => loadConfig({ ...options2, ...values2 }, process.env);
-    const statusView = (status) => ({
-      running: false,
-      address: "",
-      pinnedContact: "",
-      pinnedFingerprint: "",
-      learnedFingerprint: "",
-      established: false,
-      verified: false,
-      handshake: "idle",
-      lastError: "",
-      sessionID: "",
-      sessionTitle: "",
-      sessionDirectory: "",
-      sessionProjectID: "",
-      ...status,
-      configured: Boolean(runtime.cfg)
+    const slot = runtimeSlot();
+    const run4 = slot.chain.catch(() => {
+    }).then(() => setupInstance(ctx, slot));
+    slot.chain = run4.catch(() => {
     });
-    const visibleValues = () => ({ ...optionValues, ...stored });
-    const unconfiguredStatus = () => {
-      const view = settingsView(visibleValues());
-      return statusView({
-        address: view.address,
-        pinnedContact: view.pinnedContact,
-        pinnedFingerprint: view.pinnedFingerprint,
-        handshake: "unconfigured",
-        lastError: runtime.configError || "Finish setup in Settings \u2192 Autocrypt Bridge"
-      });
-    };
-    const emit = (name, data) => {
-      if (!runtime.registration) return;
-      const eventName = typeof name === "string" ? name : "status";
-      const payload = typeof name === "string" ? data : statusView(name);
-      if (!payload) return;
-      void runtime.registration.events.emit(eventName, payload).catch(() => {
-      });
-    };
-    const currentStatus = async () => runtime.bridge ? statusView(await runtime.bridge.getStatus()) : unconfiguredStatus();
-    const restart = async () => {
-      runtime.bridge?.stop();
-      runtime.bridge = null;
-      stored = storedSettings(await ctx.storage.get(STORAGE_KEY));
-      try {
-        runtime.cfg = configFrom(stored);
-        runtime.configError = "";
-        runtime.bridge = await createBridge(ctx, runtime.cfg, {
-          onStatus: emit,
-          onQuestion: (question) => emit("question", question),
-          onQuestionAnswer: (answer) => emit("questionAnswer", answer)
-        });
-        runtime.bridge.start();
-      } catch (error) {
-        runtime.cfg = null;
-        runtime.configError = error.message;
-        emit(unconfiguredStatus());
-      }
-      return currentStatus();
-    };
-    runtime.registration = await ctx.rpc.register(BridgeRpc, {
-      getSettings: async () => settingsView(visibleValues()),
-      updateSettings: async (input) => {
-        const values2 = { ...stored };
-        if (values2.inviteUrl) values2.inviteUrl = redactInviteUrl(values2.inviteUrl);
-        for (const key5 of SETTING_KEYS) {
-          const value3 = input[key5];
-          if (value3 === void 0 || value3 === null) continue;
-          if (SECRET_KEYS.has(key5) && value3 === "") continue;
-          let storedValue = value3;
-          if (key5 === "inviteUrl" && value3) storedValue = redactInviteUrl(value3);
-          else if (HOST_KEYS.has(key5)) storedValue = normalizeHost(value3);
-          if (storedValue === "") delete values2[key5];
-          else values2[key5] = storedValue;
-        }
-        await ctx.storage.set(STORAGE_KEY, values2);
-        stored = values2;
-        return restart();
-      },
-      getStatus: currentStatus,
-      parseInvite: async (input) => {
-        const invite = parseInviteUrl(input.invite);
-        if (!invite) throw new Error("Empty invite URL");
-        return {
-          fingerprint: invite.fingerprint,
-          address: invite.address,
-          name: invite.name,
-          version: invite.version
-        };
-      },
-      startHandshake: async () => {
-        if (!runtime.bridge) throw new Error("Autocrypt Bridge is not configured");
-        return runtime.bridge.startHandshake();
-      },
-      rescanInbox: async () => {
-        if (!runtime.bridge) throw new Error("Autocrypt Bridge is not configured");
-        return runtime.bridge.rescanInbox();
-      },
-      resetContact: async () => {
-        if (!runtime.bridge) throw new Error("Autocrypt Bridge is not configured");
-        return runtime.bridge.resetContact();
-      },
-      listSessions: async () => runtime.bridge ? runtime.bridge.listSessions() : { sessions: [], projects: [], boundSessionID: "", defaultSessionID: "" },
-      bindSession: async (input) => {
-        if (!runtime.bridge) throw new Error("Autocrypt Bridge is not configured");
-        return runtime.bridge.bindSession(input.sessionID);
-      },
-      createSession: async (input) => {
-        if (!runtime.bridge) throw new Error("Autocrypt Bridge is not configured");
-        const result3 = await runtime.bridge.createAndBindSession(input.title, input.directory);
-        return result3.status;
-      },
-      reportQuestionReply: async (input) => {
-        if (!runtime.bridge) throw new Error("Autocrypt Bridge is not configured");
-        await runtime.bridge.confirmQuestionReply({
-          formID: input.formID,
-          ok: Boolean(input.ok),
-          error: String(input.error || "")
-        });
-        return { accepted: true };
-      }
-    });
-    const tool = await ctx.tool.transform((editor) => {
-      editor.add({
-        name: "autocrypt_send_file",
-        description: "Send a file from the current project as an OpenPGP/MIME attachment to this session\u2019s email contact.",
-        input: {
-          type: "object",
-          properties: {
-            path: { type: "string", description: "Project-relative or absolute file path" },
-            text: { type: "string", description: "Optional caption" }
-          },
-          required: ["path"],
-          additionalProperties: false
-        },
-        execute: async (input, context3) => {
-          if (!runtime.bridge) return { content: "The Autocrypt bridge is not configured" };
-          return runtime.bridge.sendFile({
-            sessionID: context3.sessionID,
-            filePath: input.path,
-            text: input.text
-          });
-        }
-      });
-      editor.add({
-        name: "autocrypt_sessions",
-        description: "List open OpenCode projects and sessions when an email asks which session or project is active.",
-        input: { type: "object", properties: {}, additionalProperties: false },
-        execute: async () => {
-          if (!runtime.bridge) return { content: "The Autocrypt bridge is not configured" };
-          const catalog = await runtime.bridge.listSessions();
-          return { content: formatSessionDirectory(catalog, catalog.boundSessionID) };
-        }
-      });
-    });
-    await restart();
-    return async () => {
-      runtime.bridge?.stop();
-      await tool.dispose();
-      await runtime.registration.dispose();
-    };
+    return run4;
   }
 });
+async function setupInstance(ctx, slot) {
+  if (slot.activeDispose) {
+    const previous = slot.activeDispose;
+    slot.activeDispose = null;
+    await previous().catch(() => {
+    });
+  }
+  const options2 = ctx.options || {};
+  const optionValues = storedSettings(options2);
+  let stored = storedSettings(await ctx.storage.get(STORAGE_KEY));
+  const runtime = { cfg: null, bridge: null, registration: null, configError: "" };
+  const configFrom = (values2) => loadConfig({ ...options2, ...values2 }, process.env);
+  const statusView = (status) => ({
+    running: false,
+    address: "",
+    pinnedContact: "",
+    pinnedFingerprint: "",
+    learnedFingerprint: "",
+    established: false,
+    verified: false,
+    handshake: "idle",
+    lastError: "",
+    sessionID: "",
+    sessionTitle: "",
+    sessionDirectory: "",
+    sessionProjectID: "",
+    ...status,
+    configured: Boolean(runtime.cfg)
+  });
+  const visibleValues = () => ({ ...optionValues, ...stored });
+  const unconfiguredStatus = () => {
+    const view = settingsView(visibleValues());
+    return statusView({
+      address: view.address,
+      pinnedContact: view.pinnedContact,
+      pinnedFingerprint: view.pinnedFingerprint,
+      handshake: "unconfigured",
+      lastError: runtime.configError || "Finish setup in Settings \u2192 Autocrypt Bridge"
+    });
+  };
+  const emit = (name, data) => {
+    if (!runtime.registration) return;
+    const eventName = typeof name === "string" ? name : "status";
+    const payload = typeof name === "string" ? data : statusView(name);
+    if (!payload) return;
+    void runtime.registration.events.emit(eventName, payload).catch(() => {
+    });
+  };
+  const currentStatus = async () => runtime.bridge ? statusView(await runtime.bridge.getStatus()) : unconfiguredStatus();
+  const restart = async () => {
+    runtime.bridge?.stop();
+    runtime.bridge = null;
+    stored = storedSettings(await ctx.storage.get(STORAGE_KEY));
+    try {
+      runtime.cfg = configFrom(stored);
+      runtime.configError = "";
+      runtime.bridge = await createBridge(ctx, runtime.cfg, {
+        onStatus: emit,
+        onQuestion: (question) => emit("question", question),
+        onQuestionAnswer: (answer) => emit("questionAnswer", answer)
+      });
+      runtime.bridge.start();
+    } catch (error) {
+      runtime.cfg = null;
+      runtime.configError = error.message;
+      emit(unconfiguredStatus());
+    }
+    return currentStatus();
+  };
+  runtime.registration = await ctx.rpc.register(BridgeRpc, {
+    getSettings: async () => settingsView(visibleValues()),
+    updateSettings: async (input) => {
+      const values2 = { ...stored };
+      if (values2.inviteUrl) values2.inviteUrl = redactInviteUrl(values2.inviteUrl);
+      for (const key5 of SETTING_KEYS) {
+        const value3 = input[key5];
+        if (value3 === void 0 || value3 === null) continue;
+        if (SECRET_KEYS.has(key5) && value3 === "") continue;
+        let storedValue = value3;
+        if (key5 === "inviteUrl" && value3) storedValue = redactInviteUrl(value3);
+        else if (HOST_KEYS.has(key5)) storedValue = normalizeHost(value3);
+        if (storedValue === "") delete values2[key5];
+        else values2[key5] = storedValue;
+      }
+      await ctx.storage.set(STORAGE_KEY, values2);
+      stored = values2;
+      return restart();
+    },
+    getStatus: currentStatus,
+    parseInvite: async (input) => {
+      const invite = parseInviteUrl(input.invite);
+      if (!invite) throw new Error("Empty invite URL");
+      return {
+        fingerprint: invite.fingerprint,
+        address: invite.address,
+        name: invite.name,
+        version: invite.version
+      };
+    },
+    startHandshake: async () => {
+      if (!runtime.bridge) throw new Error("Autocrypt Bridge is not configured");
+      return runtime.bridge.startHandshake();
+    },
+    rescanInbox: async () => {
+      if (!runtime.bridge) throw new Error("Autocrypt Bridge is not configured");
+      return runtime.bridge.rescanInbox();
+    },
+    resetContact: async () => {
+      if (!runtime.bridge) throw new Error("Autocrypt Bridge is not configured");
+      return runtime.bridge.resetContact();
+    },
+    listSessions: async () => runtime.bridge ? runtime.bridge.listSessions() : { sessions: [], projects: [], boundSessionID: "", defaultSessionID: "" },
+    bindSession: async (input) => {
+      if (!runtime.bridge) throw new Error("Autocrypt Bridge is not configured");
+      return runtime.bridge.bindSession(input.sessionID);
+    },
+    createSession: async (input) => {
+      if (!runtime.bridge) throw new Error("Autocrypt Bridge is not configured");
+      const result3 = await runtime.bridge.createAndBindSession(input.title, input.directory);
+      return result3.status;
+    },
+    reportQuestionReply: async (input) => {
+      if (!runtime.bridge) throw new Error("Autocrypt Bridge is not configured");
+      await runtime.bridge.confirmQuestionReply({
+        formID: input.formID,
+        ok: Boolean(input.ok),
+        error: String(input.error || "")
+      });
+      return { accepted: true };
+    }
+  });
+  const tool = await ctx.tool.transform((editor) => {
+    editor.add({
+      name: "autocrypt_send_file",
+      description: "Send a file from the current project as an OpenPGP/MIME attachment to this session\u2019s email contact.",
+      input: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Project-relative or absolute file path" },
+          text: { type: "string", description: "Optional caption" }
+        },
+        required: ["path"],
+        additionalProperties: false
+      },
+      execute: async (input, context3) => {
+        if (!runtime.bridge) return { content: "The Autocrypt bridge is not configured" };
+        return runtime.bridge.sendFile({
+          sessionID: context3.sessionID,
+          filePath: input.path,
+          text: input.text
+        });
+      }
+    });
+    editor.add({
+      name: "autocrypt_sessions",
+      description: "List open OpenCode projects and sessions when an email asks which session or project is active.",
+      input: { type: "object", properties: {}, additionalProperties: false },
+      execute: async () => {
+        if (!runtime.bridge) return { content: "The Autocrypt bridge is not configured" };
+        const catalog = await runtime.bridge.listSessions();
+        return { content: formatSessionDirectory(catalog, catalog.boundSessionID) };
+      }
+    });
+  });
+  await restart();
+  let disposed = false;
+  const dispose = async () => {
+    if (disposed) return;
+    disposed = true;
+    runtime.bridge?.stop();
+    await tool.dispose();
+    await runtime.registration.dispose();
+    if (slot.activeDispose === dispose) slot.activeDispose = null;
+  };
+  slot.activeDispose = dispose;
+  return dispose;
+}
 /*! Bundled license information:
 
 he/he.js:
