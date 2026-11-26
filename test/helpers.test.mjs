@@ -1,0 +1,205 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { autocryptHeader, unfold, parseAutocryptHeader, parseInviteUrl, redactInviteUrl } from '../src/headers.js'
+import { buildInnerMime, buildPgpMime, buildMail, parseRawHeaders, contentTypeOf } from '../src/mime.js'
+import { loadConfig, normalizeHost } from '../src/config.js'
+
+test('autocrypt header folds keydata and unfolds cleanly', () => {
+  const key = 'A'.repeat(200)
+  const header = autocryptHeader('bot@example.org', key, true)
+  assert.ok(header.startsWith('addr=bot@example.org; prefer-encrypt=mutual; keydata='))
+  assert.ok(header.includes('\r\n '))
+  assert.equal(unfold(header).endsWith(`keydata=${key}`), true)
+})
+
+test('autocrypt header parses peer key and mutual preference', () => {
+  const header = autocryptHeader('peer@example.net', 'QUJDRA==', true)
+  const parsed = parseAutocryptHeader(header, 'peer@example.net')
+  assert.deepEqual(parsed, { addr: 'peer@example.net', keydata: 'QUJDRA==', preferEncrypt: true })
+  assert.equal(parseAutocryptHeader(header, 'other@example.net'), undefined)
+})
+
+test('inner MIME carries text and a jpeg attachment', () => {
+  const mime = buildInnerMime({
+    text: 'hello',
+    attachments: [{ filename: 'photo.jpg', contentType: 'image/jpeg', content: Buffer.from([1, 2, 3]) }],
+  })
+  const entity = mime.entity.toString('utf8')
+  assert.match(entity, /Content-Type: multipart\/mixed; boundary=/)
+  assert.match(entity, /Content-Type: text\/plain; charset=utf-8/)
+  assert.match(entity, /Content-Type: image\/jpeg; charset=utf-8; name="photo.jpg"/)
+  assert.match(entity, /Content-Disposition: attachment; filename="photo.jpg"/)
+  assert.equal(Buffer.from('aGVsbG8=', 'base64').toString('utf8'), 'hello')
+})
+
+test('PGP/MIME wrapper has both required parts', () => {
+  const wrapper = buildPgpMime('-----BEGIN PGP MESSAGE-----\nabc\n-----END PGP MESSAGE-----')
+  const text = wrapper.body.toString('utf8')
+  assert.match(wrapper.contentType, /multipart\/encrypted/)
+  assert.match(text, /Content-Type: application\/pgp-encrypted/)
+  assert.match(text, /Version: 1/)
+  assert.match(text, /Content-Type: application\/octet-stream/)
+})
+
+test('outer mail always keeps Autocrypt and the client marker, with no invite-protocol headers', () => {
+  const cfg = {
+    address: 'bot@example.org',
+    displayName: 'Bridge',
+    key: { preferEncryptMutual: true },
+  }
+  const raw = buildMail({
+    cfg,
+    to: 'me@example.net',
+    subject: 'Message from Bridge',
+    messageId: '123@example.org',
+    publicB64: 'QUJD',
+    inReplyTo: '<prev@example.net>',
+    contentType: 'text/plain',
+    body: Buffer.from('hi'),
+  })
+  const headers = parseRawHeaders(raw)
+  assert.equal(headers.get('in-reply-to'), '<prev@example.net>')
+  assert.equal(headers.get('x-opencode-autocrypt-bridge'), '1')
+  assert.equal(headers.get('chat-version'), '1.0')
+  assert.equal(headers.get('secure-join'), undefined)
+  assert.equal(headers.get('secure-join-auth'), undefined)
+  assert.match(headers.get('autocrypt'), /keydata=QUJD/)
+})
+
+test('content type detection for requested formats', () => {
+  assert.equal(contentTypeOf('photo.jpg'), 'image/jpeg')
+  assert.equal(contentTypeOf('page.html'), 'text/html')
+  assert.equal(contentTypeOf('unknown.bin'), 'application/octet-stream')
+})
+
+const baseEnv = {
+  AC_ADDRESS: 'bot@example.org',
+  AC_IMAP_HOST: 'imap.example.org',
+  AC_IMAP_PASSWORD: 'secret',
+  AC_SMTP_HOST: 'smtp.example.org',
+  AC_SMTP_PASSWORD: 'secret',
+}
+
+test('host fields accept hostnames but strip URL schemes and paths', () => {
+  assert.equal(normalizeHost('https://imap.example.org:993/'), 'imap.example.org:993')
+  assert.equal(normalizeHost(' IMAP.Example.Org '), 'imap.example.org')
+  const cfg = loadConfig({
+    address: 'bot@example.org',
+    imapHost: 'https://imap.example.org/',
+    imapPassword: 'secret',
+    smtpHost: 'http://smtp.example.org:587/path',
+    smtpPassword: 'secret',
+    pinnedContact: 'me@example.net',
+    pinnedFingerprint: '669AE77C1D829C65258FC4F8F220CFCAEAA9A4CE',
+  }, {})
+  assert.equal(cfg.imap.host, 'imap.example.org')
+  assert.equal(cfg.smtp.host, 'smtp.example.org:587')
+})
+
+test('config reads env and requires a pinned gate', () => {
+  const cfg = loadConfig({}, {
+    ...baseEnv,
+    AC_PINNED_CONTACT: 'me@example.net',
+    AC_PINNED_FINGERPRINT: '669AE77C1D829C65258FC4F8F220CFCAEAA9A4CE',
+  })
+  assert.equal(cfg.address, 'bot@example.org')
+  assert.equal(cfg.imap.port, 993)
+  assert.equal(cfg.smtp.port, 465)
+  assert.deepEqual(cfg.allowedContacts, ['me@example.net'])
+  assert.throws(() => loadConfig({}, {}), /pinnedContact is required/)
+  assert.throws(() => loadConfig({}, { ...baseEnv }), /pinnedContact is required/)
+  assert.throws(() => loadConfig({}, { ...baseEnv, AC_PINNED_CONTACT: 'me@example.net' }), /requires pinnedFingerprint/)
+})
+
+const fingerprint = '669AE77C1D829C65258FC4F8F220CFCAEAA9A4CE'
+
+test('pinned fingerprint can be pasted from an invite-style URI', () => {
+  const link = `#${fingerprint}&v=3&i=abc&s=def&a=me%40example.net`
+  const cfg = loadConfig({}, {
+    ...baseEnv,
+    AC_PINNED_CONTACT: 'me@example.net',
+    AC_PINNED_FINGERPRINT: link,
+  })
+  assert.equal(cfg.pinned.fingerprint, fingerprint)
+  assert.equal(cfg.pinned.keyB64, '')
+})
+
+test('invite URL parsing exposes only public pin fields', () => {
+  const url = `https://example.org/#${fingerprint}&v=3&i=NJFZBXGwoQh6B_kDQlJrj2nP&s=secret&a=me%40example.net&n=Me`
+  const invite = parseInviteUrl(url)
+  assert.deepEqual(invite, {
+    fingerprint,
+    address: 'me@example.net',
+    name: 'Me',
+    version: '3',
+  })
+  assert.equal(parseInviteUrl(`OPENPGP4FPR:${fingerprint}%23v=3&s=secret`).fingerprint, fingerprint)
+  assert.equal(parseInviteUrl(`#${fingerprint}&a=me%40example.net`).address, 'me@example.net')
+  assert.equal(parseInviteUrl(`#${fingerprint}&s=secret`).version, '')
+  assert.throws(() => parseInviteUrl('#nope&a=me%40example.net'), /Invalid OpenPGP fingerprint/)
+})
+
+test('invite URL redaction hides secrets and is stable', () => {
+  const url = `https://example.org/#${fingerprint}&v=3&i=NJFZBXGwoQh6B_kDQlJrj2nP&s=secret&a=me%40example.net&n=Me`
+  const redacted = redactInviteUrl(url)
+  assert.equal(redacted, `https://example.org/#${fingerprint}&v=3&a=me%40example.net&n=Me`)
+  assert.equal(redactInviteUrl(redacted), redacted)
+  assert.doesNotMatch(redacted, /secret|NJFZBXGwoQh6B_kDQlJrj2nP/)
+  assert.equal(redactInviteUrl(`OPENPGP4FPR:${fingerprint}%23v=3&s=secret`), `OPENPGP4FPR:${fingerprint}%23v=3`)
+})
+
+test('invite URL must agree with the pinned gate', () => {
+  const env = {
+    ...baseEnv,
+    AC_PINNED_CONTACT: 'me@example.net',
+    AC_PINNED_FINGERPRINT: fingerprint,
+  }
+  assert.equal(loadConfig({}, { ...env, AC_INVITE_URL: `#${fingerprint}&a=me%40example.net` }).pinned.invite.address, 'me@example.net')
+  assert.throws(
+    () => loadConfig({}, { ...env, AC_INVITE_URL: `#${'1'.repeat(40)}&a=me%40example.net` }),
+    /invite fingerprint does not match/,
+  )
+  assert.throws(
+    () => loadConfig({}, { ...env, AC_INVITE_URL: `#${fingerprint}&a=other%40example.net` }),
+    /invite address does not match/,
+  )
+})
+
+test('config keeps invite tokens out of stored settings', () => {
+  const cfg = loadConfig({}, {
+    ...baseEnv,
+    AC_PINNED_CONTACT: 'me@example.net',
+    AC_INVITE_URL: `#${fingerprint}&v=3&i=abc&s=secret&a=me%40example.net`,
+  })
+  assert.equal(cfg.pinned.contact, 'me@example.net')
+  assert.equal(cfg.pinned.fingerprint, fingerprint)
+  assert.equal(cfg.pinned.inviteUrl, `#${fingerprint}&v=3&a=me%40example.net`)
+  assert.deepEqual(Object.keys(cfg.pinned.invite).sort(), ['address', 'fingerprint', 'name', 'version'])
+  assert.equal(cfg.pinned.mode, undefined)
+})
+
+test('optional pinned key is still accepted alongside the fingerprint', () => {
+  const armored = [
+    '-----BEGIN PGP PUBLIC KEY BLOCK-----',
+    '',
+    'mQINBFo=',
+    '-----END PGP PUBLIC KEY BLOCK-----',
+  ].join('\n')
+  const cfg = loadConfig({}, {
+    ...baseEnv,
+    AC_PINNED_CONTACT: 'me@example.net',
+    AC_PINNED_FINGERPRINT: fingerprint,
+    AC_PINNED_CONTACT_KEY: armored,
+  })
+  assert.equal(cfg.pinned.fingerprint, fingerprint)
+  assert.equal(cfg.pinned.keyB64, 'mQINBFo=')
+
+  // Legacy key-only config still loads; the bridge derives its fingerprint at startup.
+  const keyOnly = loadConfig({}, {
+    ...baseEnv,
+    AC_PINNED_CONTACT: 'me@example.net',
+    AC_PINNED_CONTACT_KEY: 'QUJDRA==',
+  })
+  assert.equal(keyOnly.pinned.fingerprint, '')
+  assert.equal(keyOnly.pinned.keyB64, 'QUJDRA==')
+})

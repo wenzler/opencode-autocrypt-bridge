@@ -1,0 +1,11 @@
+node_modules/
+.opencode/deltachat-attachments/
+.opencode/autocrypt-attachments/
+*.log
+*.tgz
+.env
+.env.*
+*.key
+*.pem
+*.pub
+.DS_Store

@@ -1,0 +1,41 @@
+{
+  "name": "opencode-autocrypt-bridge",
+  "version": "0.3.3",
+  "type": "module",
+  "description": "OpenCode V2 IMAP/SMTP bridge with Autocrypt key discovery, OpenPGP/MIME, attachments and Desktop settings",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "exports": {
+    ".": "./dist/index.cjs",
+    "./rpc": "./src/rpc.js",
+    "./gui-experimental": "./dist/gui-experimental.cjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "build": "vite build && npm run build:server",
+    "build:gui": "vite build",
+    "build:server": "esbuild src/index.js --bundle --platform=node --format=cjs --target=node18 --define:import.meta.url=__filename --footer:js='module.exports = module.exports.default;' --outfile=dist/index.cjs --log-level=warning",
+    "prepack": "npm run build"
+  },
+  "files": [
+    "src",
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@opencode/plugin": "2.4.2",
+    "imapflow": "1.0.195",
+    "mailparser": "3.7.4",
+    "nodemailer": "7.0.6",
+    "openpgp": "6.3.3"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12",
+    "solid-js": "1.9.9",
+    "vite": "6.3.6",
+    "vite-plugin-solid": "2.11.8"
+  }
+}
