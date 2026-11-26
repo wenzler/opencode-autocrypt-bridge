@@ -1546,6 +1546,7 @@ export async function createBridge(ctx, cfg, options = {}) {
         const promptId = hashId(message.messageId)
         const text = [
           command?.rest || message.text || '(message contained no plain text)',
+          '--- Autocrypt bridge metadata (not user input) ---',
           `[Autocrypt email from ${from}${message.fromName ? ` (${message.fromName})` : ''}]`,
           `[OpenCode session: ${sessionID}${resolution.note ? ` — ${resolution.note}` : ''}]`,
           ...(message.attachments.length ? [`[Attachments: ${message.attachments.map((a) => a.filename).join(', ')}]`] : []),

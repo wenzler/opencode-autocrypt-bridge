@@ -128151,6 +128151,7 @@ ${command.rest}`;
         const promptId = hashId(message.messageId);
         const text = [
           command?.rest || message.text || "(message contained no plain text)",
+          "--- Autocrypt bridge metadata (not user input) ---",
           `[Autocrypt email from ${from}${message.fromName ? ` (${message.fromName})` : ""}]`,
           `[OpenCode session: ${sessionID}${resolution.note ? ` \u2014 ${resolution.note}` : ""}]`,
           ...message.attachments.length ? [`[Attachments: ${message.attachments.map((a) => a.filename).join(", ")}]`] : []
@@ -128749,7 +128750,7 @@ var BridgeRpc = rpc_exports.define({
 });
 
 // src/index.js
-var PLUGIN_VERSION = "0.5.20";
+var PLUGIN_VERSION = "0.5.21";
 var SETTING_KEYS = [
   "address",
   "displayName",
