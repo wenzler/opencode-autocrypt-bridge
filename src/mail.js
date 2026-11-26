@@ -319,14 +319,21 @@ export async function parseIncoming(raw, cfg, identity, log, pinned = cfg.pinned
     throw new Error('plaintext message rejected because AC_REQUIRE_ENCRYPTED is enabled')
   }
 
-  const receiptRequest = String(
-    rawHeaders.get('chat-disposition-notification-to') || rawHeaders.get('disposition-notification-to') || '',
-  ).toLowerCase()
-  const wantsReceipt = Boolean(cfg.address && receiptRequest.includes(String(cfg.address).toLowerCase()))
+  // Delta Chat puts Chat-Disposition-Notification-To in the encrypted inner
+  // MIME, and it names the sending contact (not this bridge). Plain MDN
+  // requests can also name either endpoint, so accept both.
+  const innerHeaders = parseRawHeaders(entity)
+  const receiptRequest = [
+    rawHeaders.get('chat-disposition-notification-to'),
+    rawHeaders.get('disposition-notification-to'),
+    innerHeaders.get('chat-disposition-notification-to'),
+    innerHeaders.get('disposition-notification-to'),
+  ].filter(Boolean).join(',').toLowerCase()
+  const receiptTargets = [cfg.address, sender].filter(Boolean).map((value) => String(value).toLowerCase())
+  const wantsReceipt = receiptTargets.some((target) => receiptRequest.includes(target))
   const receipt = parseDispositionNotification(entity)
 
   const parsed = await simpleParser(entity, { skipHtmlToText: true, skipTextToHtml: true })
-  const innerHeaders = parseRawHeaders(entity)
   const innerAutocrypt = parseAutocryptHeader(
     innerHeaders.get('autocrypt'),
     parsed.from?.value?.[0]?.address?.toLowerCase() || sender,

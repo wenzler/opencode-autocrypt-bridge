@@ -98,6 +98,39 @@ function contactMail(contact, { text = 'hello', messageId = '<contact-1@example.
   ].join('\r\n'))
 }
 
+async function encryptedContactMail(contact, bot, { text = 'hello', messageId = '<contact-encrypted@example.net>', innerHeaders = [] } = {}) {
+  const inner = Buffer.from([
+    'From: Contact <contact@example.net>',
+    'To: <bot@example.org>',
+    'Subject: Receipt test',
+    `Date: ${new Date().toUTCString()}`,
+    `Message-ID: ${messageId}`,
+    `Autocrypt: ${autocryptHeader('contact@example.net', contact.publicB64, true)}`,
+    ...innerHeaders,
+    'MIME-Version: 1.0',
+    'Content-Type: text/plain; charset=utf-8',
+    'Content-Transfer-Encoding: 7bit',
+    '',
+    text,
+    '',
+  ].join('\r\n'))
+  const armored = await encryptMime(inner, contact, [bot.publicB64])
+  const pgp = buildPgpMime(armored)
+  return Buffer.from([
+    'From: Contact <contact@example.net>',
+    'To: <bot@example.org>',
+    'Subject: Receipt test',
+    `Date: ${new Date().toUTCString()}`,
+    `Message-ID: ${messageId}`,
+    `Autocrypt: ${autocryptHeader('contact@example.net', contact.publicB64, true)}`,
+    'Chat-Version: 1.0',
+    `Content-Type: ${pgp.contentType}`,
+    '',
+    pgp.body,
+    '',
+  ].join('\r\n'))
+}
+
 function mdnMail(contact, originalMessageID) {
   return contactMail(contact, {
     text: 'This message is only a receipt.',
@@ -223,6 +256,32 @@ test('an inbound receipt request produces an encrypted Delta Chat MDN', async ()
   const statusReply = headers.find((entry) => entry.get('x-opencode-command') === 'session-command')
   assert.ok(statusReply, 'status command was still answered')
   assert.match(statusReply.get('subject'), /Receipt test/)
+})
+
+test('an encrypted inner Delta Chat receipt request produces exactly one MDN', async () => {
+  const bot = await keyPair('bot@example.org')
+  const contact = await keyPair('contact@example.net')
+  const h = harness(contact.fingerprint)
+  const bridge = await createBridge(h.ctx, h.cfg, {
+    identity: bot, sender: h.sender, log: () => {},
+  })
+
+  await bridge.process(await encryptedContactMail(contact, bot, {
+    text: '!status',
+    messageId: '<contact-inner-receipt@example.net>',
+    innerHeaders: ['Chat-Disposition-Notification-To: contact@example.net'],
+  }))
+
+  const headers = h.sent.map((entry) => parseRawHeaders(entry.raw))
+  const receipts = headers.filter((entry) => entry.get('subject') === 'Receipt Notification')
+  assert.equal(receipts.length, 1, 'exactly one MDN is sent')
+  const receiptIndex = headers.findIndex((entry) => entry.get('subject') === 'Receipt Notification')
+  const parsed = parseDispositionNotification(await decryptedSent(h.sent, receiptIndex, bot))
+  assert.deepEqual(parsed, {
+    disposition: 'manual-action/MDN-sent-automatically; displayed',
+    originalMessageID: '<contact-inner-receipt@example.net>',
+  })
+  assert.ok(headers.some((entry) => entry.get('x-opencode-command') === 'session-command'))
 })
 
 test('an inbound MDN confirms the outbound message without generating mail', async () => {

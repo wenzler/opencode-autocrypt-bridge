@@ -126531,13 +126531,17 @@ async function parseIncoming(raw, cfg, identity2, log2, pinned = cfg.pinned || {
   } else if (pinned.requireEncrypted) {
     throw new Error("plaintext message rejected because AC_REQUIRE_ENCRYPTED is enabled");
   }
-  const receiptRequest = String(
-    rawHeaders.get("chat-disposition-notification-to") || rawHeaders.get("disposition-notification-to") || ""
-  ).toLowerCase();
-  const wantsReceipt = Boolean(cfg.address && receiptRequest.includes(String(cfg.address).toLowerCase()));
+  const innerHeaders = parseRawHeaders(entity);
+  const receiptRequest = [
+    rawHeaders.get("chat-disposition-notification-to"),
+    rawHeaders.get("disposition-notification-to"),
+    innerHeaders.get("chat-disposition-notification-to"),
+    innerHeaders.get("disposition-notification-to")
+  ].filter(Boolean).join(",").toLowerCase();
+  const receiptTargets = [cfg.address, sender].filter(Boolean).map((value3) => String(value3).toLowerCase());
+  const wantsReceipt = receiptTargets.some((target) => receiptRequest.includes(target));
   const receipt = parseDispositionNotification(entity);
   const parsed = await (0, import_mailparser.simpleParser)(entity, { skipHtmlToText: true, skipTextToHtml: true });
-  const innerHeaders = parseRawHeaders(entity);
   const innerAutocrypt = parseAutocryptHeader(
     innerHeaders.get("autocrypt"),
     parsed.from?.value?.[0]?.address?.toLowerCase() || sender
@@ -128598,7 +128602,7 @@ var BridgeRpc = rpc_exports.define({
 });
 
 // src/index.js
-var PLUGIN_VERSION = "0.5.15";
+var PLUGIN_VERSION = "0.5.16";
 var SETTING_KEYS = [
   "address",
   "displayName",
