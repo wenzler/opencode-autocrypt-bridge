@@ -123,6 +123,35 @@ function mdnMail(contact, originalMessageID) {
   })
 }
 
+function quotedPrintableMdnMail(contact, originalMessageID) {
+  const bare = String(originalMessageID).replace(/^<|>$/g, '')
+  const split = Math.max(1, bare.indexOf('@') - 1)
+  const folded = `<${bare.slice(0, split)}=\r\n${bare.slice(split)}>`
+  return contactMail(contact, {
+    text: 'This message is only a receipt.',
+    messageId: '<mdn-quoted-printable@example.net>',
+    headers: [
+      'Subject: Receipt Notification',
+      'Chat-Version: 1.0',
+      'Auto-Submitted: auto-replied',
+      'Content-Type: multipart/report; report-type=disposition-notification; boundary="mdn-qp"',
+      '',
+      '--mdn-qp',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'This is a receipt notification.',
+      '--mdn-qp',
+      'Content-Type: message/disposition-notification; charset="utf-8"',
+      'Content-Transfer-Encoding: quoted-printable',
+      '',
+      `Original-Message-ID: ${folded}`,
+      'Disposition: manual-action/MDN-sent-automatically; displayed',
+      '--mdn-qp--',
+      '',
+    ],
+  })
+}
+
 async function encryptedMdnMail(contact, bot, originalMessageID) {
   const receipt = buildReadReceiptMime({ originalMessageID })
   const armored = await encryptMime(receipt.entity, contact, [bot.publicB64])
@@ -214,6 +243,28 @@ test('an inbound MDN confirms the outbound message without generating mail', asy
   assert.ok(state.sent[outboundID.replace(/^<|>$/g, '')].receiptAt)
   const status = await bridge.getStatus()
   assert.ok(status.lastReceiptAt > 0)
+})
+
+test('a quoted-printable Delta Chat MDN confirms the matching outbound message', async () => {
+  const bot = await keyPair('bot@example.org')
+  const contact = await keyPair('contact@example.net')
+  const h = harness(contact.fingerprint)
+  const bridge = await createBridge(h.ctx, h.cfg, {
+    identity: bot, sender: h.sender, log: () => {},
+  })
+
+  await bridge.process(contactMail(contact))
+  const outboundID = parseRawHeaders(h.sent[0].raw).get('message-id')
+  const mail = quotedPrintableMdnMail(contact, outboundID)
+  assert.equal(parseDispositionNotification(mail).originalMessageID, outboundID)
+
+  const before = h.sent.length
+  await bridge.process(mail)
+  await bridge.process(mail) // a rescan must backfill without a second mail
+  assert.equal(h.sent.length, before)
+  const state = h.values.get('autocrypt.state')
+  assert.ok(state.sent[outboundID.replace(/^<|>$/g, '')].receiptAt)
+  assert.ok((await bridge.getStatus()).lastReceiptAt > 0)
 })
 
 test('an encrypted Delta Chat MDN is recognized without generating another mail', async () => {

@@ -1356,13 +1356,14 @@ export async function createBridge(ctx, cfg, options = {}) {
       log(`Ignoring ${from}: waiting for SecureJoin verification`)
       return
     }
-    if (seenBefore(message.messageId)) return
-    await markSeen(message.messageId)
-
+    // MDNs are idempotent and must survive a rescan even after their message
+    // id was marked seen, so old receipts can be backfilled after a parser fix.
     if (message.mdn) {
       await handleReadReceipt(from, message.mdn)
       return
     }
+    if (seenBefore(message.messageId)) return
+    await markSeen(message.messageId)
 
     const command = parseSessionCommand(message.text)
     const { establishedNow } = await learnPeer(from, message.autocrypt)

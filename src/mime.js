@@ -210,6 +210,19 @@ export function headerValues(raw, name) {
   return values
 }
 
+function decodeTransferEncoding(value, encoding) {
+  const text = String(value || '')
+  if (/^\s*base64\s*$/i.test(encoding)) {
+    return Buffer.from(text.replace(/\s+/g, ''), 'base64').toString('latin1')
+  }
+  if (/^\s*quoted-printable\s*$/i.test(encoding)) {
+    return text
+      .replace(/=\r?\n/g, '')
+      .replace(/=([0-9a-f]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+  }
+  return text
+}
+
 /** Read the machine-readable part of an MDN, including Delta Chat's variant. */
 export function parseDispositionNotification(raw) {
   const text = (Buffer.isBuffer(raw) ? raw.toString('latin1') : String(raw || '')).replace(/\r\n/g, '\n')
@@ -229,7 +242,10 @@ export function parseDispositionNotification(raw) {
     if (partSeparator < 0) continue
     const partHeaders = parseRawHeaders(chunk.slice(0, partSeparator))
     if (!/^message\/disposition-notification/i.test(String(partHeaders.get('content-type') || ''))) continue
-    const fields = parseRawHeaders(chunk.slice(partSeparator + 2))
+    const fields = parseRawHeaders(decodeTransferEncoding(
+      chunk.slice(partSeparator + 2),
+      String(partHeaders.get('content-transfer-encoding') || ''),
+    ))
     const disposition = String(fields.get('disposition') || '')
     if (!disposition) continue
     return {
