@@ -12,8 +12,8 @@ export default Plugin.define({
       try {
         await rpc().bindSession({ sessionID })
         ctx.toast.show({
-          title: "Email bridge session bound",
-          description: `New email threads now use ${sessionID}.`,
+          title: "Email bridge session switched",
+          description: `A new email thread announces session ${sessionID}.`,
           variant: "success",
         })
       } catch (error) {
@@ -25,11 +25,11 @@ export default Plugin.define({
       }
     }
 
-    // Bind the session the user is looking at without a trip to Settings.
+    // Switch email to the session the user is looking at, without Settings.
     ctx.add(Command, {
       id: "bind-session",
-      title: "Bind this session to the email bridge",
-      description: "Use the current OpenCode session for new email threads.",
+      title: "Switch email bridge to this session",
+      description: "Send a new email thread that switches Delta Chat to this OpenCode session.",
       keywords: "autocrypt email bridge bind session mail",
       section: "session",
       get enabled() {
@@ -48,7 +48,7 @@ export default Plugin.define({
         <>
           <ui.MenuSeparator />
           <ui.MenuItem
-            label="Bind to email bridge"
+            label="Switch email to this session"
             onSelect={() => void bindCurrentSession(input.session.id)}
           />
         </>
@@ -86,8 +86,6 @@ export default Plugin.define({
       const [message, setMessage] = createSignal("")
       const [sessions, setSessions] = createSignal(null)
       const [sessionID, setSessionID] = createSignal("")
-      const [newTitle, setNewTitle] = createSignal("")
-      const [newDirectory, setNewDirectory] = createSignal("")
 
       const reload = async () => {
         try {
@@ -168,7 +166,7 @@ export default Plugin.define({
           ? `${bound.title} — ${bound.directory || bound.id}`
           : (catalog.boundSessionID || "(none)")
         const lines = [
-          `Email-bound session: ${boundLabel}`,
+          `Email session: ${boundLabel}`,
           `Projects: ${catalog.projects?.length || 0} · Sessions: ${catalog.sessions.length}`,
           "",
         ]
@@ -197,11 +195,7 @@ export default Plugin.define({
         return options
       }
 
-      const bindSession = () => run("Session bound", () => rpc().bindSession({ sessionID: sessionID().trim() }))
-      const createSession = () => run("Session created", () => rpc().createSession({
-        title: newTitle().trim(),
-        directory: newDirectory().trim(),
-      }))
+      const bindSession = () => run("Session switched", () => rpc().bindSession({ sessionID: sessionID().trim() }))
 
       const fillFromInvite = async () => {
         setBusy(true)
@@ -262,8 +256,6 @@ export default Plugin.define({
           keyPassphrase: value("keyPassphrase"),
           generateKey: checked("generateKey"),
           preferEncryptMutual: checked("preferEncryptMutual"),
-          defaultSessionID: value("defaultSessionID"),
-          defaultSessionDirectory: value("defaultSessionDirectory"),
           emailDecisions: checked("emailDecisions"),
           emailHighRiskDecisions: checked("emailHighRiskDecisions"),
           emailQuestions: checked("emailQuestions"),
@@ -497,7 +489,11 @@ export default Plugin.define({
                 </>
               }
             />
-            <ui.SettingsRow title="Bind email default to session" description="Pick the session by its title. Changes the session used by new, unthreaded email; existing subjects keep their own session.">
+            <ui.SettingsRow
+              id="emailSession"
+              title="Email session"
+              description="Pick any open session by title. Switching sends a new email thread whose subject selects that session; replies there continue it. Messages with no session marker use the contact's internal catch-all session."
+            >
               <div>
                 <ui.Select
                   label="Session"
@@ -507,20 +503,7 @@ export default Plugin.define({
                   placeholder={sessionOptions().length ? "Choose a session" : "No open sessions"}
                   disabled={busy() || !sessionOptions().length}
                 />
-                <ui.Button size="small" disabled={busy() || !sessionID().trim()} onClick={() => void bindSession()}>Bind session</ui.Button>
-              </div>
-            </ui.SettingsRow>
-            <ui.SettingsRow title="Create and bind a session" description="Creates a session in a listed project directory and makes it the email default.">
-              <div>
-                <ui.TextInput label="Session title" value={newTitle()} onInput={(v) => setNewTitle(v)} />
-                <ui.TextInput label="Project directory" value={newDirectory()} onInput={(v) => setNewDirectory(v)} placeholder="/path/to/project" />
-                <ui.Button size="small" disabled={busy() || !newTitle().trim()} onClick={() => void createSession()}>Create & bind</ui.Button>
-              </div>
-            </ui.SettingsRow>
-            <ui.SettingsRow title="Default session on startup" description="Optional. Overrides the auto-created email session; leave blank to keep the current behavior.">
-              <div>
-                <ui.TextInput label="Default session ID" value={value("defaultSessionID")} onInput={(v) => setField("defaultSessionID", v)} placeholder="ses_..." />
-                <ui.TextInput label="Default project directory" value={value("defaultSessionDirectory")} onInput={(v) => setField("defaultSessionDirectory", v)} placeholder="/path/to/project" />
+                <ui.Button size="small" disabled={busy() || !sessionID().trim()} onClick={() => void bindSession()}>Switch session</ui.Button>
               </div>
             </ui.SettingsRow>
           </ui.SettingsSection>
@@ -552,7 +535,7 @@ export default Plugin.define({
         { id: "remoteMode", title: "Remote type", keywords: "securejoin deltachat autocrypt" },
         { id: "inviteUrl", title: "Contact invite URL", keywords: "fingerprint prefill" },
         { id: "sessions", title: "Open sessions", keywords: "session project routing" },
-        { id: "defaultSessionID", title: "Default session", keywords: "session project binding" },
+        { id: "emailSession", title: "Email session", keywords: "session project binding switch" },
         { id: "emailDecisions", title: "Remote controls", keywords: "permission decision question answer watch danger" },
         { id: "emailHighRiskDecisions", title: "High-risk email approval", keywords: "danger shell file access" },
         { id: "emailReadReceipts", title: "Read receipts", keywords: "mdn receipt confirmation" },

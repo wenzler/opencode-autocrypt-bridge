@@ -31,8 +31,6 @@ const settingsProperties = {
   keyPassphrase: { type: 'string' },
   generateKey: { type: 'boolean' },
   preferEncryptMutual: { type: 'boolean' },
-  defaultSessionID: { type: 'string' },
-  defaultSessionDirectory: { type: 'string' },
   emailDecisions: { type: 'boolean' },
   emailHighRiskDecisions: { type: 'boolean' },
   emailQuestions: { type: 'boolean' },
@@ -131,7 +129,6 @@ const sessionsOutput = {
     sessions: { type: 'array', items: sessionInfo },
     projects: { type: 'array', items: projectInfo },
     boundSessionID: { type: 'string' },
-    defaultSessionID: { type: 'string' },
   },
   additionalProperties: false,
 }

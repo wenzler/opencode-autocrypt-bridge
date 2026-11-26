@@ -232,7 +232,6 @@ export async function createBridge(ctx, cfg, options = {}) {
       sessions,
       projects: [...projects.values()].sort((a, b) => b.updated - a.updated),
       boundSessionID: cfg.pinned.contact ? String(state.data.sessions[cfg.pinned.contact] || '') : '',
-      defaultSessionID: String(cfg.session?.defaultID || ''),
     }
   }
 
@@ -241,23 +240,42 @@ export async function createBridge(ctx, cfg, options = {}) {
     if (!candidate) throw new Error('sessionID is required')
     const catalog = await listSessions()
     let resolved = candidate
-    if (!await sessionExists(candidate)) {
+    let title = candidate
+    if (await sessionExists(candidate)) {
+      title = catalog.sessions.find((entry) => entry.id === candidate)?.title || candidate
+    } else {
       const match = resolveSessionRef(catalog.sessions, candidate)
       if (!match) throw new Error(`Unknown session "${candidate}"; use !sessions to list sessions`)
       resolved = match.id
+      title = match.title
     }
     if (cfg.pinned.contact) {
       state.data.sessions[cfg.pinned.contact] = resolved
       state.data.sessionContacts[resolved] = cfg.pinned.contact
     }
     await state.save()
+    // An active switch must be visible to the pinned contact. A new thread with
+    // a fresh subject marker is the only reliable way Delta Chat will carry it.
+    if (cfg.pinned.contact && allowed(cfg.pinned.contact)) {
+      await transmit({
+        to: cfg.pinned.contact,
+        sessionID: resolved,
+        subject: `Switched to ${title}`,
+        headers: ['X-OpenCode-Notice: session-binding'],
+        text: [
+          `OpenCode will use "${title}" for this email conversation.`,
+          'This is a new thread: replying here continues in that session.',
+          'Reply !sessions for the session list, or bind a session in the Desktop UI to switch again.',
+        ].join('\n'),
+      })
+    }
     onStatus(await getStatus())
     return getStatus()
   }
 
   async function createAndBindSession(title, directory, bindDefault = true) {
     const catalog = await listSessions()
-    const args = parseNewSessionArgs(catalog, title, directory || cfg.session?.defaultDirectory || ctx.location.directory)
+    const args = parseNewSessionArgs(catalog, title, directory || ctx.location.directory)
     if (!args.directory || !await sessionDirectoryExists(catalog, args.directory)) {
       throw new Error(`Unknown project directory "${args.directory}"; use !sessions to list projects`)
     }
@@ -329,17 +347,14 @@ export async function createBridge(ctx, cfg, options = {}) {
   }
 
   async function sessionFor(from) {
-    const configured = String(cfg.session?.defaultID || '').trim()
     const existing = String(state.data.sessions[from] || '').trim()
-    for (const candidate of [configured, existing]) {
-      if (candidate && await sessionExists(candidate)) {
-        state.data.sessions[from] = candidate
-        state.data.sessionContacts[candidate] = from
-        await state.save()
-        return candidate
-      }
+    if (existing && await sessionExists(existing)) {
+      state.data.sessions[from] = existing
+      state.data.sessionContacts[existing] = from
+      await state.save()
+      return existing
     }
-    const directory = String(cfg.session?.defaultDirectory || '').trim() || ctx.location.directory
+    const directory = ctx.location.directory
     const session = await ctx.session.create({
       title: `Autocrypt: ${from}`,
       location: { directory },
@@ -363,7 +378,7 @@ export async function createBridge(ctx, cfg, options = {}) {
         if (session?.location?.directory) return path.resolve(String(session.location.directory))
       } catch {}
     }
-    return path.resolve(String(cfg.session?.defaultDirectory || ctx.location.directory || '.'))
+    return path.resolve(String(ctx.location.directory || '.'))
   }
 
   const normalizeCode = (value) => String(value || '').trim().toUpperCase().replace(/^D-/, '')

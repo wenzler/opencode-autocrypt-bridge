@@ -139,10 +139,6 @@ export function loadConfig(options = {}, env = process.env) {
       invite,
       secureJoin,
     },
-    session: {
-      defaultID: String(get('defaultSessionID', 'AC_SESSION_ID', '')).trim(),
-      defaultDirectory: String(get('defaultSessionDirectory', 'AC_SESSION_DIRECTORY', '')).trim(),
-    },
     // Email remote controls. High-risk approvals stay off by default: the
     // bridge must never become a remote shell.
     remote: {

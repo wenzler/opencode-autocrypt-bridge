@@ -12,7 +12,6 @@ const SETTING_KEYS = [
   'secureJoinAuth', 'secureJoinName', 'secureJoinVersion', 'secureJoinRelays', 'secureJoinInviteNumber',
   'requireEncrypted',
   'pollIntervalMs', 'verifyCertificate', 'privateKeyArmored', 'keyPassphrase', 'generateKey', 'preferEncryptMutual',
-  'defaultSessionID', 'defaultSessionDirectory',
   'emailDecisions', 'emailHighRiskDecisions', 'emailQuestions',
   'emailPeek', 'emailTail', 'emailSendFiles', 'emailWatch', 'emailReadReceipts',
 ]
@@ -258,7 +257,7 @@ async function setupInstance(ctx, slot) {
       },
       listSessions: async () => (runtime.bridge
         ? runtime.bridge.listSessions()
-        : { sessions: [], projects: [], boundSessionID: '', defaultSessionID: '' }),
+        : { sessions: [], projects: [], boundSessionID: '' }),
       bindSession: async (input) => {
         if (!runtime.bridge) throw new Error('Autocrypt Bridge is not configured')
         return runtime.bridge.bindSession(input.sessionID)

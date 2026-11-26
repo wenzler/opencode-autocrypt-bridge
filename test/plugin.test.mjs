@@ -165,17 +165,14 @@ test('session RPC and agent tool are registered for project awareness', async ()
   assert.ok(Array.isArray(catalog.sessions))
   assert.ok(Array.isArray(catalog.projects))
   assert.equal(catalog.boundSessionID, '')
+  assert.equal(catalog.defaultSessionID, undefined)
 
   const status = await handlers.getStatus({})
   assert.equal(status.sessionID, '')
 
-  await handlers.updateSettings({
-    defaultSessionID: 'ses_example',
-    defaultSessionDirectory: '/tmp/project',
-  })
   const saved = await handlers.getSettings({})
-  assert.equal(saved.defaultSessionID, 'ses_example')
-  assert.equal(saved.defaultSessionDirectory, '/tmp/project')
+  assert.equal(saved.defaultSessionID, undefined)
+  assert.equal(saved.defaultSessionDirectory, undefined)
 
   await dispose()
 })

@@ -303,3 +303,17 @@ test('Autocrypt mode keeps the legacy request and does not expose SecureJoin', a
   assert.equal(parseRawHeaders(Buffer.from(h.sent[0].raw)).get('x-opencode-handshake'), 'autocrypt-request')
   assert.equal((await h.bridge.getStatus()).remoteMode, 'autocrypt')
 })
+
+test('binding a session announces a new thread with the switched subject', async () => {
+  const contact = await keyPair('contact@example.net')
+  const h = await makeBridge(contact)
+  await h.bridge.bindSession('session-1')
+  assert.equal(h.sent.length, 1)
+  const headers = parseRawHeaders(Buffer.from(h.sent[0].raw))
+  assert.match(headers.get('subject'), /Switched to SecureJoin/)
+  assert.match(headers.get('subject'), /\[session:session-1\]/)
+  assert.equal(headers.get('in-reply-to'), undefined)
+  assert.equal(headers.get('references'), undefined)
+  assert.equal(headers.get('x-opencode-notice'), 'session-binding')
+  assert.equal((await h.bridge.getStatus()).sessionID, 'session-1')
+})

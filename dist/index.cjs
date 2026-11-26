@@ -126874,8 +126874,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
     return {
       sessions,
       projects: [...projects.values()].sort((a, b) => b.updated - a.updated),
-      boundSessionID: cfg.pinned.contact ? String(state.data.sessions[cfg.pinned.contact] || "") : "",
-      defaultSessionID: String(cfg.session?.defaultID || "")
+      boundSessionID: cfg.pinned.contact ? String(state.data.sessions[cfg.pinned.contact] || "") : ""
     };
   }
   async function bindSession(sessionID) {
@@ -126883,22 +126882,39 @@ async function createBridge(ctx, cfg, options2 = {}) {
     if (!candidate) throw new Error("sessionID is required");
     const catalog = await listSessions();
     let resolved = candidate;
-    if (!await sessionExists(candidate)) {
+    let title = candidate;
+    if (await sessionExists(candidate)) {
+      title = catalog.sessions.find((entry) => entry.id === candidate)?.title || candidate;
+    } else {
       const match8 = resolveSessionRef(catalog.sessions, candidate);
       if (!match8) throw new Error(`Unknown session "${candidate}"; use !sessions to list sessions`);
       resolved = match8.id;
+      title = match8.title;
     }
     if (cfg.pinned.contact) {
       state.data.sessions[cfg.pinned.contact] = resolved;
       state.data.sessionContacts[resolved] = cfg.pinned.contact;
     }
     await state.save();
+    if (cfg.pinned.contact && allowed(cfg.pinned.contact)) {
+      await transmit({
+        to: cfg.pinned.contact,
+        sessionID: resolved,
+        subject: `Switched to ${title}`,
+        headers: ["X-OpenCode-Notice: session-binding"],
+        text: [
+          `OpenCode will use "${title}" for this email conversation.`,
+          "This is a new thread: replying here continues in that session.",
+          "Reply !sessions for the session list, or bind a session in the Desktop UI to switch again."
+        ].join("\n")
+      });
+    }
     onStatus(await getStatus());
     return getStatus();
   }
   async function createAndBindSession(title, directory, bindDefault = true) {
     const catalog = await listSessions();
-    const args2 = parseNewSessionArgs(catalog, title, directory || cfg.session?.defaultDirectory || ctx.location.directory);
+    const args2 = parseNewSessionArgs(catalog, title, directory || ctx.location.directory);
     if (!args2.directory || !await sessionDirectoryExists(catalog, args2.directory)) {
       throw new Error(`Unknown project directory "${args2.directory}"; use !sessions to list projects`);
     }
@@ -126966,17 +126982,14 @@ async function createBridge(ctx, cfg, options2 = {}) {
     };
   }
   async function sessionFor(from) {
-    const configured = String(cfg.session?.defaultID || "").trim();
     const existing = String(state.data.sessions[from] || "").trim();
-    for (const candidate of [configured, existing]) {
-      if (candidate && await sessionExists(candidate)) {
-        state.data.sessions[from] = candidate;
-        state.data.sessionContacts[candidate] = from;
-        await state.save();
-        return candidate;
-      }
+    if (existing && await sessionExists(existing)) {
+      state.data.sessions[from] = existing;
+      state.data.sessionContacts[existing] = from;
+      await state.save();
+      return existing;
     }
-    const directory = String(cfg.session?.defaultDirectory || "").trim() || ctx.location.directory;
+    const directory = ctx.location.directory;
     const session = await ctx.session.create({
       title: `Autocrypt: ${from}`,
       location: { directory }
@@ -126999,7 +127012,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
       } catch {
       }
     }
-    return import_node_path3.default.resolve(String(cfg.session?.defaultDirectory || ctx.location.directory || "."));
+    return import_node_path3.default.resolve(String(ctx.location.directory || "."));
   }
   const normalizeCode = (value3) => String(value3 || "").trim().toUpperCase().replace(/^D-/, "");
   function formFieldView(fields) {
@@ -128211,10 +128224,6 @@ function loadConfig(options2 = {}, env = process.env) {
       invite,
       secureJoin
     },
-    session: {
-      defaultID: String(get6("defaultSessionID", "AC_SESSION_ID", "")).trim(),
-      defaultDirectory: String(get6("defaultSessionDirectory", "AC_SESSION_DIRECTORY", "")).trim()
-    },
     // Email remote controls. High-risk approvals stay off by default: the
     // bridge must never become a remote shell.
     remote: {
@@ -128294,8 +128303,6 @@ var settingsProperties = {
   keyPassphrase: { type: "string" },
   generateKey: { type: "boolean" },
   preferEncryptMutual: { type: "boolean" },
-  defaultSessionID: { type: "string" },
-  defaultSessionDirectory: { type: "string" },
   emailDecisions: { type: "boolean" },
   emailHighRiskDecisions: { type: "boolean" },
   emailQuestions: { type: "boolean" },
@@ -128387,8 +128394,7 @@ var sessionsOutput = {
   properties: {
     sessions: { type: "array", items: sessionInfo },
     projects: { type: "array", items: projectInfo },
-    boundSessionID: { type: "string" },
-    defaultSessionID: { type: "string" }
+    boundSessionID: { type: "string" }
   },
   additionalProperties: false
 };
@@ -128596,8 +128602,6 @@ var SETTING_KEYS = [
   "keyPassphrase",
   "generateKey",
   "preferEncryptMutual",
-  "defaultSessionID",
-  "defaultSessionDirectory",
   "emailDecisions",
   "emailHighRiskDecisions",
   "emailQuestions",
@@ -128823,7 +128827,7 @@ async function setupInstance(ctx, slot) {
       if (!runtime.bridge) throw new Error("Autocrypt Bridge is not configured");
       return runtime.bridge.resetContact();
     },
-    listSessions: async () => runtime.bridge ? runtime.bridge.listSessions() : { sessions: [], projects: [], boundSessionID: "", defaultSessionID: "" },
+    listSessions: async () => runtime.bridge ? runtime.bridge.listSessions() : { sessions: [], projects: [], boundSessionID: "" },
     bindSession: async (input) => {
       if (!runtime.bridge) throw new Error("Autocrypt Bridge is not configured");
       return runtime.bridge.bindSession(input.sessionID);

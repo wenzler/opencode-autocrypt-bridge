@@ -88,9 +88,9 @@ The bridge is aware of all OpenCode sessions visible to the server, grouped by p
 1. an explicit command on the first line (`!use`, `!new`, `!default`);
 2. the `[session:ses_…]` marker in the subject;
 3. `In-Reply-To` / `References` matching a message the bridge previously sent;
-4. the default session bound to the pinned contact.
+4. the contact-specific `Autocrypt: <contact>` catch-all session, created on first use.
 
-All outbound replies replace any stale marker with the session actually used, so a Delta Chat reply keeps pointing at the right session. The subject may look like:
+All outbound replies replace any stale marker with the session actually used, so a Delta Chat reply keeps pointing at the right session. Opening OpenCode never changes that binding; only an explicit switch does. The subject may look like:
 
 ```text
 Re: Build the parser [session:ses_de802e102]
@@ -103,7 +103,7 @@ Send these commands from the pinned contact. They are IRC-style leading `!` line
 | `!sessions` | List open projects and sessions with their ids; aliases: `!list`, `!projects` | always |
 | `!use <session-id> [question]` | Continue this email thread in another session; remaining text becomes the prompt. Alias: `!session` | always |
 | `!new <title> in <project-directory>` | Create a session in a listed project and use it for this thread. Alias: `!create` | always |
-| `!default` | Return this thread to the email-bound default session. Alias: `!reset` | always |
+| `!default` | Return this thread to the contact's catch-all session. Alias: `!reset` | always |
 | `!status` | Show the bound session, encryption state, and remote-control gates | always |
 | `!help` | Show the full command list and gate state; aliases: `!commands`, `!shortcuts` | always |
 | `!approve <code> once\|always` | Answer a stalled OpenCode permission request. Alias: `!decide` | permission decisions |
@@ -115,7 +115,7 @@ Send these commands from the pinned contact. They are IRC-style leading `!` line
 | `!watch [session-id]` | Email completion, failure, idle and decision notices for a session | watch |
 | `!unwatch` | Stop notices for this contact | watch |
 
-Session switches affect the email thread, not the global default. Use **Settings → Autocrypt Bridge → Sessions** to pick the default session by its title, create a session in a listed project, or set a startup default. While working in a session you can also run **Bind this session to the email bridge** from the command palette, or use the project/location menu’s **Bind to email bridge** item. The agent also gets an `autocrypt_sessions` tool so it can answer questions about open projects live.
+Session switches affect the email thread, not any global default. Use **Settings → Autocrypt Bridge → Email session** to pick an open session by title; switching sends a new email thread with a fresh subject so Delta Chat continues in that session. While working in a session you can also run **Switch email bridge to this session** from the command palette, or use the project/location menu’s **Switch email to this session** item. A message with no session marker falls back to the contact's internal `Autocrypt: <contact>` catch-all. New sessions are created from the Desktop UI or with `!new <title> in <project>` from email. The agent also gets an `autocrypt_sessions` tool so it can answer questions about open projects live.
 
 ## Stalled decisions and multiple-choice questions
 
@@ -153,7 +153,7 @@ OPENPGP4FPR:FPR#v=3&s=AUTHCODE&a=you%40example.org&n=Bot+contact
 - generated/imported OpenPGP identity and mutual-encryption preference;
 - TLS verification and IMAP poll interval;
 - live status via RPC events: configured/unconfigured state, remote mode, learned fingerprint, established state, fingerprint verification, SecureJoin status, bound session, last error;
-- **Sessions**: list open projects/sessions, bind the email default from a title dropdown, create a session in a listed project, optional startup default; plus a session-screen command and location-menu item to bind the current session;
+- **Email session**: list open projects/sessions and switch the email thread to a session by title; the switch is announced as a new email thread. Session-screen command and location-menu item switch to the current session;
 - **Remote controls**: independent gates for permission decisions, high-risk email approval, questions, session output, terminal tail, project file sending, watch subscriptions, and read receipts;
 - **Rescan inbox**, **Reset contact**, and **Save & restart**.
 
@@ -195,8 +195,6 @@ All fields can be set in the GUI, in the `options` object, or with environment v
 | `prefer-encrypt=mutual` / `preferEncryptMutual` | `AC_PREFER_ENCRYPT_MUTUAL` | Advertise mutual encryption | `true` |
 | Imported private key / `privateKeyArmored` | `AC_PRIVATE_KEY` | Armored bot private key | generated on first run |
 | Key passphrase / `keyPassphrase` | `AC_KEY_PASSPHRASE` | Passphrase for imported key | none |
-| Default session / `defaultSessionID` | `AC_SESSION_ID` | Start with this existing OpenCode session instead of auto-creating one | empty |
-| Default project / `defaultSessionDirectory` | `AC_SESSION_DIRECTORY` | Directory used when auto-creating the email session | plugin location |
 | Permission decisions / `emailDecisions` | `AC_EMAIL_DECISIONS` | Allow `!approve` and `!deny` for low/medium-risk requests | `true` |
 | High-risk email approval / `emailHighRiskDecisions` | `AC_EMAIL_HIGH_RISK_DECISIONS` | DANGER: allow email approval of shell-like actions and out-of-project file access | `false` |
 | Multiple-choice answers / `emailQuestions` | `AC_EMAIL_QUESTIONS` | Allow `!answer` to complete native question forms via Desktop IPC | `true` |
