@@ -115,7 +115,7 @@ Send these commands from the pinned contact. They are IRC-style leading `!` line
 | `!watch [session-id]` | Email completion, failure, idle and decision notices for a session | watch |
 | `!unwatch` | Stop notices for this contact | watch |
 
-Session switches affect the email thread, not the global default. Use **Settings → Autocrypt Bridge → Sessions** to bind the default session, create a session in a listed project, or set a startup default. The agent also gets an `autocrypt_sessions` tool so it can answer questions about open projects live.
+Session switches affect the email thread, not the global default. Use **Settings → Autocrypt Bridge → Sessions** to pick the default session by its title, create a session in a listed project, or set a startup default. While working in a session you can also run **Bind this session to the email bridge** from the command palette, or use the project/location menu’s **Bind to email bridge** item. The agent also gets an `autocrypt_sessions` tool so it can answer questions about open projects live.
 
 ## Stalled decisions and multiple-choice questions
 
@@ -153,7 +153,7 @@ OPENPGP4FPR:FPR#v=3&s=AUTHCODE&a=you%40example.org&n=Bot+contact
 - generated/imported OpenPGP identity and mutual-encryption preference;
 - TLS verification and IMAP poll interval;
 - live status via RPC events: configured/unconfigured state, remote mode, learned fingerprint, established state, fingerprint verification, SecureJoin status, bound session, last error;
-- **Sessions**: list open projects/sessions, bind the email default, create a session in a listed project, optional startup default;
+- **Sessions**: list open projects/sessions, bind the email default from a title dropdown, create a session in a listed project, optional startup default; plus a session-screen command and location-menu item to bind the current session;
 - **Remote controls**: independent gates for permission decisions, high-risk email approval, questions, session output, terminal tail, project file sending, watch subscriptions, and read receipts;
 - **Rescan inbox**, **Reset contact**, and **Save & restart**.
 

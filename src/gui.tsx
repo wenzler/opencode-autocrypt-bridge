@@ -1,5 +1,5 @@
 import { createSignal, onCleanup, onMount } from "solid-js"
-import { Plugin, SettingsPage } from "@opencode/plugin/gui"
+import { Command, Plugin, SettingsPage, Slot } from "@opencode/plugin/gui"
 import { QuestionBridge } from "./question-ipc"
 import { BridgeRpc } from "./rpc.js"
 
@@ -7,6 +7,53 @@ export default Plugin.define({
   setup(ctx) {
     const rpc = () => ctx.client.rpc(BridgeRpc)
     const ui = ctx.ui
+
+    const bindCurrentSession = async (sessionID: string) => {
+      try {
+        await rpc().bindSession({ sessionID })
+        ctx.toast.show({
+          title: "Email bridge session bound",
+          description: `New email threads now use ${sessionID}.`,
+          variant: "success",
+        })
+      } catch (error) {
+        ctx.toast.show({
+          title: "Email bridge binding failed",
+          description: error?.message || String(error),
+          variant: "error",
+        })
+      }
+    }
+
+    // Bind the session the user is looking at without a trip to Settings.
+    ctx.add(Command, {
+      id: "bind-session",
+      title: "Bind this session to the email bridge",
+      description: "Use the current OpenCode session for new email threads.",
+      keywords: "autocrypt email bridge bind session mail",
+      section: "session",
+      get enabled() {
+        return Boolean(ctx.sessions.current())
+      },
+      run: () => {
+        const current = ctx.sessions.current()
+        if (current) void bindCurrentSession(current.id)
+      },
+    })
+
+    ctx.add(Slot, {
+      at: "session.location.menu",
+      order: 20,
+      render: (input) => (
+        <>
+          <ui.MenuSeparator />
+          <ui.MenuItem
+            label="Bind to email bridge"
+            onSelect={() => void bindCurrentSession(input.session.id)}
+          />
+        </>
+      ),
+    })
 
     // Email answers arrive as an RPC event. This window forwards them to the
     // main process, which is the only place with session.form.reply().
@@ -116,8 +163,12 @@ export default Plugin.define({
         const catalog = sessions()
         if (!catalog) return "Loading…"
         if (!catalog.sessions?.length) return "No open sessions found."
+        const bound = catalog.sessions.find((entry) => entry.id === catalog.boundSessionID)
+        const boundLabel = bound
+          ? `${bound.title} — ${bound.directory || bound.id}`
+          : (catalog.boundSessionID || "(none)")
         const lines = [
-          `Email-bound session: ${catalog.boundSessionID || "(none)"}`,
+          `Email-bound session: ${boundLabel}`,
           `Projects: ${catalog.projects?.length || 0} · Sessions: ${catalog.sessions.length}`,
           "",
         ]
@@ -127,10 +178,23 @@ export default Plugin.define({
             .filter((entry) => entry.projectID === project.id && entry.directory === project.directory)
             .slice(0, 12)
           for (const entry of inProject) {
-            lines.push(`  ${entry.id}  ${entry.title}${entry.id === catalog.boundSessionID ? "  [bound]" : ""}`)
+            const marker = entry.id === catalog.boundSessionID ? "  [bound]" : ""
+            lines.push(`  ${entry.title} — ${entry.id}${marker}`)
           }
         }
         return lines.join("\n")
+      }
+
+      const sessionOptions = () => {
+        const catalog = sessions()
+        const options = (catalog?.sessions || []).map((entry) => ({
+          value: entry.id,
+          label: `${entry.title}${entry.directory ? ` — ${entry.directory}` : ""}${entry.id === catalog?.boundSessionID ? "  (current)" : ""}`,
+        }))
+        if (catalog?.boundSessionID && !options.some((option) => option.value === catalog.boundSessionID)) {
+          options.unshift({ value: catalog.boundSessionID, label: `${catalog.boundSessionID}  (current)` })
+        }
+        return options
       }
 
       const bindSession = () => run("Session bound", () => rpc().bindSession({ sessionID: sessionID().trim() }))
@@ -227,7 +291,7 @@ export default Plugin.define({
           `SecureJoin version: ${current.secureJoin?.version || "3"}`,
           `Established: ${current.established ? "yes" : "no"}`,
           `Fingerprint verified: ${current.verified ? "yes" : "no"}`,
-          `Session: ${current.sessionID || "(none)"}${current.sessionTitle ? ` — ${current.sessionTitle}` : ""}`,
+          `Session: ${current.sessionTitle || current.sessionID || "(none)"}${current.sessionDirectory ? ` — ${current.sessionDirectory}` : ""}`,
           `Session directory: ${current.sessionDirectory || "(unknown)"}`,
           `State: ${current.handshake}`,
           `SecureJoin: ${current.secureJoin?.status || "idle"}`,
@@ -411,18 +475,38 @@ export default Plugin.define({
             <ui.SettingsRow title="Read receipts" description="Request encrypted read receipts for bridge mail and reply with an encrypted receipt when the pinned contact asks for one.">
               <ui.Switch label="Read receipts" hideLabel checked={checked("emailReadReceipts")} onChange={(v) => setField("emailReadReceipts", v)} />
             </ui.SettingsRow>
-            <ui.SettingsRow title="Command reference" description="Reply !help in the encrypted email thread for the live command list and current gate state.">
-              <ui.Code content={"!sessions · !use <id> · !new <title> in <project>\n!default · !status · !help\n!approve <code> once|always · !deny <code> [reason]\n!answer <code> <choice>[,choice][;choice…]\n!peek [session] [count] · !tail [lines]\n!send <project-file> · !watch [session] · !unwatch"} language="text" />
-            </ui.SettingsRow>
+            <ui.SettingsRow
+              title="Command reference"
+              description={
+                <>
+                  <ui.Markdown text="Reply !help in the encrypted email thread for the live command list and current gate state." />
+                  <ui.Code content={"!sessions · !use <id> · !new <title> in <project>\n!default · !status · !help\n!approve <code> once|always · !deny <code> [reason]\n!answer <code> <choice>[,choice][;choice…]\n!peek [session] [count] · !tail [lines]\n!send <project-file> · !watch [session] · !unwatch"} language="text" />
+                </>
+              }
+            />
           </ui.SettingsSection>
 
           <ui.SettingsSection title="Sessions">
-            <ui.SettingsRow id="sessions" title="Open projects and sessions" description="Every outbound email carries [session:ses_…] in its subject, so Delta Chat replies stay in that OpenCode session. Email commands: !sessions, !use <id>, !new <title> in <project>, !default, !status.">
-              <ui.Code content={sessionText()} language="text" />
-            </ui.SettingsRow>
-            <ui.SettingsRow title="Bind email default to session" description="Changes the session used by new, unthreaded email. Existing subjects keep their own session.">
+            <ui.SettingsRow
+              id="sessions"
+              title="Open projects and sessions"
+              description={
+                <>
+                  <ui.Markdown text="Every outbound email carries the session marker in its subject, so Delta Chat replies stay in that OpenCode session. Email commands: !sessions, !use <id>, !new <title> in <project>, !default, !status." />
+                  <ui.Code content={sessionText()} language="text" />
+                </>
+              }
+            />
+            <ui.SettingsRow title="Bind email default to session" description="Pick the session by its title. Changes the session used by new, unthreaded email; existing subjects keep their own session.">
               <div>
-                <ui.TextInput label="Session ID" value={sessionID()} onInput={(v) => setSessionID(v)} placeholder="ses_..." />
+                <ui.Select
+                  label="Session"
+                  options={sessionOptions()}
+                  value={sessionID() || undefined}
+                  onChange={(value) => setSessionID(value)}
+                  placeholder={sessionOptions().length ? "Choose a session" : "No open sessions"}
+                  disabled={busy() || !sessionOptions().length}
+                />
                 <ui.Button size="small" disabled={busy() || !sessionID().trim()} onClick={() => void bindSession()}>Bind session</ui.Button>
               </div>
             </ui.SettingsRow>
@@ -442,9 +526,15 @@ export default Plugin.define({
           </ui.SettingsSection>
 
           <ui.SettingsSection title="Status" footer={message() ? <ui.Markdown text={message()} /> : undefined}>
-            <ui.SettingsRow title="Current state" description="Fill the fields above and click Save & restart. Until the required mail and pinned-contact fields are valid, the bridge stays unconfigured and sends nothing.">
-              <ui.Code content={statusText()} language="text" />
-            </ui.SettingsRow>
+            <ui.SettingsRow
+              title="Current state"
+              description={
+                <>
+                  <ui.Markdown text="Fill the fields above and click Save & restart. Until the required mail and pinned-contact fields are valid, the bridge stays unconfigured and sends nothing." />
+                  <ui.Code content={statusText()} language="text" />
+                </>
+              }
+            />
             <ui.SettingsRow title="Apply changes">
               <ui.Button variant="contrast" busy={busy()} onClick={() => void save()}>Save & restart</ui.Button>
             </ui.SettingsRow>
