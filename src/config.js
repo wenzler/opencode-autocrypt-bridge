@@ -139,6 +139,7 @@ export function loadConfig(options = {}, env = process.env) {
       tail: boolean(get('emailTail', 'AC_EMAIL_TAIL'), true),
       sendFiles: boolean(get('emailSendFiles', 'AC_EMAIL_SEND_FILES'), true),
       watch: boolean(get('emailWatch', 'AC_EMAIL_WATCH'), true),
+      readReceipts: boolean(get('emailReadReceipts', 'AC_EMAIL_READ_RECEIPTS'), true),
     },
     maxMessageBytes: integer(get('maxMessageBytes', 'AC_MAX_MESSAGE_BYTES'), 20 * 1024 * 1024),
     maxAttachmentBytes: integer(get('maxAttachmentBytes', 'AC_MAX_ATTACHMENT_BYTES'), 10 * 1024 * 1024),

@@ -34,6 +34,7 @@ const settingsProperties = {
   emailTail: { type: 'boolean' },
   emailSendFiles: { type: 'boolean' },
   emailWatch: { type: 'boolean' },
+  emailReadReceipts: { type: 'boolean' },
 }
 
 const emptyInput = {
@@ -72,6 +73,7 @@ const statusOutput = {
     sessionTitle: { type: 'string' },
     sessionDirectory: { type: 'string' },
     sessionProjectID: { type: 'string' },
+    lastReceiptAt: { type: 'number' },
   },
   additionalProperties: false,
 }

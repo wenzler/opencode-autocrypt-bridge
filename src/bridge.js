@@ -12,7 +12,7 @@ import {
 } from './commands.js'
 import { loadIdentity, encryptMime, keyFingerprint, validatePublicKey } from './crypto.js'
 import { createSender, parseIncoming, rescanMailbox, startImap } from './mail.js'
-import { buildInnerMime, buildMail, buildPgpMime, contentTypeOf, safeFilename } from './mime.js'
+import { buildInnerMime, buildMail, buildPgpMime, buildReadReceiptMime, contentTypeOf, safeFilename } from './mime.js'
 import {
   formatSessionDirectory,
   normalizeMessageId,
@@ -33,7 +33,7 @@ async function loadState(ctx) {
     ? stored
     : {
       sessions: {}, peers: {}, seen: [], threads: {}, sessionContacts: {}, meta: {}, handshake: {},
-      watches: {}, pending: {}, questions: {},
+      watches: {}, pending: {}, questions: {}, sent: {},
     }
   data.sessions ||= {}
   data.peers ||= {}
@@ -45,6 +45,7 @@ async function loadState(ctx) {
   data.watches ||= {}
   data.pending ||= {}
   data.questions ||= {}
+  data.sent ||= {}
   return {
     data,
     async save() {
@@ -90,6 +91,7 @@ export async function createBridge(ctx, cfg, options = {}) {
   const sessionStatus = new Map()
   const lastWatchNotify = new Map()
   const announcedDecisions = new Set()
+  const announcingQuestions = new Set()
   let started = false
 
   const WATCH_EVENTS = [
@@ -275,6 +277,8 @@ export async function createBridge(ctx, cfg, options = {}) {
       } catch {}
     }
     const handshake = state.data.handshake
+    const lastReceiptAt = Math.max(0, ...Object.values(state.data.sent)
+      .map((entry) => Number(entry?.receiptAt) || 0))
     return {
       running: started,
       address: cfg.address,
@@ -289,6 +293,7 @@ export async function createBridge(ctx, cfg, options = {}) {
       sessionTitle: String(session?.title || ''),
       sessionDirectory: String(session?.location?.directory || ''),
       sessionProjectID: String(session?.projectID || ''),
+      lastReceiptAt,
     }
   }
 
@@ -441,46 +446,51 @@ export async function createBridge(ctx, cfg, options = {}) {
   async function handleFormCreated(data = {}) {
     const form = data.form || {}
     const formID = String(form.id || '')
-    if (!formID || state.data.questions[formID]) return
+    if (!formID || announcingQuestions.has(formID) || state.data.questions[formID]) return
     if (String(form.metadata?.kind || '') !== 'question') return
     if (!cfg.remote.questions) return
     const sessionID = String(form.sessionID || '')
     const to = contactForSession(sessionID) || cfg.pinned.contact
     if (!to || !allowed(to)) return
-    const fields = formFieldView(form.fields)
-    const code = decisionCode(formID)
-    state.data.questions[formID] = {
-      formID,
-      code,
-      sessionID,
-      from: to,
-      title: String(form.title || 'Questions'),
-      fields,
-      createdAt: Date.now(),
-      answered: false,
-    }
-    await state.save()
+    announcingQuestions.add(formID)
     try {
-      await onQuestion({
+      const fields = formFieldView(form.fields)
+      const code = decisionCode(formID)
+      state.data.questions[formID] = {
         formID,
         code,
         sessionID,
-        title: state.data.questions[formID].title,
-        fields: state.data.questions[formID].fields,
-      })
-    } catch (error) {
-      log(`Could not notify the GUI about a question: ${error.message}`)
-    }
-    try {
-      await transmit({
-        to,
-        sessionID,
-        subject: `Question: ${form.title || 'OpenCode'}`,
-        headers: [`X-OpenCode-Question: ${code}`],
-        text: formatQuestionRequest({ code, title: form.title, fields, sessionID }),
-      })
-    } catch (error) {
-      log(`Could not send question mail: ${error.message}`)
+        from: to,
+        title: String(form.title || 'Questions'),
+        fields,
+        createdAt: Date.now(),
+        answered: false,
+      }
+      await state.save()
+      try {
+        await onQuestion({
+          formID,
+          code,
+          sessionID,
+          title: state.data.questions[formID].title,
+          fields: state.data.questions[formID].fields,
+        })
+      } catch (error) {
+        log(`Could not notify the GUI about a question: ${error.message}`)
+      }
+      try {
+        await transmit({
+          to,
+          sessionID,
+          subject: `Question: ${form.title || 'OpenCode'}`,
+          headers: [`X-OpenCode-Question: ${code}`],
+          text: formatQuestionRequest({ code, title: form.title, fields, sessionID }),
+        })
+      } catch (error) {
+        log(`Could not send question mail: ${error.message}`)
+      }
+    } finally {
+      announcingQuestions.delete(formID)
     }
   }
 
@@ -598,8 +608,7 @@ export async function createBridge(ctx, cfg, options = {}) {
     return { learned, establishedNow }
   }
 
-  async function transmit({ to, text, attachments = [], inReplyTo, subject, headers = [], encrypt = true, sessionID = '' }) {
-    const inner = buildInnerMime({ text, attachments })
+  async function protect(inner, to, encrypt = true) {
     let body = inner.body
     let contentType = inner.contentType
     const peerKey = cfg.pinned.keyB64 || state.data.peers[to]?.keydata
@@ -615,23 +624,86 @@ export async function createBridge(ctx, cfg, options = {}) {
     } else if (encrypt) {
       log(`No Autocrypt key for ${to}; sending cleartext so the peer can learn ours`)
     }
+    return { body, contentType }
+  }
+
+  async function rememberSent(messageId, to, sessionID, subject) {
+    const id = normalizeMessageId(messageId)
+    if (!id) return
+    state.data.sent[id] = {
+      messageID: id,
+      to,
+      sessionID,
+      subject,
+      sentAt: Date.now(),
+      receiptAt: 0,
+    }
+    const keys = Object.keys(state.data.sent)
+    if (keys.length > 2_000) {
+      for (const key of keys.slice(0, keys.length - 2_000)) delete state.data.sent[key]
+    }
+    await state.save()
+  }
+
+  async function transmit({ to, text, attachments = [], inReplyTo, subject, headers = [], encrypt = true, sessionID = '' }) {
+    const protectedBody = await protect(buildInnerMime({ text, attachments }), to, encrypt)
     const domain = cfg.address.split('@')[1] || 'localhost'
     const messageId = `${Date.now()}.${randomUUID()}@${domain}`
     const baseSubject = subject || (inReplyTo ? `Re: Message from ${cfg.displayName}` : `Message from ${cfg.displayName}`)
+    const finalSubject = withSessionSubject(baseSubject, sessionID)
+    const receiptHeaders = cfg.remote?.readReceipts === false
+      ? []
+      : [`Chat-Disposition-Notification-To: ${cfg.address}`]
     const raw = buildMail({
       cfg,
       to,
-      subject: withSessionSubject(baseSubject, sessionID),
+      subject: finalSubject,
       inReplyTo,
       messageId,
       publicB64: identity.publicB64,
-      contentType,
-      body,
-      headers,
+      contentType: protectedBody.contentType,
+      body: protectedBody.body,
+      headers: [...headers, ...receiptHeaders],
     })
     await sender.send(raw, to)
+    await rememberSent(messageId, to, sessionID, finalSubject)
     if (sessionID) await rememberThread(messageId, sessionID, to)
-    log(`Sent ${contentType.includes('encrypted') ? 'encrypted' : 'cleartext'} reply to ${to}${sessionID ? ` [session:${sessionID}]` : ''}`)
+    log(`Sent ${protectedBody.contentType.includes('encrypted') ? 'encrypted' : 'cleartext'} reply to ${to}${sessionID ? ` [session:${sessionID}]` : ''}`)
+  }
+
+  /** Send a Delta Chat-compatible MDN for a message that requested one. */
+  async function sendReadReceipt(to, originalMessageID) {
+    if (cfg.remote?.readReceipts === false) return
+    const receipt = buildReadReceiptMime({ originalMessageID })
+    const protectedBody = await protect(receipt, to)
+    const domain = cfg.address.split('@')[1] || 'localhost'
+    const messageId = `${Date.now()}.${randomUUID()}@${domain}`
+    const id = normalizeMessageId(originalMessageID).replace(/[\r\n]/g, '')
+    const raw = buildMail({
+      cfg,
+      to,
+      subject: 'Receipt Notification',
+      messageId,
+      publicB64: identity.publicB64,
+      contentType: protectedBody.contentType,
+      body: protectedBody.body,
+      headers: [
+        'Auto-Submitted: auto-replied',
+        `X-OpenCode-Read-Receipt: ${id}`,
+      ],
+    })
+    await sender.send(raw, to)
+    log(`Sent read receipt to ${to} for ${id}`)
+  }
+
+  async function handleReadReceipt(from, receipt) {
+    const id = normalizeMessageId(receipt?.originalMessageID)
+    if (!id) return
+    const entry = state.data.sent[id]
+    if (!entry || entry.to !== from || entry.receiptAt) return
+    entry.receiptAt = Date.now()
+    await state.save()
+    log(`Read receipt confirmed from ${from} for ${id}`)
   }
 
   /** Send the one-time encrypted welcome mail with the full command list. */
@@ -810,7 +882,12 @@ export async function createBridge(ctx, cfg, options = {}) {
       await sendCommandReply(from, message, pending.sessionID, `${parsed.error}\n\nUse: !answer ${pending.code} 1`, 'error')
       return
     }
+    if (pending.submittedAt) return
     const entries = Object.entries(parsed.answer).map(([key, value]) => ({ key, value }))
+    pending.submittedAt = Date.now()
+    pending.lastAnswer = entries
+    pending.completionNotified = false
+    await state.save()
     try {
       await onQuestionAnswer({
         formID: pending.formID,
@@ -818,19 +895,18 @@ export async function createBridge(ctx, cfg, options = {}) {
         answer: entries,
       })
     } catch (error) {
+      pending.submittedAt = 0
+      pending.completionNotified = false
+      await state.save()
       await sendCommandReply(from, message, pending.sessionID, `Could not forward the answer: ${error.message}`, 'error')
-      return
     }
-    pending.submittedAt = Date.now()
-    pending.lastAnswer = entries
-    await state.save()
-    const chosen = Object.values(parsed.answer).flat().map(String).join(', ')
-    await sendCommandReply(from, message, pending.sessionID, `Answer forwarded for ${pending.code}: ${chosen}. The desktop form will be completed when OpenCode Desktop handles it.`)
   }
 
   async function confirmQuestionReply({ formID, ok, error = '' }) {
     const pending = state.data.questions[String(formID || '')]
-    if (!pending) return
+    if (!pending || pending.completionNotified) return
+    if (!ok && (pending.answered || pending.repliedAt)) return
+    pending.completionNotified = true
     if (ok) {
       pending.answered = true
       pending.repliedAt = Date.now()
@@ -844,6 +920,9 @@ export async function createBridge(ctx, cfg, options = {}) {
       })
       return
     }
+    pending.submittedAt = 0
+    pending.repliedAt = 0
+    await state.save()
     await transmit({
       to: pending.from,
       sessionID: pending.sessionID,
@@ -882,6 +961,7 @@ export async function createBridge(ctx, cfg, options = {}) {
           `Multiple-choice answers: ${cfg.remote.questions ? 'on' : 'off'}`,
           `High-risk email approval: ${cfg.remote.highRiskDecisions ? 'on' : 'off'}`,
           `Session watch: ${cfg.remote.watch ? 'on' : 'off'}`,
+          `Read receipts: ${cfg.remote.readReceipts === false ? 'off' : 'on'}`,
         ].join('\n')
       }
       case 'peek': {
@@ -973,8 +1053,20 @@ export async function createBridge(ctx, cfg, options = {}) {
     if (seenBefore(message.messageId)) return
     await markSeen(message.messageId)
 
+    if (message.mdn) {
+      await handleReadReceipt(from, message.mdn)
+      return
+    }
+
     const command = parseSessionCommand(message.text)
     const { establishedNow } = await learnPeer(from, message.autocrypt)
+    if (message.wantsReceipt) {
+      try {
+        await sendReadReceipt(from, message.messageId)
+      } catch (error) {
+        log(`Could not send read receipt: ${error.message}`)
+      }
+    }
     if (command && DECISION_COMMANDS.has(command.command)) {
       await answerDecision(from, message, command)
       return

@@ -69,6 +69,34 @@ export function buildInnerMime({ text, attachments = [] }) {
   }
 }
 
+/** Build an RFC 8098 read receipt shaped like Delta Chat's MDN. */
+export function buildReadReceiptMime({ originalMessageID }) {
+  const boundary = `opencode-mdn-${randomUUID()}`
+  const original = String(originalMessageID || '').trim().replace(/^<|>$/g, '').replace(/[\r\n]/g, '')
+  const body = [
+    `--${boundary}`,
+    'Content-Type: text/plain; charset=utf-8',
+    'Content-Transfer-Encoding: 7bit',
+    '',
+    'This is a receipt notification.',
+    `--${boundary}`,
+    'Content-Type: message/disposition-notification',
+    '',
+    `Original-Message-ID: <${original}>`,
+    'Disposition: manual-action/MDN-sent-automatically; displayed',
+    '',
+    `--${boundary}--`,
+    '',
+  ].join(CRLF)
+  const contentType = `multipart/report; report-type=disposition-notification; boundary="${boundary}"`
+  const headers = `MIME-Version: 1.0${CRLF}Content-Type: ${contentType}${CRLF}${CRLF}`
+  return {
+    contentType,
+    body: Buffer.from(body, 'utf8'),
+    entity: Buffer.concat([Buffer.from(headers, 'utf8'), Buffer.from(body, 'utf8')]),
+  }
+}
+
 export function buildPgpMime(armored) {
   const boundary = `opencode-encrypted-${randomUUID()}`
   const body = [
@@ -130,7 +158,9 @@ export function buildMail({
 export function parseRawHeaders(raw) {
   const text = Buffer.isBuffer(raw) ? raw.toString('latin1') : String(raw)
   const separator = text.indexOf('\r\n\r\n')
-  const headerText = separator >= 0 ? text.slice(0, separator) : text.slice(0, text.indexOf('\n\n'))
+  const lfSeparator = text.indexOf('\n\n')
+  const end = separator >= 0 ? separator : (lfSeparator >= 0 ? lfSeparator : text.length)
+  const headerText = text.slice(0, end)
   const headers = new Map()
   let current
   for (const line of headerText.split(/\r?\n/)) {
@@ -144,6 +174,36 @@ export function parseRawHeaders(raw) {
     headers.set(current, line.slice(colon + 1).trim())
   }
   return headers
+}
+
+/** Read the machine-readable part of an MDN, including Delta Chat's variant. */
+export function parseDispositionNotification(raw) {
+  const text = (Buffer.isBuffer(raw) ? raw.toString('latin1') : String(raw || '')).replace(/\r\n/g, '\n')
+  const separator = text.indexOf('\n\n')
+  if (separator < 0) return undefined
+  const headers = parseRawHeaders(text.slice(0, separator))
+  const contentType = String(headers.get('content-type') || '')
+  if (!/^multipart\/report/i.test(contentType)) return undefined
+  if (!/report-type\s*=\s*"?disposition-notification"?/i.test(contentType)) return undefined
+  const boundary = /(?:^|;)\s*boundary\s*=\s*(?:"([^"]+)"|([^;\s]+))/i.exec(contentType)
+  if (!boundary) return undefined
+  const marker = `--${boundary[1] || boundary[2]}`
+  const body = text.slice(separator + 2)
+  for (const chunk of body.split(marker).slice(1)) {
+    if (chunk.startsWith('--')) break
+    const partSeparator = chunk.indexOf('\n\n')
+    if (partSeparator < 0) continue
+    const partHeaders = parseRawHeaders(chunk.slice(0, partSeparator))
+    if (!/^message\/disposition-notification/i.test(String(partHeaders.get('content-type') || ''))) continue
+    const fields = parseRawHeaders(chunk.slice(partSeparator + 2))
+    const disposition = String(fields.get('disposition') || '')
+    if (!disposition) continue
+    return {
+      disposition,
+      originalMessageID: String(fields.get('original-message-id') || headers.get('in-reply-to') || ''),
+    }
+  }
+  return undefined
 }
 
 export function extractArmored(raw) {

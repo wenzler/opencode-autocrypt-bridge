@@ -10,14 +10,20 @@ export default Plugin.define({
 
     // Email answers arrive as an RPC event. This window forwards them to the
     // main process, which is the only place with session.form.reply().
+    // Duplicate event deliveries must not produce a second form.reply; the
+    // main provider below is the authoritative guard across windows too.
     const questionRpc = rpc()
+    const forwardedQuestions = new Set<string>()
     onCleanup(questionRpc.events.on("questionAnswer", (event) => {
       const answer = event.data
+      if (!answer.formID || forwardedQuestions.has(answer.formID)) return
+      forwardedQuestions.add(answer.formID)
       void ctx.main(QuestionBridge).reply({
         sessionID: answer.sessionID,
         formID: answer.formID,
         answer: answer.answer,
       }).catch((error) => {
+        forwardedQuestions.delete(answer.formID)
         ctx.toast.show({
           title: "Autocrypt question answer failed",
           description: error?.message || String(error),
@@ -70,6 +76,7 @@ export default Plugin.define({
         emailTail: true,
         emailSendFiles: true,
         emailWatch: true,
+        emailReadReceipts: true,
       }
       const setField = (key, value) => setSettings((prev) => ({ ...prev, [key]: value }))
       const value = (key) => settings()[key] ?? ""
@@ -184,6 +191,7 @@ export default Plugin.define({
           emailTail: checked("emailTail"),
           emailSendFiles: checked("emailSendFiles"),
           emailWatch: checked("emailWatch"),
+          emailReadReceipts: checked("emailReadReceipts"),
         }
         return run("Settings saved", () => rpc().updateSettings(payload))
       }
@@ -202,6 +210,7 @@ export default Plugin.define({
           `Session: ${current.sessionID || "(none)"}${current.sessionTitle ? ` — ${current.sessionTitle}` : ""}`,
           `Session directory: ${current.sessionDirectory || "(unknown)"}`,
           `State: ${current.handshake}`,
+          `Last read receipt: ${current.lastReceiptAt ? new Date(current.lastReceiptAt).toLocaleString() : "(none)"}`,
           ...(current.lastError ? [`Last error: ${current.lastError}`] : []),
         ]
         return lines.join("\n")
@@ -341,6 +350,9 @@ export default Plugin.define({
             <ui.SettingsRow title="Session watch subscriptions" description="Allow !watch and !unwatch to email completion, failure and idle notices for a session.">
               <ui.Switch label="Session watch subscriptions" hideLabel checked={checked("emailWatch")} onChange={(v) => setField("emailWatch", v)} />
             </ui.SettingsRow>
+            <ui.SettingsRow title="Read receipts" description="Request encrypted read receipts for bridge mail and reply with an encrypted receipt when the pinned contact asks for one.">
+              <ui.Switch label="Read receipts" hideLabel checked={checked("emailReadReceipts")} onChange={(v) => setField("emailReadReceipts", v)} />
+            </ui.SettingsRow>
             <ui.SettingsRow title="Command reference" description="Reply !help in the encrypted email thread for the live command list and current gate state.">
               <ui.Code content={"!sessions · !use <id> · !new <title> in <project>\n!default · !status · !help\n!approve <code> once|always · !deny <code> [reason]\n!answer <code> <choice>[,choice][;choice…]\n!peek [session] [count] · !tail [lines]\n!send <project-file> · !watch [session] · !unwatch"} language="text" />
             </ui.SettingsRow>
@@ -394,13 +406,17 @@ export default Plugin.define({
         { id: "defaultSessionID", title: "Default session", keywords: "session project binding" },
         { id: "emailDecisions", title: "Remote controls", keywords: "permission decision question answer watch danger" },
         { id: "emailHighRiskDecisions", title: "High-risk email approval", keywords: "danger shell file access" },
+        { id: "emailReadReceipts", title: "Read receipts", keywords: "mdn receipt confirmation" },
       ],
       render: () => <Settings />,
     })
   },
   main(ctx) {
+    const answeredForms = new Set<string>()
     const provider = ctx.provide(QuestionBridge, {
       async reply(input) {
+        if (!input.formID || answeredForms.has(input.formID)) return
+        answeredForms.add(input.formID)
         const answer = Object.fromEntries(
           input.answer.map((entry) => [entry.key, entry.value]),
         )
@@ -421,7 +437,10 @@ export default Plugin.define({
           ok,
           error,
         }).catch(() => undefined)
-        if (!ok) throw new Error(error || "The desktop could not complete the form")
+        if (!ok) {
+          answeredForms.delete(input.formID)
+          throw new Error(error || "The desktop could not complete the form")
+        }
       },
     })
     ctx.onCleanup(() => provider.dispose())

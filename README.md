@@ -109,7 +109,9 @@ When OpenCode asks for a permission decision, the bridge emails the pinned conta
 
 Shell-like actions and access outside the session's project directory are **HIGH RISK**. They are shown in the email but refused from the phone unless **High-risk decisions by email** is explicitly enabled in the GUI. There is no `!exec`, `!sh`, or other arbitrary remote-command path.
 
-OpenCode's native question tool appears as a `form.created` event with `metadata.kind === "question"`. The bridge converts its fields into a numbered menu and emails it with another short code. Reply `!answer CODE 1` (or `1;2,3` for several questions, commas for multi-select). The server plugin cannot complete a native form itself: it emits an encrypted `questionAnswer` RPC event, and the OpenCode Desktop GUI forwards the answer through its main-process IPC to `session.form.reply`. The desktop must be running for the form to be completed. A confirmation or retry notice follows on the same email thread.
+OpenCode's native question tool appears as a `form.created` event with `metadata.kind === "question"`. The bridge converts its fields into a numbered menu and emails it with another short code. Reply `!answer CODE 1` (or `1;2,3` for several questions, commas for multi-select). The server plugin cannot complete a native form itself: it emits an encrypted `questionAnswer` RPC event, and the OpenCode Desktop GUI forwards the answer through its main-process IPC to `session.form.reply`. The desktop must be running for the form to be completed. A single terminal notice follows on the same email thread: completed, or failed with a retry hint. Duplicate `!answer` deliveries and duplicate `session.form.reply` calls are ignored, so one answer never produces both a completion and an error mail.
+
+Read receipts use the Delta Chat-compatible encrypted MDN format. Every outbound mail asks the pinned contact for a receipt, and every inbound mail that asks for one gets an encrypted `multipart/report` receipt back. Incoming receipts are recorded in the bridge state and shown as **Last read receipt** in GUI status; they never generate another chat message. Receipts can be turned off in **Remote controls**.
 
 If a session is busy, the next prompt is queued with OpenCode's `delivery: "queue"` and the phone gets a short acknowledgement. `!watch` subscribes the thread to completion, failure, idle and decision notices so queued work can be followed without polling.
 
@@ -136,7 +138,7 @@ The GUI button **Fill fingerprint and contact** reads only the public fields (le
 - TLS verification and IMAP poll interval;
 - live status via RPC events: configured/unconfigured state, learned fingerprint, established state, fingerprint verification, bound session, last error;
 - **Sessions**: list open projects/sessions, bind the email default, create a session in a listed project, optional startup default;
-- **Remote controls**: independent gates for permission decisions, high-risk email approval, questions, session output, terminal tail, project file sending, and watch subscriptions;
+- **Remote controls**: independent gates for permission decisions, high-risk email approval, questions, session output, terminal tail, project file sending, watch subscriptions, and read receipts;
 - **Send Autocrypt request**, **Rescan inbox**, **Reset contact**, and **Save & restart**.
 
 Saved passwords and private keys are hidden; leaving a password field blank keeps the saved value.
@@ -180,6 +182,7 @@ All fields can be set in the GUI, in the `options` object, or with environment v
 | Terminal tail / `emailTail` | `AC_EMAIL_TAIL` | Allow `!tail` | `true` |
 | Send project files / `emailSendFiles` | `AC_EMAIL_SEND_FILES` | Allow `!send` for files inside the session project | `true` |
 | Watch subscriptions / `emailWatch` | `AC_EMAIL_WATCH` | Allow `!watch` and `!unwatch` notices | `true` |
+| Read receipts / `emailReadReceipts` | `AC_EMAIL_READ_RECEIPTS` | Request encrypted receipts for outbound mail and answer receipt requests | `true` |
 
 ## Messages and attachments
 

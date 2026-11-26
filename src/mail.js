@@ -8,7 +8,7 @@ import { simpleParser } from 'mailparser'
 import nodemailer from 'nodemailer'
 import { decryptMessage, keyFingerprint } from './crypto.js'
 import { parseAutocryptHeader } from './headers.js'
-import { extractArmored, isEncrypted, parseRawHeaders, safeFilename } from './mime.js'
+import { extractArmored, isEncrypted, parseDispositionNotification, parseRawHeaders, safeFilename } from './mime.js'
 
 const ALLOWED_ATTACHMENT_TYPES = new Set([
   'image/jpeg', 'image/png', 'image/gif', 'image/webp',
@@ -289,6 +289,12 @@ export async function parseIncoming(raw, cfg, identity, log, pinned = cfg.pinned
     throw new Error('plaintext message rejected because AC_REQUIRE_ENCRYPTED is enabled')
   }
 
+  const receiptRequest = String(
+    rawHeaders.get('chat-disposition-notification-to') || rawHeaders.get('disposition-notification-to') || '',
+  ).toLowerCase()
+  const wantsReceipt = Boolean(cfg.address && receiptRequest.includes(String(cfg.address).toLowerCase()))
+  const receipt = parseDispositionNotification(entity)
+
   const parsed = await simpleParser(entity, { skipHtmlToText: true, skipTextToHtml: true })
   const innerHeaders = parseRawHeaders(entity)
   const innerAutocrypt = parseAutocryptHeader(
@@ -296,7 +302,9 @@ export async function parseIncoming(raw, cfg, identity, log, pinned = cfg.pinned
     parsed.from?.value?.[0]?.address?.toLowerCase() || sender,
   )
   const autocrypt = outerAutocrypt || innerAutocrypt
-  const from = parsed.from?.value?.[0]?.address?.toLowerCase() || ''
+  // Delta Chat MDNs have no From header in their inner entity; keep the
+  // authenticated outer sender so receipts can be matched to the contact.
+  const from = parsed.from?.value?.[0]?.address?.toLowerCase() || sender
   const autocryptKey = autocrypt?.keydata || ''
 
   if (pinned.contact && from && from !== pinned.contact) {
@@ -344,5 +352,7 @@ export async function parseIncoming(raw, cfg, identity, log, pinned = cfg.pinned
     autocrypt,
     encrypted,
     signatureVerified,
+    wantsReceipt,
+    mdn: receipt,
   }
 }

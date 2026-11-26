@@ -12,7 +12,7 @@ const SETTING_KEYS = [
   'pollIntervalMs', 'verifyCertificate', 'privateKeyArmored', 'keyPassphrase', 'generateKey', 'preferEncryptMutual',
   'defaultSessionID', 'defaultSessionDirectory',
   'emailDecisions', 'emailHighRiskDecisions', 'emailQuestions',
-  'emailPeek', 'emailTail', 'emailSendFiles', 'emailWatch',
+  'emailPeek', 'emailTail', 'emailSendFiles', 'emailWatch', 'emailReadReceipts',
 ]
 
 const SECRET_KEYS = new Set(['imapPassword', 'smtpPassword', 'privateKeyArmored', 'keyPassphrase'])
@@ -28,6 +28,7 @@ const UI_DEFAULTS = {
   emailTail: true,
   emailSendFiles: true,
   emailWatch: true,
+  emailReadReceipts: true,
 }
 const STORAGE_KEY = 'autocrypt.settings'
 

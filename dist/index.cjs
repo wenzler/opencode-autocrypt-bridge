@@ -99697,6 +99697,7 @@ function formatRemoteHelp(remote = {}, details = {}) {
   lines.push(`Permission decisions by email: ${remote.decisions ? "on" : "off"}`);
   lines.push(`Multiple-choice answers by email: ${remote.questions ? "on" : "off"}`);
   lines.push(`High-risk decisions by email: ${remote.highRiskDecisions ? "on" : "off"} (out-of-project file access and shell-like actions are high risk)`);
+  lines.push(`Read receipts: ${remote.readReceipts === false ? "off" : "on"}`);
   if (Array.isArray(details.commands) && details.commands.length) {
     lines.push("");
     lines.push(`OpenCode commands also available at the desk: ${details.commands.slice(0, 24).join(", ")}`);
@@ -125991,6 +125992,32 @@ function buildInnerMime({ text, attachments = [] }) {
     entity: Buffer.concat([Buffer.from(headers, "utf8"), Buffer.from(body, "utf8")])
   };
 }
+function buildReadReceiptMime({ originalMessageID }) {
+  const boundary = `opencode-mdn-${(0, import_node_crypto2.randomUUID)()}`;
+  const original = String(originalMessageID || "").trim().replace(/^<|>$/g, "").replace(/[\r\n]/g, "");
+  const body = [
+    `--${boundary}`,
+    "Content-Type: text/plain; charset=utf-8",
+    "Content-Transfer-Encoding: 7bit",
+    "",
+    "This is a receipt notification.",
+    `--${boundary}`,
+    "Content-Type: message/disposition-notification",
+    "",
+    `Original-Message-ID: <${original}>`,
+    "Disposition: manual-action/MDN-sent-automatically; displayed",
+    "",
+    `--${boundary}--`,
+    ""
+  ].join(CRLF);
+  const contentType = `multipart/report; report-type=disposition-notification; boundary="${boundary}"`;
+  const headers = `MIME-Version: 1.0${CRLF}Content-Type: ${contentType}${CRLF}${CRLF}`;
+  return {
+    contentType,
+    body: Buffer.from(body, "utf8"),
+    entity: Buffer.concat([Buffer.from(headers, "utf8"), Buffer.from(body, "utf8")])
+  };
+}
 function buildPgpMime(armored) {
   const boundary = `opencode-encrypted-${(0, import_node_crypto2.randomUUID)()}`;
   const body = [
@@ -126048,7 +126075,9 @@ function buildMail({
 function parseRawHeaders(raw) {
   const text = Buffer.isBuffer(raw) ? raw.toString("latin1") : String(raw);
   const separator = text.indexOf("\r\n\r\n");
-  const headerText = separator >= 0 ? text.slice(0, separator) : text.slice(0, text.indexOf("\n\n"));
+  const lfSeparator = text.indexOf("\n\n");
+  const end = separator >= 0 ? separator : lfSeparator >= 0 ? lfSeparator : text.length;
+  const headerText = text.slice(0, end);
   const headers = /* @__PURE__ */ new Map();
   let current;
   for (const line of headerText.split(/\r?\n/)) {
@@ -126062,6 +126091,34 @@ function parseRawHeaders(raw) {
     headers.set(current, line.slice(colon + 1).trim());
   }
   return headers;
+}
+function parseDispositionNotification(raw) {
+  const text = (Buffer.isBuffer(raw) ? raw.toString("latin1") : String(raw || "")).replace(/\r\n/g, "\n");
+  const separator = text.indexOf("\n\n");
+  if (separator < 0) return void 0;
+  const headers = parseRawHeaders(text.slice(0, separator));
+  const contentType = String(headers.get("content-type") || "");
+  if (!/^multipart\/report/i.test(contentType)) return void 0;
+  if (!/report-type\s*=\s*"?disposition-notification"?/i.test(contentType)) return void 0;
+  const boundary = /(?:^|;)\s*boundary\s*=\s*(?:"([^"]+)"|([^;\s]+))/i.exec(contentType);
+  if (!boundary) return void 0;
+  const marker = `--${boundary[1] || boundary[2]}`;
+  const body = text.slice(separator + 2);
+  for (const chunk of body.split(marker).slice(1)) {
+    if (chunk.startsWith("--")) break;
+    const partSeparator = chunk.indexOf("\n\n");
+    if (partSeparator < 0) continue;
+    const partHeaders = parseRawHeaders(chunk.slice(0, partSeparator));
+    if (!/^message\/disposition-notification/i.test(String(partHeaders.get("content-type") || ""))) continue;
+    const fields = parseRawHeaders(chunk.slice(partSeparator + 2));
+    const disposition = String(fields.get("disposition") || "");
+    if (!disposition) continue;
+    return {
+      disposition,
+      originalMessageID: String(fields.get("original-message-id") || headers.get("in-reply-to") || "")
+    };
+  }
+  return void 0;
 }
 function extractArmored(raw) {
   const text = Buffer.isBuffer(raw) ? raw.toString("utf8") : String(raw);
@@ -126345,6 +126402,11 @@ async function parseIncoming(raw, cfg, identity2, log2, pinned = cfg.pinned || {
   } else if (pinned.requireEncrypted) {
     throw new Error("plaintext message rejected because AC_REQUIRE_ENCRYPTED is enabled");
   }
+  const receiptRequest = String(
+    rawHeaders.get("chat-disposition-notification-to") || rawHeaders.get("disposition-notification-to") || ""
+  ).toLowerCase();
+  const wantsReceipt = Boolean(cfg.address && receiptRequest.includes(String(cfg.address).toLowerCase()));
+  const receipt = parseDispositionNotification(entity);
   const parsed = await (0, import_mailparser.simpleParser)(entity, { skipHtmlToText: true, skipTextToHtml: true });
   const innerHeaders = parseRawHeaders(entity);
   const innerAutocrypt = parseAutocryptHeader(
@@ -126352,7 +126414,7 @@ async function parseIncoming(raw, cfg, identity2, log2, pinned = cfg.pinned || {
     parsed.from?.value?.[0]?.address?.toLowerCase() || sender
   );
   const autocrypt = outerAutocrypt || innerAutocrypt;
-  const from = parsed.from?.value?.[0]?.address?.toLowerCase() || "";
+  const from = parsed.from?.value?.[0]?.address?.toLowerCase() || sender;
   const autocryptKey = autocrypt?.keydata || "";
   if (pinned.contact && from && from !== pinned.contact) {
     throw new Error(`message from ${from} does not match pinned contact ${pinned.contact}`);
@@ -126396,7 +126458,9 @@ async function parseIncoming(raw, cfg, identity2, log2, pinned = cfg.pinned || {
     attachments,
     autocrypt,
     encrypted,
-    signatureVerified
+    signatureVerified,
+    wantsReceipt,
+    mdn: receipt
   };
 }
 
@@ -126532,7 +126596,8 @@ async function loadState(ctx) {
     handshake: {},
     watches: {},
     pending: {},
-    questions: {}
+    questions: {},
+    sent: {}
   };
   data.sessions ||= {};
   data.peers ||= {};
@@ -126544,6 +126609,7 @@ async function loadState(ctx) {
   data.watches ||= {};
   data.pending ||= {};
   data.questions ||= {};
+  data.sent ||= {};
   return {
     data,
     async save() {
@@ -126589,6 +126655,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
   const sessionStatus = /* @__PURE__ */ new Map();
   const lastWatchNotify = /* @__PURE__ */ new Map();
   const announcedDecisions = /* @__PURE__ */ new Set();
+  const announcingQuestions = /* @__PURE__ */ new Set();
   let started = false;
   const WATCH_EVENTS = [
     "permission.asked",
@@ -126755,6 +126822,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
       }
     }
     const handshake = state.data.handshake;
+    const lastReceiptAt = Math.max(0, ...Object.values(state.data.sent).map((entry) => Number(entry?.receiptAt) || 0));
     return {
       running: started,
       address: cfg.address,
@@ -126768,7 +126836,8 @@ async function createBridge(ctx, cfg, options2 = {}) {
       sessionID,
       sessionTitle: String(session?.title || ""),
       sessionDirectory: String(session?.location?.directory || ""),
-      sessionProjectID: String(session?.projectID || "")
+      sessionProjectID: String(session?.projectID || ""),
+      lastReceiptAt
     };
   }
   async function sessionFor(from) {
@@ -126902,46 +126971,51 @@ async function createBridge(ctx, cfg, options2 = {}) {
   async function handleFormCreated(data = {}) {
     const form = data.form || {};
     const formID = String(form.id || "");
-    if (!formID || state.data.questions[formID]) return;
+    if (!formID || announcingQuestions.has(formID) || state.data.questions[formID]) return;
     if (String(form.metadata?.kind || "") !== "question") return;
     if (!cfg.remote.questions) return;
     const sessionID = String(form.sessionID || "");
     const to = contactForSession(sessionID) || cfg.pinned.contact;
     if (!to || !allowed(to)) return;
-    const fields = formFieldView(form.fields);
-    const code = decisionCode(formID);
-    state.data.questions[formID] = {
-      formID,
-      code,
-      sessionID,
-      from: to,
-      title: String(form.title || "Questions"),
-      fields,
-      createdAt: Date.now(),
-      answered: false
-    };
-    await state.save();
+    announcingQuestions.add(formID);
     try {
-      await onQuestion({
+      const fields = formFieldView(form.fields);
+      const code = decisionCode(formID);
+      state.data.questions[formID] = {
         formID,
         code,
         sessionID,
-        title: state.data.questions[formID].title,
-        fields: state.data.questions[formID].fields
-      });
-    } catch (error) {
-      log2(`Could not notify the GUI about a question: ${error.message}`);
-    }
-    try {
-      await transmit({
-        to,
-        sessionID,
-        subject: `Question: ${form.title || "OpenCode"}`,
-        headers: [`X-OpenCode-Question: ${code}`],
-        text: formatQuestionRequest({ code, title: form.title, fields, sessionID })
-      });
-    } catch (error) {
-      log2(`Could not send question mail: ${error.message}`);
+        from: to,
+        title: String(form.title || "Questions"),
+        fields,
+        createdAt: Date.now(),
+        answered: false
+      };
+      await state.save();
+      try {
+        await onQuestion({
+          formID,
+          code,
+          sessionID,
+          title: state.data.questions[formID].title,
+          fields: state.data.questions[formID].fields
+        });
+      } catch (error) {
+        log2(`Could not notify the GUI about a question: ${error.message}`);
+      }
+      try {
+        await transmit({
+          to,
+          sessionID,
+          subject: `Question: ${form.title || "OpenCode"}`,
+          headers: [`X-OpenCode-Question: ${code}`],
+          text: formatQuestionRequest({ code, title: form.title, fields, sessionID })
+        });
+      } catch (error) {
+        log2(`Could not send question mail: ${error.message}`);
+      }
+    } finally {
+      announcingQuestions.delete(formID);
     }
   }
   async function handleFormSettled(data = {}) {
@@ -127059,8 +127133,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
     }
     return { learned, establishedNow };
   }
-  async function transmit({ to, text, attachments = [], inReplyTo, subject, headers = [], encrypt: encrypt2 = true, sessionID = "" }) {
-    const inner = buildInnerMime({ text, attachments });
+  async function protect(inner, to, encrypt2 = true) {
     let body = inner.body;
     let contentType = inner.contentType;
     const peerKey = cfg.pinned.keyB64 || state.data.peers[to]?.keydata;
@@ -127076,23 +127149,79 @@ async function createBridge(ctx, cfg, options2 = {}) {
     } else if (encrypt2) {
       log2(`No Autocrypt key for ${to}; sending cleartext so the peer can learn ours`);
     }
+    return { body, contentType };
+  }
+  async function rememberSent(messageId, to, sessionID, subject) {
+    const id2 = normalizeMessageId(messageId);
+    if (!id2) return;
+    state.data.sent[id2] = {
+      messageID: id2,
+      to,
+      sessionID,
+      subject,
+      sentAt: Date.now(),
+      receiptAt: 0
+    };
+    const keys4 = Object.keys(state.data.sent);
+    if (keys4.length > 2e3) {
+      for (const key5 of keys4.slice(0, keys4.length - 2e3)) delete state.data.sent[key5];
+    }
+    await state.save();
+  }
+  async function transmit({ to, text, attachments = [], inReplyTo, subject, headers = [], encrypt: encrypt2 = true, sessionID = "" }) {
+    const protectedBody = await protect(buildInnerMime({ text, attachments }), to, encrypt2);
     const domain = cfg.address.split("@")[1] || "localhost";
     const messageId = `${Date.now()}.${(0, import_node_crypto4.randomUUID)()}@${domain}`;
     const baseSubject = subject || (inReplyTo ? `Re: Message from ${cfg.displayName}` : `Message from ${cfg.displayName}`);
+    const finalSubject = withSessionSubject(baseSubject, sessionID);
+    const receiptHeaders = cfg.remote?.readReceipts === false ? [] : [`Chat-Disposition-Notification-To: ${cfg.address}`];
     const raw = buildMail({
       cfg,
       to,
-      subject: withSessionSubject(baseSubject, sessionID),
+      subject: finalSubject,
       inReplyTo,
       messageId,
       publicB64: identity2.publicB64,
-      contentType,
-      body,
-      headers
+      contentType: protectedBody.contentType,
+      body: protectedBody.body,
+      headers: [...headers, ...receiptHeaders]
     });
     await sender.send(raw, to);
+    await rememberSent(messageId, to, sessionID, finalSubject);
     if (sessionID) await rememberThread(messageId, sessionID, to);
-    log2(`Sent ${contentType.includes("encrypted") ? "encrypted" : "cleartext"} reply to ${to}${sessionID ? ` [session:${sessionID}]` : ""}`);
+    log2(`Sent ${protectedBody.contentType.includes("encrypted") ? "encrypted" : "cleartext"} reply to ${to}${sessionID ? ` [session:${sessionID}]` : ""}`);
+  }
+  async function sendReadReceipt(to, originalMessageID) {
+    if (cfg.remote?.readReceipts === false) return;
+    const receipt = buildReadReceiptMime({ originalMessageID });
+    const protectedBody = await protect(receipt, to);
+    const domain = cfg.address.split("@")[1] || "localhost";
+    const messageId = `${Date.now()}.${(0, import_node_crypto4.randomUUID)()}@${domain}`;
+    const id2 = normalizeMessageId(originalMessageID).replace(/[\r\n]/g, "");
+    const raw = buildMail({
+      cfg,
+      to,
+      subject: "Receipt Notification",
+      messageId,
+      publicB64: identity2.publicB64,
+      contentType: protectedBody.contentType,
+      body: protectedBody.body,
+      headers: [
+        "Auto-Submitted: auto-replied",
+        `X-OpenCode-Read-Receipt: ${id2}`
+      ]
+    });
+    await sender.send(raw, to);
+    log2(`Sent read receipt to ${to} for ${id2}`);
+  }
+  async function handleReadReceipt(from, receipt) {
+    const id2 = normalizeMessageId(receipt?.originalMessageID);
+    if (!id2) return;
+    const entry = state.data.sent[id2];
+    if (!entry || entry.to !== from || entry.receiptAt) return;
+    entry.receiptAt = Date.now();
+    await state.save();
+    log2(`Read receipt confirmed from ${from} for ${id2}`);
   }
   async function maybeSendWelcome(from, message, sessionID = "") {
     const flag = `welcome:${from}:${cfg.pinned.fingerprint}`;
@@ -127260,7 +127389,12 @@ async function createBridge(ctx, cfg, options2 = {}) {
 Use: !answer ${pending.code} 1`, "error");
       return;
     }
+    if (pending.submittedAt) return;
     const entries3 = Object.entries(parsed.answer).map(([key5, value3]) => ({ key: key5, value: value3 }));
+    pending.submittedAt = Date.now();
+    pending.lastAnswer = entries3;
+    pending.completionNotified = false;
+    await state.save();
     try {
       await onQuestionAnswer({
         formID: pending.formID,
@@ -127268,18 +127402,17 @@ Use: !answer ${pending.code} 1`, "error");
         answer: entries3
       });
     } catch (error) {
+      pending.submittedAt = 0;
+      pending.completionNotified = false;
+      await state.save();
       await sendCommandReply(from, message, pending.sessionID, `Could not forward the answer: ${error.message}`, "error");
-      return;
     }
-    pending.submittedAt = Date.now();
-    pending.lastAnswer = entries3;
-    await state.save();
-    const chosen = Object.values(parsed.answer).flat().map(String).join(", ");
-    await sendCommandReply(from, message, pending.sessionID, `Answer forwarded for ${pending.code}: ${chosen}. The desktop form will be completed when OpenCode Desktop handles it.`);
   }
   async function confirmQuestionReply({ formID, ok, error = "" }) {
     const pending = state.data.questions[String(formID || "")];
-    if (!pending) return;
+    if (!pending || pending.completionNotified) return;
+    if (!ok && (pending.answered || pending.repliedAt)) return;
+    pending.completionNotified = true;
     if (ok) {
       pending.answered = true;
       pending.repliedAt = Date.now();
@@ -127293,6 +127426,9 @@ Use: !answer ${pending.code} 1`, "error");
       });
       return;
     }
+    pending.submittedAt = 0;
+    pending.repliedAt = 0;
+    await state.save();
     await transmit({
       to: pending.from,
       sessionID: pending.sessionID,
@@ -127331,7 +127467,8 @@ Use !help for the full remote-control list.`;
           `Permission decisions: ${cfg.remote.decisions ? "on" : "off"}`,
           `Multiple-choice answers: ${cfg.remote.questions ? "on" : "off"}`,
           `High-risk email approval: ${cfg.remote.highRiskDecisions ? "on" : "off"}`,
-          `Session watch: ${cfg.remote.watch ? "on" : "off"}`
+          `Session watch: ${cfg.remote.watch ? "on" : "off"}`,
+          `Read receipts: ${cfg.remote.readReceipts === false ? "off" : "on"}`
         ].join("\n");
       }
       case "peek": {
@@ -127428,8 +127565,19 @@ Further replies in this subject stay in this session.`;
     }
     if (seenBefore(message.messageId)) return;
     await markSeen(message.messageId);
+    if (message.mdn) {
+      await handleReadReceipt(from, message.mdn);
+      return;
+    }
     const command = parseSessionCommand(message.text);
     const { establishedNow } = await learnPeer(from, message.autocrypt);
+    if (message.wantsReceipt) {
+      try {
+        await sendReadReceipt(from, message.messageId);
+      } catch (error) {
+        log2(`Could not send read receipt: ${error.message}`);
+      }
+    }
     if (command && DECISION_COMMANDS.has(command.command)) {
       await answerDecision(from, message, command);
       return;
@@ -127690,7 +127838,8 @@ function loadConfig(options2 = {}, env = process.env) {
       peek: boolean2(get6("emailPeek", "AC_EMAIL_PEEK"), true),
       tail: boolean2(get6("emailTail", "AC_EMAIL_TAIL"), true),
       sendFiles: boolean2(get6("emailSendFiles", "AC_EMAIL_SEND_FILES"), true),
-      watch: boolean2(get6("emailWatch", "AC_EMAIL_WATCH"), true)
+      watch: boolean2(get6("emailWatch", "AC_EMAIL_WATCH"), true),
+      readReceipts: boolean2(get6("emailReadReceipts", "AC_EMAIL_READ_RECEIPTS"), true)
     },
     maxMessageBytes: integer2(get6("maxMessageBytes", "AC_MAX_MESSAGE_BYTES"), 20 * 1024 * 1024),
     maxAttachmentBytes: integer2(get6("maxAttachmentBytes", "AC_MAX_ATTACHMENT_BYTES"), 10 * 1024 * 1024),
@@ -127755,7 +127904,8 @@ var settingsProperties = {
   emailPeek: { type: "boolean" },
   emailTail: { type: "boolean" },
   emailSendFiles: { type: "boolean" },
-  emailWatch: { type: "boolean" }
+  emailWatch: { type: "boolean" },
+  emailReadReceipts: { type: "boolean" }
 };
 var emptyInput = {
   type: "object",
@@ -127790,7 +127940,8 @@ var statusOutput = {
     sessionID: { type: "string" },
     sessionTitle: { type: "string" },
     sessionDirectory: { type: "string" },
-    sessionProjectID: { type: "string" }
+    sessionProjectID: { type: "string" },
+    lastReceiptAt: { type: "number" }
   },
   additionalProperties: false
 };
@@ -128026,7 +128177,8 @@ var SETTING_KEYS = [
   "emailPeek",
   "emailTail",
   "emailSendFiles",
-  "emailWatch"
+  "emailWatch",
+  "emailReadReceipts"
 ];
 var SECRET_KEYS = /* @__PURE__ */ new Set(["imapPassword", "smtpPassword", "privateKeyArmored", "keyPassphrase"]);
 var HOST_KEYS = /* @__PURE__ */ new Set(["imapHost", "smtpHost"]);
@@ -128040,7 +128192,8 @@ var UI_DEFAULTS = {
   emailPeek: true,
   emailTail: true,
   emailSendFiles: true,
-  emailWatch: true
+  emailWatch: true,
+  emailReadReceipts: true
 };
 var STORAGE_KEY = "autocrypt.settings";
 function storedSettings(stored) {
