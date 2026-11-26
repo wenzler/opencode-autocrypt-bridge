@@ -93,9 +93,10 @@ export async function encryptMimeWithPassword(bytes, sharedSecret, identity) {
 
 /**
  * Decrypt a SecureJoin v3 message that was encrypted with a shared secret.
- * If verificationKeyB64 is supplied, any signature must be from that key.
+ * Returns the signature state so callers can first learn a key, then require
+ * that the same pinned key signed the message.
  */
-export async function decryptMessageWithPassword(armored, sharedSecret, verificationKeyB64) {
+export async function decryptMessageWithPasswordDetailed(armored, sharedSecret, verificationKeyB64) {
   const message = await openpgp.readMessage({ armoredMessage: armored })
   const verificationKeys = verificationKeyB64 ? [await readPeerKey(verificationKeyB64)] : undefined
   const result = await openpgp.decrypt({
@@ -104,10 +105,17 @@ export async function decryptMessageWithPassword(armored, sharedSecret, verifica
     ...(verificationKeys ? { verificationKeys } : {}),
     format: 'binary',
   })
-  if (verificationKeyB64 && result.signatures?.length) {
+  const signatureVerified = Boolean(result.signatures?.length)
+  if (verificationKeyB64 && signatureVerified) {
     await Promise.all(result.signatures.map((signature) => signature.verified))
   }
-  return Buffer.from(result.data)
+  return { data: Buffer.from(result.data), signatureVerified }
+}
+
+/** Backwards-compatible password decrypt that returns only the plaintext. */
+export async function decryptMessageWithPassword(armored, sharedSecret, verificationKeyB64) {
+  const { data } = await decryptMessageWithPasswordDetailed(armored, sharedSecret, verificationKeyB64)
+  return data
 }
 
 /**

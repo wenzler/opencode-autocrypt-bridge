@@ -8,17 +8,22 @@ import { formatSessionDirectory } from './session.js'
 const SETTING_KEYS = [
   'address', 'displayName', 'imapHost', 'imapPort', 'imapSecurity', 'imapUser', 'imapPassword', 'imapMailbox',
   'smtpHost', 'smtpPort', 'smtpSecurity', 'smtpUser', 'smtpPassword', 'pinnedContact',
-  'pinnedFingerprint', 'pinnedContactKey', 'inviteUrl', 'remoteMode', 'requireEncrypted',
+  'pinnedFingerprint', 'pinnedContactKey', 'inviteUrl', 'remoteMode',
+  'secureJoinAuth', 'secureJoinName', 'secureJoinVersion', 'secureJoinRelays', 'secureJoinInviteNumber',
+  'requireEncrypted',
   'pollIntervalMs', 'verifyCertificate', 'privateKeyArmored', 'keyPassphrase', 'generateKey', 'preferEncryptMutual',
   'defaultSessionID', 'defaultSessionDirectory',
   'emailDecisions', 'emailHighRiskDecisions', 'emailQuestions',
   'emailPeek', 'emailTail', 'emailSendFiles', 'emailWatch', 'emailReadReceipts',
 ]
 
-const SECRET_KEYS = new Set(['imapPassword', 'smtpPassword', 'privateKeyArmored', 'keyPassphrase'])
+const SECRET_KEYS = new Set([
+  'imapPassword', 'smtpPassword', 'privateKeyArmored', 'keyPassphrase', 'secureJoinAuth',
+])
 const HOST_KEYS = new Set(['imapHost', 'smtpHost'])
 const UI_DEFAULTS = {
   remoteMode: 'securejoin',
+  secureJoinVersion: '3',
   verifyCertificate: true,
   generateKey: true,
   preferEncryptMutual: true,
@@ -71,8 +76,14 @@ function settingsView(values) {
   view.hasPinnedContactKey = Boolean(values.pinnedContactKey)
   view.hasPrivateKey = Boolean(values.privateKeyArmored)
   view.hasKeyPassphrase = Boolean(values.keyPassphrase)
+  let inviteAuth = ''
+  try {
+    inviteAuth = parseInviteUrl(values.inviteUrl)?.auth || ''
+  } catch {}
+  view.hasSecureJoinAuth = Boolean(values.secureJoinAuth || inviteAuth)
   for (const key of SECRET_KEYS) view[key] = ''
-  // Invite tokens are never used or stored; only public prefill fields remain.
+  // The full invite URL is kept locally because s= is the handshake auth code.
+  // Only this displayed copy is redacted.
   view.inviteUrl = redactInviteUrl(view.inviteUrl)
   return view
 }
@@ -108,6 +119,9 @@ async function setupInstance(ctx, slot) {
       established: false,
       verified: false,
       handshake: 'idle',
+      secureJoin: {
+        status: 'idle', address: '', fingerprint: '', hasAuth: false, name: '', version: '3', createdAt: 0,
+      },
       lastError: '',
       sessionID: '',
       sessionTitle: '',
@@ -125,6 +139,15 @@ async function setupInstance(ctx, slot) {
         address: view.address,
         pinnedContact: view.pinnedContact,
         pinnedFingerprint: view.pinnedFingerprint,
+        secureJoin: {
+          status: 'unconfigured',
+          address: view.pinnedContact,
+          fingerprint: view.pinnedFingerprint,
+          hasAuth: Boolean(view.hasSecureJoinAuth),
+          name: view.secureJoinName,
+          version: view.secureJoinVersion || '3',
+          createdAt: 0,
+        },
         handshake: 'unconfigured',
         lastError: runtime.configError || 'Finish setup in Settings → Autocrypt Bridge',
       })
@@ -182,16 +205,17 @@ async function setupInstance(ctx, slot) {
       getSettings: async () => settingsView(visibleValues()),
       updateSettings: async (input) => {
         const values = { ...stored }
-        if (values.inviteUrl) values.inviteUrl = redactInviteUrl(values.inviteUrl)
+        const previousInvite = String(stored.inviteUrl || '')
+        const previousRedacted = redactInviteUrl(previousInvite)
         for (const key of SETTING_KEYS) {
           const value = input[key]
           if (value === undefined || value === null) continue
+          // Blank secret fields keep the stored value. The redacted invite URL
+          // shown in the GUI also keeps the stored auth code on a plain save.
           if (SECRET_KEYS.has(key) && value === '') continue
-          // i=/s= tokens are ignored; persist only the redacted URL. Host
-          // fields are hostnames, not URLs, even if a form injects a scheme.
+          if (key === 'inviteUrl' && previousInvite && value === previousRedacted) continue
           let storedValue = value
-          if (key === 'inviteUrl' && value) storedValue = redactInviteUrl(value)
-          else if (HOST_KEYS.has(key)) storedValue = normalizeHost(value)
+          if (HOST_KEYS.has(key)) storedValue = normalizeHost(value)
           if (storedValue === '') delete values[key]
           else values[key] = storedValue
         }
@@ -211,11 +235,14 @@ async function setupInstance(ctx, slot) {
           address: invite.address,
           name: invite.name,
           version: invite.version,
+          auth: invite.auth,
+          inviteNumber: invite.inviteNumber,
+          relays: invite.relays,
         }
       },
-      getSecureJoinQr: async () => {
+      startSecureJoin: async () => {
         if (!runtime.bridge) throw new Error('Autocrypt Bridge is not configured')
-        return runtime.bridge.getSecureJoinQr()
+        return runtime.bridge.startSecureJoin()
       },
       startHandshake: async () => {
         if (!runtime.bridge) throw new Error('Autocrypt Bridge is not configured')

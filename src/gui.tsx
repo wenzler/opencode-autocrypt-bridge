@@ -41,7 +41,6 @@ export default Plugin.define({
       const [sessionID, setSessionID] = createSignal("")
       const [newTitle, setNewTitle] = createSignal("")
       const [newDirectory, setNewDirectory] = createSignal("")
-      const [secureJoinUri, setSecureJoinUri] = createSignal("")
 
       const reload = async () => {
         try {
@@ -148,6 +147,14 @@ export default Plugin.define({
           if (!parsed.fingerprint) throw new Error("Invite contains no OpenPGP fingerprint")
           setField("pinnedFingerprint", parsed.fingerprint)
           if (parsed.address) setField("pinnedContact", parsed.address)
+          setField("secureJoinAuth", parsed.auth)
+          setField("secureJoinName", parsed.name)
+          setField("secureJoinVersion", parsed.version || "3")
+          setField("secureJoinRelays", parsed.relays)
+          setField("secureJoinInviteNumber", parsed.inviteNumber)
+          if (!parsed.auth) {
+            setMessage("Invite has no s= auth code; enter it manually below before starting SecureJoin.")
+          }
           const details = [parsed.fingerprint, parsed.address, parsed.name].filter(Boolean).join(" · ")
           ctx.toast.show({ title: "Invite fields filled", description: details, variant: "success" })
         } catch (error) {
@@ -179,6 +186,11 @@ export default Plugin.define({
           pinnedContactKey: value("pinnedContactKey"),
           inviteUrl: value("inviteUrl"),
           remoteMode: mode(),
+          secureJoinAuth: value("secureJoinAuth"),
+          secureJoinName: value("secureJoinName"),
+          secureJoinVersion: value("secureJoinVersion") || "3",
+          secureJoinRelays: value("secureJoinRelays"),
+          secureJoinInviteNumber: value("secureJoinInviteNumber"),
           requireEncrypted: checked("requireEncrypted"),
           pollIntervalMs: number("pollIntervalMs", 30000),
           verifyCertificate: checked("verifyCertificate"),
@@ -207,10 +219,12 @@ export default Plugin.define({
           `Configured: ${current.configured ? "yes" : "no"}`,
           `Running: ${current.running ? "yes" : "no"}`,
           `Remote type: ${value("remoteMode") || "securejoin"}`,
-          `Bridge fingerprint (QR): ${current.selfFingerprint || "(none)"}`,
-          `Pinned contact: ${current.pinnedContact || "(none)"}`,
+          `Bridge fingerprint (sent in SecureJoin): ${current.selfFingerprint || "(none)"}`,
+          `Pinned contact / invite issuer: ${current.pinnedContact || "(none)"}`,
           `Pinned contact fingerprint: ${current.pinnedFingerprint || "(none)"}`,
           `Learned contact fingerprint: ${current.learnedFingerprint || "(none)"}`,
+          `SecureJoin auth present: ${current.secureJoin?.hasAuth ? "yes" : "no"}`,
+          `SecureJoin version: ${current.secureJoin?.version || "3"}`,
           `Established: ${current.established ? "yes" : "no"}`,
           `Fingerprint verified: ${current.verified ? "yes" : "no"}`,
           `Session: ${current.sessionID || "(none)"}${current.sessionTitle ? ` — ${current.sessionTitle}` : ""}`,
@@ -282,7 +296,7 @@ export default Plugin.define({
           </ui.SettingsSection>
 
           <ui.SettingsSection title="Contact gate">
-            <ui.SettingsRow id="remoteMode" title="Remote type" description="SecureJoin is for Delta Chat and performs a QR handshake. Autocrypt is the legacy mode for generic OpenPGP mail clients.">
+            <ui.SettingsRow id="remoteMode" title="Remote type" description="SecureJoin joins a QR invite supplied by the pinned contact (Delta Chat or any compatible client). Autocrypt is the legacy key-discovery mode.">
               <ui.Select
                 label="Remote type"
                 value={mode()}
@@ -293,11 +307,11 @@ export default Plugin.define({
                 ]}
               />
             </ui.SettingsRow>
-            <ui.SettingsRow id="inviteUrl" title="Contact invite URL (optional)" description="Local prefill only. The fingerprint, address and name are read from it; i=/s= are ignored and never stored. Nothing is fetched.">
-              <ui.TextInput label="Contact invite URL" value={value("inviteUrl")} onInput={(v) => setField("inviteUrl", v)} placeholder="https://i.delta.chat/#FPR&v=3&a=you%40example.org" />
+            <ui.SettingsRow id="inviteUrl" title="Contact invite URL / invite fields" description="Paste the QR URL from the pinned contact. It fills the pin and SecureJoin fields locally; s= is kept locally as the handshake auth code. Display hides the secret and nothing is fetched.">
+              <ui.TextInput label="Contact invite URL" value={value("inviteUrl")} onInput={(v) => setField("inviteUrl", v)} placeholder="OPENPGP4FPR:FPR#a=you%40example.org&n=Name&s=AUTH&v=3" />
             </ui.SettingsRow>
-            <ui.SettingsRow title="Fill gate from invite">
-              <ui.Button size="small" disabled={busy()} onClick={() => void fillFromInvite()}>Fill fingerprint and contact</ui.Button>
+            <ui.SettingsRow title="Fill fields from invite">
+              <ui.Button size="small" disabled={busy()} onClick={() => void fillFromInvite()}>Fill SecureJoin fields</ui.Button>
             </ui.SettingsRow>
             <ui.SettingsRow id="pinnedContact" title="Pinned contact" description="Required. Only this address may drive OpenCode.">
               <ui.TextInput label="Pinned contact" value={value("pinnedContact")} onInput={(v) => setField("pinnedContact", v)} placeholder="you@example.org" />
@@ -311,16 +325,24 @@ export default Plugin.define({
           </ui.SettingsSection>
 
           {mode() === "securejoin" ? (
-            <ui.SettingsSection title="SecureJoin setup (Delta Chat)">
-              <ui.SettingsRow title="SecureJoin QR" description="Creates a one-time QR invite carrying this bridge’s fingerprint and address (shown in status above), not the pinned contact details. Scan it in Delta Chat; the contact key is accepted only if it matches the pinned fingerprint. After verification, plaintext mail is ignored.">
-                <div>
-                  <ui.Button size="small" disabled={busy()} onClick={() => void run("SecureJoin QR created", async () => {
-                    const invite = await rpc().getSecureJoinQr({})
-                    setSecureJoinUri(invite.uri)
-                    return undefined
-                  })}>Create SecureJoin QR</ui.Button>
-                  {secureJoinUri() ? <ui.TextInput label="SecureJoin invite URI" value={secureJoinUri()} onInput={() => {}} /> : null}
-                </div>
+            <ui.SettingsSection title="SecureJoin setup">
+              <ui.SettingsRow title="Join the contact's invite" description="This bridge never creates a QR. Scan the QR shown by the pinned contact in Delta Chat (or another SecureJoin client), paste its URL above, or enter every field below. The auth code is the s= value; it stays local and is hidden after saving.">
+                <ui.Button size="small" disabled={busy()} onClick={() => void run("SecureJoin started", () => rpc().startSecureJoin({}))}>Start SecureJoin</ui.Button>
+              </ui.SettingsRow>
+              <ui.SettingsRow id="secureJoinAuth" title="SecureJoin auth code (s=)" description={settings().hasSecureJoinAuth ? "An auth code is saved; leave blank to keep it. Paste a new s= value to replace it." : "Required. The s= auth code from the contact's invite URL."}>
+                <ui.TextInput label="SecureJoin auth code" type="password" value="" onInput={(v) => setField("secureJoinAuth", v)} placeholder={settings().hasSecureJoinAuth ? "Saved" : "URL-safe auth code"} />
+              </ui.SettingsRow>
+              <ui.SettingsRow id="secureJoinName" title="Invite display name (n=)" description="Optional local copy of the name shown in the contact's invite.">
+                <ui.TextInput label="Invite display name" value={value("secureJoinName")} onInput={(v) => setField("secureJoinName", v)} />
+              </ui.SettingsRow>
+              <ui.SettingsRow id="secureJoinVersion" title="SecureJoin version (v=)" description="Only contact SecureJoin v3 is supported.">
+                <ui.TextInput label="SecureJoin version" value={value("secureJoinVersion") || "3"} onInput={(v) => setField("secureJoinVersion", v)} />
+              </ui.SettingsRow>
+              <ui.SettingsRow id="secureJoinRelays" title="Relay addresses (r=)" description="Optional local copy of invite relay addresses. The bridge still contacts only the pinned address.">
+                <ui.TextInput label="Relay addresses" value={value("secureJoinRelays")} onInput={(v) => setField("secureJoinRelays", v)} />
+              </ui.SettingsRow>
+              <ui.SettingsRow id="secureJoinInviteNumber" title="Legacy invite number (i=/j=)" description="Optional local copy only. v3 uses the auth code above; legacy invite numbers are not used as v3 secrets.">
+                <ui.TextInput label="Legacy invite number" value={value("secureJoinInviteNumber")} onInput={(v) => setField("secureJoinInviteNumber", v)} />
               </ui.SettingsRow>
             </ui.SettingsSection>
           ) : (

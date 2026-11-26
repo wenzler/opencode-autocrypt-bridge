@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import {
@@ -11,7 +11,7 @@ import {
   parseQuestionAnswers,
 } from './commands.js'
 import {
-  decryptMessageWithPassword,
+  decryptMessageWithPasswordDetailed,
   encryptMimeWithPassword,
   encryptMime,
   keyFingerprint,
@@ -30,7 +30,7 @@ import {
   parseRawHeaders,
   safeFilename,
 } from './mime.js'
-import { autocryptGossipHeader, autocryptHeader } from './headers.js'
+import { autocryptHeader, parseAutocryptHeader } from './headers.js'
 import {
   formatSessionDirectory,
   normalizeMessageId,
@@ -296,6 +296,7 @@ export async function createBridge(ctx, cfg, options = {}) {
       } catch {}
     }
     const handshake = state.data.handshake
+    const joinPending = cfg.remote.mode === 'securejoin' && Boolean(cfg.pinned.secureJoin?.auth)
     const lastReceiptAt = Math.max(0, ...Object.values(state.data.sent)
       .map((entry) => Number(entry?.receiptAt) || 0))
     return {
@@ -306,13 +307,16 @@ export async function createBridge(ctx, cfg, options = {}) {
       pinnedContact: cfg.pinned.contact,
       pinnedFingerprint: cfg.pinned.fingerprint,
       learnedFingerprint,
-      established: Boolean(handshake.established || peer?.keydata),
+      established: Boolean(handshake.established || (!joinPending && peer?.keydata)),
       verified: Boolean(handshake.verified),
-      handshake: String(handshake.phase || (peer?.keydata ? 'ready' : 'idle')),
+      handshake: String(handshake.phase || (!joinPending && peer?.keydata ? 'ready' : 'idle')),
       secureJoin: {
         status: String(handshake.secureJoin?.status || 'idle'),
         address: String(handshake.secureJoin?.address || ''),
         fingerprint: String(handshake.secureJoin?.fingerprint || ''),
+        hasAuth: Boolean(cfg.pinned.secureJoin?.auth || handshake.secureJoin?.auth),
+        name: String(handshake.secureJoin?.name || cfg.pinned.secureJoin?.name || ''),
+        version: String(handshake.secureJoin?.version || cfg.pinned.secureJoin?.version || '3'),
         createdAt: Number(handshake.secureJoin?.createdAt || 0),
       },
       lastError: String(handshake.lastError || ''),
@@ -780,64 +784,128 @@ export async function createBridge(ctx, cfg, options = {}) {
     return { content: `Sent ${filename} to ${to}` }
   }
 
-  /** SecureJoin v3: the QR advertises this bridge (Alice), not the pinned peer. */
+  /** SecureJoin v3: this bridge joins the invite supplied by the pinned contact. */
+  function emailFromHeader(value) {
+    const text = String(value || '')
+    return /<([^<>\s@]+@[^<>\s>]+)>/.exec(text)?.[1]?.toLowerCase()
+      || /([^<>\s@]+@[^<>\s>]+)/.exec(text)?.[1]?.toLowerCase()
+      || ''
+  }
+
+  function secureJoinAuth() {
+    const auth = String(cfg.pinned.secureJoin?.auth || '').trim()
+    if (!auth) {
+      throw new Error('SecureJoin requires an auth code (`s=`) from the contact invite URL or the SecureJoin auth field')
+    }
+    if (!/^[A-Za-z0-9_-]{11,32}$/.test(auth)) {
+      throw new Error('SecureJoin auth must be 11-32 URL-safe characters')
+    }
+    return auth
+  }
+
   function secureJoinSecret(auth) {
-    return `securejoin/${selfFingerprint}/${auth}`
+    return `securejoin/${cfg.pinned.fingerprint}/${auth}`
   }
 
   function pendingSecureJoin() {
     if (cfg.remote.mode !== 'securejoin') return undefined
-    const invite = state.data.handshake.secureJoin
-    if (!invite || !invite.auth || invite.fingerprint !== selfFingerprint) return undefined
-    if (invite.address && invite.address !== cfg.address) return undefined
-    if (Date.now() - Number(invite.createdAt || 0) > 60 * 60 * 1000) return undefined
-    return invite
+    if (!cfg.pinned.contact || !cfg.pinned.fingerprint) return undefined
+    const auth = String(cfg.pinned.secureJoin?.auth || '').trim()
+    if (!auth) return undefined
+    return {
+      auth,
+      address: cfg.pinned.contact,
+      fingerprint: cfg.pinned.fingerprint,
+      name: String(cfg.pinned.secureJoin?.name || ''),
+      version: String(cfg.pinned.secureJoin?.version || '3'),
+    }
   }
 
-  async function getSecureJoinQr() {
+  async function startSecureJoin() {
     if (cfg.remote.mode !== 'securejoin') {
-      throw new Error('SecureJoin QR is only available in SecureJoin remote mode')
+      throw new Error('SecureJoin is only available in SecureJoin remote mode')
     }
-    if (!cfg.pinned.contact || !cfg.pinned.fingerprint) {
-      throw new Error('SecureJoin requires pinnedContact and pinnedFingerprint')
+    const invite = pendingSecureJoin()
+    if (!invite) throw new Error('SecureJoin requires pinnedContact, pinnedFingerprint and an auth code')
+    const auth = secureJoinAuth()
+    if (invite.version && invite.version !== '3') {
+      throw new Error('Only contact SecureJoin v3 is supported; set the invite version to 3')
     }
-    const auth = randomBytes(18).toString('base64url')
+    delete state.data.peers[cfg.pinned.contact]
     state.data.handshake.secureJoin = {
       auth,
-      address: cfg.address,
-      fingerprint: selfFingerprint,
+      address: invite.address,
+      fingerprint: invite.fingerprint,
+      name: invite.name,
+      version: invite.version,
       createdAt: Date.now(),
-      status: 'awaiting-scan',
+      status: 'request-sent',
+      verified: false,
     }
-    await state.save()
-    const uri = `OPENPGP4FPR:${selfFingerprint}`
-      + `#a=${encodeURIComponent(cfg.address)}`
-      + `&n=${encodeURIComponent(cfg.displayName || 'OpenCode')}`
-      + `&s=${auth}&v=3`
+    await setHandshake({
+      phase: 'awaiting-pubkey', established: false, verified: false, lastError: '',
+    })
+    try {
+      await sendSecureJoinRequestPubkey(invite.address, auth)
+    } catch (error) {
+      state.data.handshake.secureJoin.status = 'error'
+      await state.save()
+      throw error
+    }
     onStatus(await getStatus())
-    return {
-      uri,
-      fingerprint: selfFingerprint,
-      address: cfg.address,
-      pinnedContact: cfg.pinned.contact,
-      status: 'awaiting-scan',
-    }
+    return getStatus()
   }
 
-  async function sendSecureJoinPubkey(to, auth) {
+  async function sendSecureJoinRequestPubkey(to, auth) {
+    // Bob's v3 request is symmetric and deliberately unsigned: Alice proves
+    // herself by returning a signed pubkey encrypted with the same secret.
+    const inner = buildInnerMime({
+      text: 'Secure-Join',
+      headers: [
+        `From: <${cfg.address}>`,
+        `To: <${to}>`,
+        'Subject: Secure-Join',
+        'Secure-Join: vc-request-pubkey',
+        `Secure-Join-Auth: ${auth}`,
+        'Chat-Version: 1.0',
+      ],
+    })
+    const armored = await encryptMimeWithPassword(inner.entity, secureJoinSecret(auth), undefined)
+    const pgp = buildPgpMime(armored)
+    const messageId = `${Date.now()}.${randomUUID()}@${cfg.address.split('@')[1] || 'localhost'}`
+    const raw = buildMail({
+      cfg,
+      to,
+      subject: 'Chat: Secure-Join',
+      messageId,
+      contentType: pgp.contentType,
+      body: pgp.body,
+      from: `<${cfg.address}>`,
+      headers: [
+        'Secure-Join: vc-request-pubkey',
+        `Secure-Join-Auth: ${auth}`,
+        'X-OpenCode-SecureJoin: vc-request-pubkey',
+      ],
+    })
+    await sender.send(raw, to)
+    log(`Sent SecureJoin vc-request-pubkey to ${to}`)
+  }
+
+  async function sendSecureJoinRequestWithAuth(to, auth, peerKeyB64) {
     const inner = buildInnerMime({
       text: 'Secure-Join',
       headers: [
         `From: "${String(cfg.displayName || '').replace(/"/g, '')}" <${cfg.address}>`,
         `To: <${to}>`,
         'Subject: Secure-Join',
-        'Secure-Join: vc-pubkey',
+        'Secure-Join: vc-request-with-auth',
         `Secure-Join-Auth: ${auth}`,
+        `Secure-Join-Fingerprint: ${selfFingerprint}`,
         `Autocrypt: ${autocryptHeader(cfg.address, identity.publicB64, true)}`,
         'Chat-Version: 1.0',
       ],
     })
-    const armored = await encryptMimeWithPassword(inner.entity, secureJoinSecret(auth), identity)
+    const armored = await encryptMime(inner.entity, identity, [peerKeyB64])
     const pgp = buildPgpMime(armored)
     const messageId = `${Date.now()}.${randomUUID()}@${cfg.address.split('@')[1] || 'localhost'}`
     const raw = buildMail({
@@ -849,132 +917,108 @@ export async function createBridge(ctx, cfg, options = {}) {
       contentType: pgp.contentType,
       body: pgp.body,
       headers: [
-        'Secure-Join: vc-pubkey',
+        'Secure-Join: vc-request-with-auth',
         `Secure-Join-Auth: ${auth}`,
-        'X-OpenCode-SecureJoin: vc-pubkey',
+        `Secure-Join-Fingerprint: ${selfFingerprint}`,
+        'X-OpenCode-SecureJoin: vc-request-with-auth',
       ],
     })
     await sender.send(raw, to)
-    log(`Sent SecureJoin vc-pubkey to ${to}`)
+    log(`Sent SecureJoin vc-request-with-auth to ${to}`)
   }
 
-  async function sendSecureJoinConfirm(to, auth, peerKeyB64) {
-    const inner = buildInnerMime({
-      text: 'Secure-Join',
-      headers: [
-        `From: "${String(cfg.displayName || '').replace(/"/g, '')}" <${cfg.address}>`,
-        `To: <${to}>`,
-        'Subject: Secure-Join',
-        'Secure-Join: vc-contact-confirm',
-        `Secure-Join-Fingerprint: ${cfg.pinned.fingerprint}`,
-        `Autocrypt: ${autocryptHeader(cfg.address, identity.publicB64, true)}`,
-        `Autocrypt-Gossip: ${autocryptGossipHeader(to, peerKeyB64)}`,
-        'Chat-Version: 1.0',
-      ],
-    })
-    const protectedBody = await protect(inner, to, true, peerKeyB64)
-    const messageId = `${Date.now()}.${randomUUID()}@${cfg.address.split('@')[1] || 'localhost'}`
-    const raw = buildMail({
-      cfg,
-      to,
-      subject: 'Chat: Secure-Join',
-      messageId,
-      publicB64: identity.publicB64,
-      contentType: protectedBody.contentType,
-      body: protectedBody.body,
-      headers: [
-        'Secure-Join: vc-contact-confirm',
-        `Secure-Join-Fingerprint: ${cfg.pinned.fingerprint}`,
-        'X-OpenCode-SecureJoin: vc-contact-confirm',
-      ],
-    })
-    await sender.send(raw, to)
-    log(`Sent SecureJoin vc-contact-confirm to ${to}`)
-  }
-
-  /** Alice side of SecureJoin v3. Returns true when the raw message was consumed. */
-  async function handleSecureJoinRequestPubkey(raw) {
+  /** Bob side of SecureJoin v3. Returns true when the raw message was consumed. */
+  async function handleSecureJoinPubkey(raw) {
     const invite = pendingSecureJoin()
     if (!invite) return false
+    const status = String(state.data.handshake.secureJoin?.status || '')
+    if (status === 'auth-sent' || status === 'verified') return false
     const outer = parseRawHeaders(raw)
-    const from = String(outer.get('from') || '')
-    const senderAddress = /<([^<>\s@]+@[^<>\s>]+)>/.exec(from)?.[1]?.toLowerCase()
-      || /([^<>\s@]+@[^<>\s>]+)/.exec(from)?.[1]?.toLowerCase()
-    if (senderAddress && senderAddress !== cfg.pinned.contact) return false
+    const from = emailFromHeader(outer.get('from'))
+    if (from && from !== cfg.pinned.contact) return false
     const armored = extractArmored(raw)
     if (!armored) return false
-    let entity
+    let opened
     try {
-      entity = await decryptMessageWithPassword(armored, secureJoinSecret(invite.auth), cfg.pinned.keyB64)
+      opened = await decryptMessageWithPasswordDetailed(armored, secureJoinSecret(invite.auth))
     } catch {
       return false
     }
-    const inner = parseRawHeaders(entity)
+    const inner = parseRawHeaders(opened.data)
     const step = secureJoinFrom(outer, inner)
-    if (step?.step !== 'vc-request-pubkey' || step.auth !== invite.auth) return false
+    if (step?.step !== 'vc-pubkey' || step.auth !== invite.auth) return false
 
-    const fromName = String(state.data.peers[cfg.pinned.contact]?.name || cfg.displayName || 'OpenCode')
-    state.data.peers[cfg.pinned.contact] ||= {}
-    state.data.peers[cfg.pinned.contact].keydata ||= cfg.pinned.keyB64
-    state.data.peers[cfg.pinned.contact].name ||= fromName
-    state.data.handshake.secureJoin.status = 'pubkey-sent'
-    await state.save()
-    await sendSecureJoinPubkey(cfg.pinned.contact, invite.auth)
-    onStatus(await getStatus())
-    return true
-  }
-
-  async function handleSecureJoinRequestWithAuth(from, message) {
-    const invite = pendingSecureJoin()
-    if (!invite || message.secureJoin?.step !== 'vc-request-with-auth') return false
-    if (message.secureJoin.auth !== invite.auth) {
-      log('Ignoring SecureJoin request with an unknown auth code')
-      return false
-    }
-    const announced = String(message.secureJoin.fingerprint || '').replace(/[^0-9a-f]/gi, '').toUpperCase()
-    if (announced !== cfg.pinned.fingerprint) {
-      log(`Ignoring SecureJoin fingerprint ${announced || '(missing)'}`)
-      return false
-    }
-    if (!message.signatureVerified || !message.encrypted) {
-      log('Ignoring unsigned or unencrypted SecureJoin request')
-      return false
-    }
-    const peerKey = message.autocrypt?.keydata || cfg.pinned.keyB64
-    if (!peerKey) {
-      log('Ignoring SecureJoin request without a usable pinned contact key')
-      return false
-    }
+    const autocrypt = parseAutocryptHeader(inner.get('autocrypt'), cfg.pinned.contact)
+    const bootstrap = cfg.pinned.keyB64 || state.data.peers[cfg.pinned.contact]?.keydata || ''
+    const peerKey = autocrypt?.keydata || bootstrap
+    if (!peerKey) return false
     let peerFingerprint = ''
     try {
       peerFingerprint = await keyFingerprint(peerKey)
     } catch {
-      log('Ignoring SecureJoin request with an unreadable contact key')
       return false
     }
     if (peerFingerprint !== cfg.pinned.fingerprint) {
-      log(`Ignoring SecureJoin key fingerprint ${peerFingerprint}`)
+      log(`Ignoring SecureJoin pubkey with fingerprint ${peerFingerprint}`)
       return false
     }
-    state.data.peers[from] ||= {}
-    state.data.peers[from].keydata = peerKey
-    state.data.peers[from].fingerprint = peerFingerprint
-    state.data.peers[from].name ||= message.fromName || ''
-    state.data.peers[from].seenAt = Date.now()
-    state.data.handshake.secureJoin.status = 'confirm-sent'
+    try {
+      const checked = await decryptMessageWithPasswordDetailed(armored, secureJoinSecret(invite.auth), peerKey)
+      if (!checked.signatureVerified) return false
+    } catch (error) {
+      log(`Ignoring unsigned SecureJoin pubkey: ${error.message}`)
+      return false
+    }
+
+    state.data.peers[cfg.pinned.contact] = {
+      keydata: peerKey,
+      fingerprint: peerFingerprint,
+      preferEncrypt: Boolean(autocrypt?.preferEncrypt),
+      name: String(state.data.peers[cfg.pinned.contact]?.name || ''),
+      seenAt: Date.now(),
+      autocrypt: true,
+    }
+    state.data.handshake.secureJoin.status = 'pubkey-received'
     await state.save()
-    await sendSecureJoinConfirm(from, invite.auth, peerKey)
-    state.data.handshake.secureJoin.verified = true
-    state.data.handshake.secureJoin.status = 'verified'
+    await sendSecureJoinRequestWithAuth(cfg.pinned.contact, invite.auth, peerKey)
+    state.data.handshake.secureJoin.status = 'auth-sent'
     await state.save()
-    await setHandshake({
-      phase: 'verified',
-      established: true,
-      verified: true,
-      lastError: '',
-    })
-    log(`SecureJoin verified ${from} with fingerprint ${cfg.pinned.fingerprint}`)
     onStatus(await getStatus())
+    return true
+  }
+
+  async function handleSecureJoinContactConfirm(from, message) {
+    const invite = pendingSecureJoin()
+    if (!invite || message.secureJoin?.step !== 'vc-contact-confirm') return false
+    if (!message.encrypted || !message.signatureVerified) {
+      log('Ignoring unsigned or unencrypted SecureJoin confirmation')
+      return false
+    }
+    const peerKey = message.autocrypt?.keydata || state.data.peers[from]?.keydata || ''
+    if (!peerKey) return false
+    let peerFingerprint = ''
+    try {
+      peerFingerprint = await keyFingerprint(peerKey)
+    } catch {
+      return false
+    }
+    if (peerFingerprint !== cfg.pinned.fingerprint) {
+      log(`Ignoring SecureJoin confirmation with fingerprint ${peerFingerprint}`)
+      return false
+    }
+    state.data.peers[from] = {
+      keydata: peerKey,
+      fingerprint: peerFingerprint,
+      preferEncrypt: Boolean(message.autocrypt?.preferEncrypt),
+      name: String(state.data.peers[from]?.name || message.fromName || ''),
+      seenAt: Date.now(),
+      autocrypt: true,
+    }
+    state.data.handshake.secureJoin.status = 'verified'
+    state.data.handshake.secureJoin.verified = true
+    await state.save()
+    await setHandshake({ phase: 'verified', established: true, verified: true, lastError: '' })
+    log(`SecureJoin verified ${from} with fingerprint ${cfg.pinned.fingerprint}`)
     return true
   }
 
@@ -1257,9 +1301,9 @@ export async function createBridge(ctx, cfg, options = {}) {
 
   async function handle(raw) {
     try {
-      if (await handleSecureJoinRequestPubkey(raw)) return
+      if (await handleSecureJoinPubkey(raw)) return
     } catch (error) {
-      log(`SecureJoin request failed: ${error.message}`)
+      log(`SecureJoin pubkey failed: ${error.message}`)
     }
     let message
     try {
@@ -1285,9 +1329,13 @@ export async function createBridge(ctx, cfg, options = {}) {
       return
     }
     try {
-      if (await handleSecureJoinRequestWithAuth(from, message)) return
+      if (await handleSecureJoinContactConfirm(from, message)) return
     } catch (error) {
       log(`SecureJoin confirmation failed: ${error.message}`)
+    }
+    if (cfg.remote.mode === 'securejoin' && cfg.pinned.secureJoin?.auth && !state.data.handshake.verified) {
+      log(`Ignoring ${from}: waiting for SecureJoin verification`)
+      return
     }
     if (seenBefore(message.messageId)) return
     await markSeen(message.messageId)
@@ -1440,7 +1488,7 @@ export async function createBridge(ctx, cfg, options = {}) {
     processEvent: handleEvent,
     confirmQuestionReply,
     getStatus,
-    getSecureJoinQr,
+    startSecureJoin,
     async startHandshake() {
       if (cfg.remote.mode !== 'autocrypt') {
         throw new Error('Autocrypt request is only available in Autocrypt remote mode')

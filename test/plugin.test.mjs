@@ -125,6 +125,28 @@ test('GUI defaults to key generation and stores hostnames without URL schemes', 
   await dispose()
 })
 
+test('invite auth code is kept in storage but hidden in settings reads', async () => {
+  const storageValues = new Map()
+  const handlersOut = { value: null }
+  const ctx = fakeContext(storageValues, handlersOut, [])
+
+  const dispose = await plugin.setup(ctx)
+  const handlers = handlersOut.value
+  const fingerprint = '669AE77C1D829C65258FC4F8F220CFCAEAA9A4CE'
+  const url = `https://example.org/#${fingerprint}&v=3&a=me%40example.net&s=AUTHCODE1234`
+
+  await handlers.updateSettings({ inviteUrl: url })
+  const visible = await handlers.getSettings({})
+  assert.doesNotMatch(visible.inviteUrl, /AUTHCODE1234/)
+  assert.equal(visible.hasSecureJoinAuth, true)
+  assert.match(storageValues.get('autocrypt.settings').inviteUrl, /AUTHCODE1234/)
+
+  // Saving the redacted URL from the GUI must not erase the stored auth code.
+  await handlers.updateSettings({ inviteUrl: visible.inviteUrl })
+  assert.match(storageValues.get('autocrypt.settings').inviteUrl, /AUTHCODE1234/)
+  await dispose()
+})
+
 test('session RPC and agent tool are registered for project awareness', async () => {
   const storageValues = new Map()
   const handlersOut = { value: null }

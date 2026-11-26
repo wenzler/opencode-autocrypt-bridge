@@ -43,8 +43,8 @@ export function loadConfig(options = {}, env = process.env) {
   const imapUser = String(get('imapUser', 'AC_IMAP_USER', address))
   const smtpUser = String(get('smtpUser', 'AC_SMTP_USER', address))
 
-  // Invite URLs are only a convenience for filling the pinned gate locally.
-  // They never enable an invite protocol; i=/s= tokens are discarded.
+  // A SecureJoin invite URL comes from the pinned contact. It is stored locally
+  // with its auth code so the bridge can join; no network request is made.
   const inviteUrl = String(pick(options.inviteUrl, env.AC_INVITE_URL, ''))
   let invite
   if (inviteUrl) {
@@ -78,8 +78,8 @@ export function loadConfig(options = {}, env = process.env) {
       throw new Error(`${PREFIX} cannot read AC_PINNED_CONTACT_KEY_FILE: ${error.message}`)
     }
   }
-  if (!pinnedFingerprintSource && !pinnedKeySource) {
-    throw new Error(`${PREFIX} pinnedContact requires pinnedFingerprint (or pinnedContactKey)`)
+  if (!pinnedFingerprintSource) {
+    throw new Error(`${PREFIX} pinnedContact requires pinnedFingerprint`)
   }
   const pinnedFingerprint = normalizeFingerprint(pinnedFingerprintSource)
   const pinnedKeyB64 = publicKeyToBase64(pinnedKeySource)
@@ -91,6 +91,19 @@ export function loadConfig(options = {}, env = process.env) {
     if (invite.address && invite.address !== pinnedContact) {
       throw new Error(`${PREFIX} invite address does not match pinnedContact`)
     }
+    if (invite.groupID || invite.groupName || invite.broadcastName) {
+      throw new Error(`${PREFIX} group and broadcast invites are not supported; use a contact invite`)
+    }
+  }
+
+  // SecureJoin parameters can come from the invite URL or be entered directly.
+  // The bridge is the joiner: the inviter is always the pinned contact.
+  const secureJoin = {
+    auth: String(get('secureJoinAuth', 'AC_SECURE_JOIN_AUTH', invite?.auth || '')).trim(),
+    inviteNumber: String(get('secureJoinInviteNumber', 'AC_SECURE_JOIN_INVITE_NUMBER', invite?.inviteNumber || '')).trim(),
+    name: String(get('secureJoinName', 'AC_SECURE_JOIN_NAME', invite?.name || '')).trim(),
+    version: String(get('secureJoinVersion', 'AC_SECURE_JOIN_VERSION', invite?.version || '3')).trim() || '3',
+    relays: String(get('secureJoinRelays', 'AC_SECURE_JOIN_RELAYS', invite?.relays || '')).trim(),
   }
 
   const cfg = {
@@ -124,6 +137,7 @@ export function loadConfig(options = {}, env = process.env) {
       requireEncrypted: boolean(get('requireEncrypted', 'AC_REQUIRE_ENCRYPTED'), false),
       inviteUrl: redactInviteUrl(inviteUrl),
       invite,
+      secureJoin,
     },
     session: {
       defaultID: String(get('defaultSessionID', 'AC_SESSION_ID', '')).trim(),
@@ -132,8 +146,8 @@ export function loadConfig(options = {}, env = process.env) {
     // Email remote controls. High-risk approvals stay off by default: the
     // bridge must never become a remote shell.
     remote: {
-      // SecureJoin is the default for Delta Chat; Autocrypt is the legacy
-      // plaintext-bootstrap mode for generic OpenPGP mail clients.
+      // SecureJoin joins the pinned contact's invite (any OpenPGP client that
+      // speaks SecureJoin v3); Autocrypt is the legacy key-discovery mode.
       mode: String(get('remoteMode', 'AC_REMOTE_MODE', 'securejoin')).toLowerCase(),
       decisions: boolean(get('emailDecisions', 'AC_EMAIL_DECISIONS'), true),
       highRiskDecisions: boolean(get('emailHighRiskDecisions', 'AC_EMAIL_HIGH_RISK_DECISIONS'), false),

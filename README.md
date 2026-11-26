@@ -4,10 +4,10 @@ An OpenCode **V2** plugin that drives OpenCode from a standard OpenPGP-capable e
 
 Design rules:
 
-- **Two remote modes:** SecureJoin (default, for Delta Chat) performs a one-time QR verification; Autocrypt (legacy) discovers keys from `Autocrypt:` headers. Both use OpenPGP/MIME (RFC 3156). `Chat-Version: 1.0` is only a display-compatibility marker, not a handshake signal.
+- **Two remote modes:** SecureJoin joins the pinned contact's invite (Delta Chat or any compatible client) and verifies both keys; Autocrypt (legacy) discovers keys from `Autocrypt:` headers. Both use OpenPGP/MIME (RFC 3156). `Chat-Version: 1.0` is only a display-compatibility marker, not a handshake signal.
 - **Hard gate:** `pinnedContact` plus the contact's OpenPGP `pinnedFingerprint` are mandatory in both modes. Messages from any other address are rejected before attachments are written.
 - **Autocrypt headers stay on:** every outbound message keeps its own `Autocrypt:` header, including after the key has been learned. Autocrypt is stateful, so peers use these headers to track key state, rotations, and recovery. It does not re-run establishment or weaken the pin.
-- **Invite links are local prefill only:** a contact URI supplied in settings can fill the pinned fingerprint/address/name. Its `i=`/`s=` tokens are ignored, stripped before storage, and never sent on the wire. A separately generated SecureJoin QR uses its own `s` authcode only in local bridge handshake state.
+- **Invites come from the contact:** the bridge never generates a QR. A pasted invite URL (or manually entered fields) supplies the inviter's fingerprint/address/name and the `s=` auth code. The auth code is kept only in local settings and used solely for the IMAP/SMTP handshake; no URL is fetched.
 - **No website calls:** the plugin never fetches the domain in an invite URL. All traffic is IMAP/SMTP to the configured mail host.
 - **Session-aware email:** every outbound subject carries `[session:ses_…]`. Delta Chat keeps that subject on replies, so the bridge returns to the same OpenCode session even across projects. Threading headers and explicit email commands are also supported.
 - **No remote shell:** encrypted email can answer OpenCode permission requests, answer native multiple-choice question forms, read session output, send project files, and subscribe to session notices. It never exposes arbitrary shell execution.
@@ -57,16 +57,17 @@ OpenCode Desktop loads the plugin and **Settings → Autocrypt Bridge** appears.
 
 ## Establish the pinned contact
 
-Choose **Remote type** in the GUI first. Pinning is common to both modes. Two fingerprints are involved in SecureJoin: the pinned contact fingerprint (the key you allow to drive OpenCode) and the bridge fingerprint carried by the generated QR (the key Delta Chat verifies). They are intentionally different.
+Choose **Remote type** in the GUI first. Pinning is common to both modes. In SecureJoin the invite's leading fingerprint and `a=` address are the pinned contact (the invite issuer); the bridge offers its own fingerprint only inside the encrypted handshake as the joiner. The bridge never creates an invite, so it cannot make itself the pinned contact.
 
-### SecureJoin (Delta Chat, default)
+### SecureJoin (contact invite, default)
 
-1. Fill `pinnedContact` and `pinnedFingerprint`, then choose **Create SecureJoin QR**. The QR advertises **this bridge's** OpenPGP fingerprint, email address and display name plus a fresh authcode; it does not fetch anything.
-2. Scan the QR in Delta Chat. Delta Chat sends a symmetrically encrypted `vc-request-pubkey`; the bridge answers with its signed public key.
-3. Delta Chat sends a signed, encrypted `vc-request-with-auth` containing its own key and fingerprint. The bridge accepts it only when that fingerprint matches `pinnedFingerprint`.
-4. The bridge stores the contact key, sends a signed, encrypted `vc-contact-confirm`, and marks the contact verified. After that, plaintext from the pinned contact is ignored.
+1. In Delta Chat (or another SecureJoin client), show the invite QR for the contact that is allowed to drive OpenCode. Paste its URL into **Contact invite URL** and choose **Fill SecureJoin fields**, or enter every field manually: pinned fingerprint, pinned address, `s=` auth code, `n=` name, `v=` version and optional relay/legacy fields.
+2. Choose **Start SecureJoin**. The bridge sends a symmetrically encrypted `vc-request-pubkey` to **only the pinned address**, using `securejoin/<pinned fingerprint>/<auth code>`.
+3. The invite issuer replies with a signed, symmetrically encrypted `vc-pubkey`. The bridge accepts its key only when that signature and fingerprint match `pinnedFingerprint`.
+4. The bridge sends a signed, encrypted `vc-request-with-auth` containing the invite auth code and the bridge's own fingerprint.
+5. The issuer sends a signed, encrypted `vc-contact-confirm`. The bridge marks the contact verified. While an auth code is configured and the handshake is pending, no normal mail drives OpenCode; after verification, plaintext is ignored.
 
-The generated authcode is stored only in local bridge state and expires after one hour. A QR from someone else, pasted into **Contact invite URL**, is still only a pin prefill; its tokens are never used.
+The auth code is stored locally and hidden in the GUI. It is never sent outside the encrypted handshake. Group and broadcast invites are rejected; this bridge is a one-to-one remote control, not a group member.
 
 ### Autocrypt (legacy)
 
@@ -128,15 +129,16 @@ Read receipts use the Delta Chat-compatible encrypted MDN format. Every outbound
 
 If a session is busy, the next prompt is queued with OpenCode's `delivery: "queue"` and the phone gets a short acknowledgement. `!watch` subscribes the thread to completion, failure, idle and decision notices so queued work can be followed without polling.
 
-### Invite URL prefill (optional)
+### Invite URL and manual parameters
 
 A contact-invite URI such as this is accepted:
 
 ```text
-https://i.delta.chat/#FPR&v=3&i=…&s=…&a=you%40example.org&n=Bot+contact
+https://i.delta.chat/#FPR&v=3&s=AUTHCODE&a=you%40example.org&n=Bot+contact
+OPENPGP4FPR:FPR#v=3&s=AUTHCODE&a=you%40example.org&n=Bot+contact
 ```
 
-The GUI button **Fill fingerprint and contact** reads only the public fields (leading fingerprint, `a=`, `n=`, `v=`) from a URI you paste in. `i=`, `j=`, and `s=` are discarded locally: they are neither stored nor used on the wire. Explicit pinned settings still win and must agree with the invite. An armored public key can also be supplied as `pinnedContactKey`; it must match the pinned fingerprint and is used only as bootstrap material. The bridge's own **Create SecureJoin QR** button is separate: its generated `s` authcode stays in local handshake state.
+**Fill SecureJoin fields** reads the leading fingerprint, `a=`, `n=`, `v=`, `s=`, `r=`, and `i=`/`j=` into the local form. `s=` is the auth code the bridge uses to join; the displayed URL hides it, but the saved settings keep it. Explicit pinned settings must agree with the invite. Every parameter can also be typed directly in **SecureJoin setup**, so a URL from any OpenPGP client is optional. An armored `pinnedContactKey` may be supplied as bootstrap verification material; it must match the pinned fingerprint.
 
 ## GUI settings
 
@@ -146,8 +148,8 @@ The GUI button **Fill fingerprint and contact** reads only the public fields (le
 - IMAP/SMTP hostname (no `https://` or path), port, security, login, and passwords;
 - **Remote type**: SecureJoin (Delta Chat) or Autocrypt; setup controls are grouped by mode;
 - pinned contact, pinned fingerprint, optional pinned public key;
-- optional invite URL and **Fill fingerprint and contact**;
-- **Create SecureJoin QR** in SecureJoin mode; **Send Autocrypt request** and reject plaintext inbound mail in Autocrypt mode (outbound replies stay encrypted when the pinned key is known);
+- optional invite URL and **Fill SecureJoin fields**;
+- manual SecureJoin parameters: `s=` auth code, `n=` name, `v=` version, `r=` relays and legacy `i=`/`j=`, plus **Start SecureJoin**; **Send Autocrypt request** and reject plaintext inbound mail in Autocrypt mode (outbound replies stay encrypted when the pinned key is known);
 - generated/imported OpenPGP identity and mutual-encryption preference;
 - TLS verification and IMAP poll interval;
 - live status via RPC events: configured/unconfigured state, remote mode, learned fingerprint, established state, fingerprint verification, SecureJoin status, bound session, last error;
@@ -176,11 +178,16 @@ All fields can be set in the GUI, in the `options` object, or with environment v
 | SMTP security / `smtpSecurity` | `AC_SMTP_SECURITY` | `tls`, `starttls`, `plain` | `tls` |
 | SMTP user / `smtpUser` | `AC_SMTP_USER` | SMTP login | address |
 | SMTP password / `smtpPassword` | `AC_SMTP_PASSWORD` | SMTP password | required |
-| Remote type / `remoteMode` | `AC_REMOTE_MODE` | `securejoin` (Delta Chat) or `autocrypt` (legacy) | `securejoin` |
-| Pinned contact / `pinnedContact` | `AC_PINNED_CONTACT` | The only address allowed to drive OpenCode | required |
-| Pinned fingerprint / `pinnedFingerprint` | `AC_PINNED_FINGERPRINT` | Contact's OpenPGP fingerprint | required |
+| Remote type / `remoteMode` | `AC_REMOTE_MODE` | `securejoin` (contact invite) or `autocrypt` (legacy) | `securejoin` |
+| Pinned contact / `pinnedContact` | `AC_PINNED_CONTACT` | Invite issuer and the only address allowed to drive OpenCode | required |
+| Pinned fingerprint / `pinnedFingerprint` | `AC_PINNED_FINGERPRINT` | Invite issuer's OpenPGP fingerprint | required |
 | Pinned public key / `pinnedContactKey` | `AC_PINNED_CONTACT_KEY` | Optional bootstrap key; must match the fingerprint | learned during setup |
-| Invite URL / `inviteUrl` | `AC_INVITE_URL` | Local pin prefill only; `i=`/`s=` stripped | empty |
+| Invite URL / `inviteUrl` | `AC_INVITE_URL` | Contact's invite; `s=` auth code kept locally, hidden in GUI | empty |
+| SecureJoin auth / `secureJoinAuth` | `AC_SECURE_JOIN_AUTH` | `s=` auth code; alternative to pasting a URL | from invite |
+| SecureJoin name / `secureJoinName` | `AC_SECURE_JOIN_NAME` | `n=` invite display name | from invite |
+| SecureJoin version / `secureJoinVersion` | `AC_SECURE_JOIN_VERSION` | `v=`; only `3` is supported | `3` |
+| SecureJoin relays / `secureJoinRelays` | `AC_SECURE_JOIN_RELAYS` | Optional `r=` relay addresses copied locally | from invite |
+| Legacy invite number / `secureJoinInviteNumber` | `AC_SECURE_JOIN_INVITE_NUMBER` | Optional `i=`/`j=` copy; not used as a v3 secret | from invite |
 | Reject plaintext inbound / `requireEncrypted` | `AC_REQUIRE_ENCRYPTED` | Reject plaintext inbound prompts; does not turn off outbound encryption | `false` |
 | Poll interval / `pollIntervalMs` | `AC_POLL_INTERVAL_MS` | IMAP reconciliation interval | `30000` |
 | Verify TLS / `verifyCertificate` | `AC_VERIFY_CERTIFICATE` | Verify IMAP/SMTP certificates | `true` |

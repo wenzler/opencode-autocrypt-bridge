@@ -4,14 +4,20 @@ import * as openpgp from 'openpgp'
 import { createBridge } from '../src/bridge.js'
 import {
   decryptMessage,
-  decryptMessageWithPassword,
+  decryptMessageWithPasswordDetailed,
   encryptMime,
   encryptMimeWithPassword,
   keyFingerprint,
 } from '../src/crypto.js'
 import { loadConfig } from '../src/config.js'
-import { armorToBase64, autocryptGossipHeader, autocryptHeader } from '../src/headers.js'
+import { armorToBase64, autocryptHeader, autocryptGossipHeader } from '../src/headers.js'
 import { buildInnerMime, buildMail, buildPgpMime, extractArmored, parseRawHeaders } from '../src/mime.js'
+
+const AUTH = 'NJFZBXGwoQh6B_kDQlJrj2nP'
+const secretFor = (fingerprint, auth = AUTH) => `securejoin/${fingerprint}/${auth}`
+const inviteFor = (contact, auth = AUTH) => (
+  `OPENPGP4FPR:${contact.fingerprint}#a=contact%40example.net&n=Contact&s=${auth}&v=3`
+)
 
 async function keyPair(email) {
   const pair = await openpgp.generateKey({
@@ -37,6 +43,8 @@ function harness(contact, options = {}) {
     generateKey: false,
     attachmentDir: '/tmp/opencode-autocrypt-bridge-securejoin',
     remoteMode: options.remoteMode || 'securejoin',
+    inviteUrl: options.inviteUrl || '',
+    secureJoinAuth: options.secureJoinAuth || '',
   }, {})
   const values = new Map()
   const prompted = []
@@ -72,6 +80,21 @@ function harness(contact, options = {}) {
   return { cfg, ctx, sent, sender, prompted, session }
 }
 
+async function makeBridge(contact, options = {}) {
+  const h = harness(contact, options)
+  const bot = await keyPair('bot@example.org')
+  const bridge = await createBridge(h.ctx, h.cfg, {
+    identity: {
+      privateKey: bot.privateKey,
+      publicB64: bot.publicB64,
+      publicArmored: bot.privateKey.toPublic().armor(),
+    },
+    sender: h.sender,
+    log: () => {},
+  })
+  return { ...h, bot, bridge }
+}
+
 async function buildSymmetricHandshake(cfg, contact, auth, secret, headers) {
   const inner = buildInnerMime({
     text: 'Secure-Join',
@@ -90,11 +113,9 @@ async function buildSymmetricHandshake(cfg, contact, auth, secret, headers) {
     to: cfg.address,
     subject: 'Chat: Secure-Join',
     messageId: `<sj-${Date.now()}@example.net>`,
-    publicB64: contact.publicB64,
     contentType: pgp.contentType,
     body: pgp.body,
     from: 'Contact <contact@example.net>',
-    autocryptAddress: 'contact@example.net',
   })
 }
 
@@ -127,65 +148,64 @@ async function buildAsymmetricHandshake(cfg, contact, bot, auth, headers) {
   })
 }
 
-test('SecureJoin v3 verifies the pinned key and then rejects plaintext', async () => {
-  const bot = await keyPair('bot@example.org')
+test('SecureJoin joins the contact invite, verifies the pin and then rejects plaintext', async () => {
   const contact = await keyPair('contact@example.net')
-  const h = harness(contact)
-  const bridge = await createBridge(h.ctx, h.cfg, {
-    identity: {
-      privateKey: bot.privateKey,
-      publicB64: bot.publicB64,
-      publicArmored: bot.privateKey.toPublic().armor(),
-    },
-    sender: h.sender,
-    log: () => {},
-  })
+  const h = await makeBridge(contact, { inviteUrl: inviteFor(contact) })
+  const secret = secretFor(contact.fingerprint)
 
-  const invite = await bridge.getSecureJoinQr()
-  assert.match(invite.uri, /^OPENPGP4FPR:[0-9A-F]{40}#/)
-  assert.ok(invite.uri.startsWith(`OPENPGP4FPR:${bot.fingerprint}#`))
-  assert.equal(invite.address, 'bot@example.org')
-  assert.equal(invite.pinnedContact, 'contact@example.net')
-  const params = new URLSearchParams(invite.uri.split('#')[1])
-  const auth = params.get('s')
-  assert.ok(auth && auth.length > 10)
-  assert.equal(params.get('a'), 'bot@example.org')
-  assert.equal(params.get('v'), '3')
-  const secret = `securejoin/${bot.fingerprint}/${auth}`
-
-  await bridge.process(await buildSymmetricHandshake(h.cfg, contact, auth, secret, [
-    'Secure-Join: vc-request-pubkey',
-    `Secure-Join-Auth: ${auth}`,
-    `Autocrypt: ${autocryptHeader('contact@example.net', contact.publicB64, true)}`,
-  ]))
+  const started = await h.bridge.startSecureJoin()
+  assert.equal(started.remoteMode, 'securejoin')
+  assert.equal(started.secureJoin.status, 'request-sent')
+  assert.equal(started.secureJoin.address, 'contact@example.net')
+  assert.equal(started.secureJoin.fingerprint, contact.fingerprint)
+  assert.equal(started.secureJoin.hasAuth, true)
+  assert.equal(started.established, false)
+  assert.equal(started.verified, false)
   assert.equal(h.sent.length, 1)
-  const pubkeyHeaders = parseRawHeaders(Buffer.from(h.sent[0].raw))
-  assert.equal(pubkeyHeaders.get('secure-join'), 'vc-pubkey')
-  const pubkeyEntity = await decryptMessageWithPassword(extractArmored(Buffer.from(h.sent[0].raw)), secret)
-  const pubkeyInner = parseRawHeaders(pubkeyEntity)
-  assert.equal(pubkeyInner.get('secure-join'), 'vc-pubkey')
-  assert.match(pubkeyInner.get('autocrypt'), /keydata=/)
+  assert.equal(h.sent[0].to, 'contact@example.net')
+  const requestHeaders = parseRawHeaders(Buffer.from(h.sent[0].raw))
+  assert.equal(requestHeaders.get('secure-join'), 'vc-request-pubkey')
+  assert.equal(requestHeaders.get('secure-join-auth'), AUTH)
+  assert.equal(requestHeaders.get('autocrypt'), undefined)
+  const request = await decryptMessageWithPasswordDetailed(extractArmored(Buffer.from(h.sent[0].raw)), secret)
+  assert.equal(request.signatureVerified, false)
+  const requestInner = parseRawHeaders(request.data)
+  assert.equal(requestInner.get('secure-join'), 'vc-request-pubkey')
+  assert.equal(requestInner.get('secure-join-auth'), AUTH)
 
-  await bridge.process(await buildAsymmetricHandshake(h.cfg, contact, bot, auth, [
-    'Secure-Join: vc-request-with-auth',
-    `Secure-Join-Auth: ${auth}`,
-    `Secure-Join-Fingerprint: ${contact.fingerprint}`,
+  await h.bridge.process(await buildSymmetricHandshake(h.cfg, contact, AUTH, secret, [
+    'Secure-Join: vc-pubkey',
+    `Secure-Join-Auth: ${AUTH}`,
     `Autocrypt: ${autocryptHeader('contact@example.net', contact.publicB64, true)}`,
-    `Autocrypt-Gossip: ${autocryptGossipHeader('bot@example.org', bot.publicB64)}`,
   ]))
   assert.equal(h.sent.length, 2)
-  const confirm = parseRawHeaders(Buffer.from(h.sent[1].raw))
-  assert.equal(confirm.get('secure-join'), 'vc-contact-confirm')
-  const confirmEntity = await decryptMessage(extractArmored(Buffer.from(h.sent[1].raw)), {
-    privateKey: contact.privateKey,
-  }, bot.publicB64)
-  const confirmInner = parseRawHeaders(confirmEntity.data)
-  assert.equal(confirmInner.get('secure-join'), 'vc-contact-confirm')
-  assert.match(confirmInner.get('autocrypt-gossip'), /keydata=/)
+  const authHeaders = parseRawHeaders(Buffer.from(h.sent[1].raw))
+  assert.equal(authHeaders.get('secure-join'), 'vc-request-with-auth')
+  assert.equal(authHeaders.get('secure-join-auth'), AUTH)
+  const authEntity = await decryptMessage(
+    extractArmored(Buffer.from(h.sent[1].raw)),
+    { privateKey: contact.privateKey },
+    h.bot.publicB64,
+  )
+  assert.equal(authEntity.signatureVerified, true)
+  const authInner = parseRawHeaders(authEntity.data)
+  assert.equal(authInner.get('secure-join'), 'vc-request-with-auth')
+  assert.equal(authInner.get('secure-join-auth'), AUTH)
+  assert.equal(authInner.get('secure-join-fingerprint'), h.bot.fingerprint)
+  assert.match(authInner.get('autocrypt'), /keydata=/)
+  const beforeConfirm = await h.bridge.getStatus()
+  assert.equal(beforeConfirm.secureJoin.status, 'auth-sent')
+  assert.equal(beforeConfirm.established, false)
+  assert.equal(beforeConfirm.verified, false)
 
-  const status = await bridge.getStatus()
-  assert.equal(status.remoteMode, 'securejoin')
-  assert.equal(status.selfFingerprint, bot.fingerprint)
+  await h.bridge.process(await buildAsymmetricHandshake(h.cfg, contact, h.bot, AUTH, [
+    'Secure-Join: vc-contact-confirm',
+    `Autocrypt: ${autocryptHeader('contact@example.net', contact.publicB64, true)}`,
+    `Autocrypt-Gossip: ${autocryptGossipHeader('bot@example.org', h.bot.publicB64)}`,
+  ]))
+
+  const status = await h.bridge.getStatus()
+  assert.equal(status.selfFingerprint, h.bot.fingerprint)
   assert.equal(status.secureJoin.status, 'verified')
   assert.equal(status.verified, true)
   assert.equal(status.learnedFingerprint, contact.fingerprint)
@@ -201,28 +221,50 @@ test('SecureJoin v3 verifies the pinned key and then rejects plaintext', async (
     'this plaintext must be ignored',
     '',
   ].join('\r\n'))
-  await bridge.process(plaintext)
+  await h.bridge.process(plaintext)
   assert.deepEqual(h.prompted, [])
   assert.equal(h.sent.length, 2)
 })
 
-test('Autocrypt mode keeps the legacy request and does not expose SecureJoin', async () => {
-  const bot = await keyPair('bot@example.org')
+test('all SecureJoin fields can be entered manually without an invite URL', async () => {
   const contact = await keyPair('contact@example.net')
-  const h = harness(contact, { remoteMode: 'autocrypt' })
-  const bridge = await createBridge(h.ctx, h.cfg, {
-    identity: {
-      privateKey: bot.privateKey,
-      publicB64: bot.publicB64,
-      publicArmored: bot.privateKey.toPublic().armor(),
-    },
-    sender: h.sender,
-    log: () => {},
-  })
+  const h = await makeBridge(contact, { secureJoinAuth: AUTH })
+  const status = await h.bridge.startSecureJoin()
+  assert.equal(status.secureJoin.status, 'request-sent')
+  assert.equal(status.secureJoin.hasAuth, true)
+  assert.equal(h.sent.length, 1)
+  assert.equal(parseRawHeaders(Buffer.from(h.sent[0].raw)).get('secure-join-auth'), AUTH)
+})
 
-  await assert.rejects(() => bridge.getSecureJoinQr(), /only available in SecureJoin remote mode/)
-  await bridge.startHandshake()
+test('SecureJoin ignores messages before verification and rejects the wrong key or auth', async () => {
+  const contact = await keyPair('contact@example.net')
+  const h = await makeBridge(contact, { inviteUrl: inviteFor(contact, AUTH), secureJoinAuth: 'DIFFERENTAUTHCODE1234' })
+  await h.bridge.startSecureJoin()
+  assert.equal(h.sent.length, 1)
+
+  // A normal encrypted prompt must not drive OpenCode before verification.
+  await h.bridge.process(await buildAsymmetricHandshake(h.cfg, contact, h.bot, '', [
+    'Subject: premature prompt',
+  ]))
+  assert.deepEqual(h.prompted, [])
+
+  // The pinned key is required even when the auth code and address are right.
+  const wrongKey = await keyPair('contact@example.net')
+  await h.bridge.process(await buildSymmetricHandshake(h.cfg, wrongKey, 'DIFFERENTAUTHCODE1234', secretFor(contact.fingerprint, 'DIFFERENTAUTHCODE1234'), [
+    'Secure-Join: vc-pubkey',
+    `Secure-Join-Auth: DIFFERENTAUTHCODE1234`,
+    `Autocrypt: ${autocryptHeader('contact@example.net', wrongKey.publicB64, true)}`,
+  ]))
+  assert.equal(h.sent.length, 1)
+  assert.equal((await h.bridge.getStatus()).verified, false)
+})
+
+test('Autocrypt mode keeps the legacy request and does not expose SecureJoin', async () => {
+  const contact = await keyPair('contact@example.net')
+  const h = await makeBridge(contact, { remoteMode: 'autocrypt' })
+  await assert.rejects(() => h.bridge.startSecureJoin(), /only available in SecureJoin remote mode/)
+  await h.bridge.startHandshake()
   assert.equal(h.sent.length, 1)
   assert.equal(parseRawHeaders(Buffer.from(h.sent[0].raw)).get('x-opencode-handshake'), 'autocrypt-request')
-  assert.equal((await bridge.getStatus()).remoteMode, 'autocrypt')
+  assert.equal((await h.bridge.getStatus()).remoteMode, 'autocrypt')
 })

@@ -49,12 +49,12 @@ export function normalizeFingerprint(value) {
 }
 
 /**
- * Parse a contact invite URI for convenience only.
+ * Parse a SecureJoin contact invite URI locally.
  *
- * Many OpenPGP clients export a URI such as `OPENPGP4FPR:FPR#...` or
- * `https://example.org/#FPR&...&a=user%40example.org`. This reads only the
- * fingerprint, address, display name and version locally. Invite-number/auth
- * code parameters are intentionally not returned; nothing is fetched.
+ * The bridge joins an invite supplied by the pinned contact; it never creates
+ * one. URIs such as `OPENPGP4FPR:FPR#a=...&n=...&s=AUTH&v=3` and
+ * `https://example.org/#FPR&...&s=AUTH` are accepted from any issuer. The auth
+ * code is used only for the IMAP/SMTP handshake; no URL is fetched.
  */
 export function parseInviteUrl(value) {
   const text = String(value || '').trim()
@@ -76,18 +76,23 @@ export function parseInviteUrl(value) {
     address: String(params.get('a') || '').toLowerCase(),
     name: String(params.get('n') || ''),
     version: String(params.get('v') || ''),
+    auth: String(params.get('s') || ''),
+    inviteNumber: String(params.get('i') || params.get('j') || ''),
+    relays: String(params.get('r') || ''),
+    groupID: String(params.get('x') || ''),
+    groupName: String(params.get('g') || ''),
+    broadcastName: String(params.get('b') || ''),
   }
 }
 
 /**
- * Remove invite-number/auth-code parameters from a contact invite URL.
+ * Hide SecureJoin secrets when displaying an invite URL in the GUI.
  *
- * Invite-number/auth-code parameters are never used or stored by this bridge.
- * RPC and GUI displays see this redacted form, which keeps only the public
- * fields used for local pin prefill.
+ * The full URL is kept in local settings because `s=` is the auth code the
+ * bridge uses to join. This redacted copy is only for display and RPC reads.
  */
 export function redactInviteUrl(value) {
-  const text = String(value || '').trim()
+  const text = String(value || '').trim().replace(/%23/gi, '#')
   if (!text) return ''
   const withoutSecretPairs = (part) => part
     .split('&')
@@ -101,13 +106,9 @@ export function redactInviteUrl(value) {
     const kept = withoutSecretPairs(pairs.join('&'))
     return `${prefix}${fingerprint}${kept ? `&${kept}` : ''}`
   }
-  const openpgp = /^(OPENPGP4FPR:\s*)([\s\S]+)$/i.exec(text)
-  if (openpgp) {
-    const [fingerprint, ...pairs] = openpgp[2].split('&')
-    const kept = withoutSecretPairs(pairs.join('&'))
-    return `${openpgp[1]}${fingerprint}${kept ? `&${kept}` : ''}`
-  }
-  return text
+  const [first, ...pairs] = text.split('&')
+  const kept = withoutSecretPairs(pairs.join('&'))
+  return `${first}${kept ? `&${kept}` : ''}`
 }
 
 /** Remove armor framing and return the binary Transferable Public Key as base64. */

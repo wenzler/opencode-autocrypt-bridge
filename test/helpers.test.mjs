@@ -124,18 +124,25 @@ test('pinned fingerprint can be pasted from an invite-style URI', () => {
   assert.equal(cfg.pinned.keyB64, '')
 })
 
-test('invite URL parsing exposes only public pin fields', () => {
-  const url = `https://example.org/#${fingerprint}&v=3&i=NJFZBXGwoQh6B_kDQlJrj2nP&s=secret&a=me%40example.net&n=Me`
+test('invite URL parsing exposes pin fields and the SecureJoin auth code', () => {
+  const url = `https://example.org/#${fingerprint}&v=3&i=NJFZBXGwoQh6B_kDQlJrj2nP&s=secret&a=me%40example.net&n=Me&r=relay%40example.net`
   const invite = parseInviteUrl(url)
   assert.deepEqual(invite, {
     fingerprint,
     address: 'me@example.net',
     name: 'Me',
     version: '3',
+    auth: 'secret',
+    inviteNumber: 'NJFZBXGwoQh6B_kDQlJrj2nP',
+    relays: 'relay@example.net',
+    groupID: '',
+    groupName: '',
+    broadcastName: '',
   })
   assert.equal(parseInviteUrl(`OPENPGP4FPR:${fingerprint}%23v=3&s=secret`).fingerprint, fingerprint)
   assert.equal(parseInviteUrl(`#${fingerprint}&a=me%40example.net`).address, 'me@example.net')
   assert.equal(parseInviteUrl(`#${fingerprint}&s=secret`).version, '')
+  assert.equal(parseInviteUrl(`#${fingerprint}&j=legacy`).inviteNumber, 'legacy')
   assert.throws(() => parseInviteUrl('#nope&a=me%40example.net'), /Invalid OpenPGP fingerprint/)
 })
 
@@ -145,7 +152,10 @@ test('invite URL redaction hides secrets and is stable', () => {
   assert.equal(redacted, `https://example.org/#${fingerprint}&v=3&a=me%40example.net&n=Me`)
   assert.equal(redactInviteUrl(redacted), redacted)
   assert.doesNotMatch(redacted, /secret|NJFZBXGwoQh6B_kDQlJrj2nP/)
-  assert.equal(redactInviteUrl(`OPENPGP4FPR:${fingerprint}%23v=3&s=secret`), `OPENPGP4FPR:${fingerprint}%23v=3`)
+  const encoded = redactInviteUrl(`OPENPGP4FPR:${fingerprint}%23v=3&s=secret`)
+  assert.equal(encoded, `OPENPGP4FPR:${fingerprint}#v=3`)
+  assert.doesNotMatch(encoded, /secret/)
+  assert.equal(redactInviteUrl(encoded), encoded)
 })
 
 test('invite URL must agree with the pinned gate', () => {
@@ -165,16 +175,18 @@ test('invite URL must agree with the pinned gate', () => {
   )
 })
 
-test('config keeps invite tokens out of stored settings', () => {
+test('config keeps auth for SecureJoin while redacting the displayed invite URL', () => {
   const cfg = loadConfig({}, {
     ...baseEnv,
     AC_PINNED_CONTACT: 'me@example.net',
-    AC_INVITE_URL: `#${fingerprint}&v=3&i=abc&s=secret&a=me%40example.net`,
+    AC_INVITE_URL: `#${fingerprint}&v=3&i=NJFZBXGwoQh6B_kDQlJrj2nP&s=secret&a=me%40example.net`,
   })
   assert.equal(cfg.pinned.contact, 'me@example.net')
   assert.equal(cfg.pinned.fingerprint, fingerprint)
   assert.equal(cfg.pinned.inviteUrl, `#${fingerprint}&v=3&a=me%40example.net`)
-  assert.deepEqual(Object.keys(cfg.pinned.invite).sort(), ['address', 'fingerprint', 'name', 'version'])
+  assert.equal(cfg.pinned.invite.auth, 'secret')
+  assert.equal(cfg.pinned.secureJoin.auth, 'secret')
+  assert.equal(cfg.pinned.secureJoin.version, '3')
   assert.equal(cfg.pinned.mode, undefined)
 })
 
@@ -194,12 +206,10 @@ test('optional pinned key is still accepted alongside the fingerprint', () => {
   assert.equal(cfg.pinned.fingerprint, fingerprint)
   assert.equal(cfg.pinned.keyB64, 'mQINBFo=')
 
-  // Legacy key-only config still loads; the bridge derives its fingerprint at startup.
-  const keyOnly = loadConfig({}, {
+  // A key alone is not enough: the explicit pin is mandatory.
+  assert.throws(() => loadConfig({}, {
     ...baseEnv,
     AC_PINNED_CONTACT: 'me@example.net',
     AC_PINNED_CONTACT_KEY: 'QUJDRA==',
-  })
-  assert.equal(keyOnly.pinned.fingerprint, '')
-  assert.equal(keyOnly.pinned.keyB64, 'QUJDRA==')
+  }), /requires pinnedFingerprint/)
 })
