@@ -35,11 +35,12 @@ const RUNTIME_KEY = Symbol.for('opencode-autocrypt-bridge.runtime')
 
 /**
  * OpenCode can load a plugin more than once (hot reload / GUI attach). Keep one
- * bridge per process: every new setup waits for and disposes the previous one.
+ * mail bridge per process, but leave each load's RPC/tool registration alone so
+ * a reload never makes the bridge RPC unavailable.
  */
 function runtimeSlot() {
   if (!globalThis[RUNTIME_KEY]) {
-    globalThis[RUNTIME_KEY] = { chain: Promise.resolve(), activeDispose: null }
+    globalThis[RUNTIME_KEY] = { token: null, stop: null }
   }
   return globalThis[RUNTIME_KEY]
 }
@@ -78,19 +79,16 @@ function settingsView(values) {
 export default Plugin.define({
   id: 'autocrypt-bridge',
   async setup(ctx) {
-    const slot = runtimeSlot()
-    const run = slot.chain.catch(() => {}).then(() => setupInstance(ctx, slot))
-    slot.chain = run.catch(() => {})
-    return run
+    return setupInstance(ctx, runtimeSlot())
   },
 })
 
 async function setupInstance(ctx, slot) {
-  if (slot.activeDispose) {
-    const previous = slot.activeDispose
-    slot.activeDispose = null
-    await previous().catch(() => {})
-  }
+  const token = {}
+  const previousStop = slot.stop
+  slot.token = token
+  slot.stop = null
+  if (previousStop) previousStop()
   const options = ctx.options || {}
     const optionValues = storedSettings(options)
     let stored = storedSettings(await ctx.storage.get(STORAGE_KEY))
@@ -144,10 +142,16 @@ async function setupInstance(ctx, slot) {
     )
 
     /** Start the bridge when settings are complete; otherwise stay UI-configurable. */
-    const restart = async () => {
+    const stopBridge = () => {
       runtime.bridge?.stop()
       runtime.bridge = null
+      if (slot.stop === stopBridge) slot.stop = null
+    }
+
+    const restart = async () => {
+      stopBridge()
       stored = storedSettings(await ctx.storage.get(STORAGE_KEY))
+      if (slot.token !== token) return currentStatus()
       try {
         runtime.cfg = configFrom(stored)
         runtime.configError = ''
@@ -156,7 +160,13 @@ async function setupInstance(ctx, slot) {
           onQuestion: (question) => emit('question', question),
           onQuestionAnswer: (answer) => emit('questionAnswer', answer),
         })
+        if (slot.token !== token) {
+          runtime.bridge.stop()
+          runtime.bridge = null
+          return currentStatus()
+        }
         runtime.bridge.start()
+        slot.stop = stopBridge
       } catch (error) {
         runtime.cfg = null
         runtime.configError = error.message
@@ -275,11 +285,13 @@ async function setupInstance(ctx, slot) {
   const dispose = async () => {
     if (disposed) return
     disposed = true
-    runtime.bridge?.stop()
+    stopBridge()
     await tool.dispose()
     await runtime.registration.dispose()
-    if (slot.activeDispose === dispose) slot.activeDispose = null
+    if (slot.token === token) {
+      slot.token = null
+      if (slot.stop === stopBridge) slot.stop = null
+    }
   }
-  slot.activeDispose = dispose
   return dispose
 }

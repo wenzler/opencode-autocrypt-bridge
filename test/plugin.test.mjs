@@ -158,7 +158,7 @@ test('session RPC and agent tool are registered for project awareness', async ()
   await dispose()
 })
 
-test('reloading the plugin disposes the previous bridge before starting another', async () => {
+test('reloading the plugin keeps RPC registered while replacing the mail bridge', async () => {
   const firstOut = { value: null }
   const firstCtx = fakeContext(new Map(), firstOut, [])
   const firstDispose = await plugin.setup(firstCtx)
@@ -168,13 +168,13 @@ test('reloading the plugin disposes the previous bridge before starting another'
   // A hot reload or GUI attach creates a second setup in the same process.
   const secondOut = { value: null }
   const secondCtx = fakeContext(new Map(), secondOut, [])
-  await plugin.setup(secondCtx)
+  const secondDispose = await plugin.setup(secondCtx)
 
-  assert.ok(firstCtx.disposals.includes('tool'), 'previous tool registration is disposed')
-  assert.ok(firstCtx.disposals.includes('registration'), 'previous RPC registration is disposed')
   assert.notStrictEqual(secondOut.value, firstHandlers, 'new instance owns the active handlers')
+  assert.deepEqual(firstCtx.disposals, [], 'reload does not tear down the RPC registration')
+  assert.ok(await secondOut.value.getStatus({}), 'RPC stays callable after the reload')
+
   await firstDispose()
   assert.equal(firstCtx.disposals.length, 2, 'late cleanup of the old instance is a no-op')
-
-  await plugin.setup(fakeContext(new Map(), { value: null }, []))
+  await secondDispose()
 })

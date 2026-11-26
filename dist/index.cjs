@@ -128199,7 +128199,7 @@ var STORAGE_KEY = "autocrypt.settings";
 var RUNTIME_KEY = Symbol.for("opencode-autocrypt-bridge.runtime");
 function runtimeSlot() {
   if (!globalThis[RUNTIME_KEY]) {
-    globalThis[RUNTIME_KEY] = { chain: Promise.resolve(), activeDispose: null };
+    globalThis[RUNTIME_KEY] = { token: null, stop: null };
   }
   return globalThis[RUNTIME_KEY];
 }
@@ -128230,21 +128230,15 @@ function settingsView(values2) {
 var index_default = plugin_exports.define({
   id: "autocrypt-bridge",
   async setup(ctx) {
-    const slot = runtimeSlot();
-    const run4 = slot.chain.catch(() => {
-    }).then(() => setupInstance(ctx, slot));
-    slot.chain = run4.catch(() => {
-    });
-    return run4;
+    return setupInstance(ctx, runtimeSlot());
   }
 });
 async function setupInstance(ctx, slot) {
-  if (slot.activeDispose) {
-    const previous = slot.activeDispose;
-    slot.activeDispose = null;
-    await previous().catch(() => {
-    });
-  }
+  const token = {};
+  const previousStop = slot.stop;
+  slot.token = token;
+  slot.stop = null;
+  if (previousStop) previousStop();
   const options2 = ctx.options || {};
   const optionValues = storedSettings(options2);
   let stored = storedSettings(await ctx.storage.get(STORAGE_KEY));
@@ -128287,10 +128281,15 @@ async function setupInstance(ctx, slot) {
     });
   };
   const currentStatus = async () => runtime.bridge ? statusView(await runtime.bridge.getStatus()) : unconfiguredStatus();
-  const restart = async () => {
+  const stopBridge = () => {
     runtime.bridge?.stop();
     runtime.bridge = null;
+    if (slot.stop === stopBridge) slot.stop = null;
+  };
+  const restart = async () => {
+    stopBridge();
     stored = storedSettings(await ctx.storage.get(STORAGE_KEY));
+    if (slot.token !== token) return currentStatus();
     try {
       runtime.cfg = configFrom(stored);
       runtime.configError = "";
@@ -128299,7 +128298,13 @@ async function setupInstance(ctx, slot) {
         onQuestion: (question) => emit("question", question),
         onQuestionAnswer: (answer) => emit("questionAnswer", answer)
       });
+      if (slot.token !== token) {
+        runtime.bridge.stop();
+        runtime.bridge = null;
+        return currentStatus();
+      }
       runtime.bridge.start();
+      slot.stop = stopBridge;
     } catch (error) {
       runtime.cfg = null;
       runtime.configError = error.message;
@@ -128407,12 +128412,14 @@ async function setupInstance(ctx, slot) {
   const dispose = async () => {
     if (disposed) return;
     disposed = true;
-    runtime.bridge?.stop();
+    stopBridge();
     await tool.dispose();
     await runtime.registration.dispose();
-    if (slot.activeDispose === dispose) slot.activeDispose = null;
+    if (slot.token === token) {
+      slot.token = null;
+      if (slot.stop === stopBridge) slot.stop = null;
+    }
   };
-  slot.activeDispose = dispose;
   return dispose;
 }
 /*! Bundled license information:
