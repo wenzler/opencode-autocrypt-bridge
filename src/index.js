@@ -11,7 +11,7 @@ const SETTING_KEYS = [
   'pinnedFingerprint', 'pinnedContactKey', 'inviteUrl', 'remoteMode',
   'secureJoinAuth', 'secureJoinName', 'secureJoinVersion', 'secureJoinRelays', 'secureJoinInviteNumber',
   'requireEncrypted',
-  'pollIntervalMs', 'verifyCertificate', 'privateKeyArmored', 'keyPassphrase', 'generateKey', 'preferEncryptMutual',
+  'pollIntervalMs', 'verifyCertificate', 'deleteAfterRead', 'privateKeyArmored', 'keyPassphrase', 'generateKey', 'preferEncryptMutual',
   'emailDecisions', 'emailHighRiskDecisions', 'emailQuestions',
   'emailPeek', 'emailTail', 'emailSendFiles', 'emailWatch', 'emailReadReceipts',
 ]
@@ -24,6 +24,7 @@ const UI_DEFAULTS = {
   remoteMode: 'securejoin',
   secureJoinVersion: '3',
   verifyCertificate: true,
+  deleteAfterRead: false,
   generateKey: true,
   preferEncryptMutual: true,
   emailDecisions: true,

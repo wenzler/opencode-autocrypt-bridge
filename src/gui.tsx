@@ -252,6 +252,7 @@ export default Plugin.define({
           requireEncrypted: checked("requireEncrypted"),
           pollIntervalMs: number("pollIntervalMs", 30000),
           verifyCertificate: checked("verifyCertificate"),
+          deleteAfterRead: checked("deleteAfterRead"),
           privateKeyArmored: value("privateKeyArmored"),
           keyPassphrase: value("keyPassphrase"),
           generateKey: checked("generateKey"),
@@ -416,6 +417,9 @@ export default Plugin.define({
             <ui.SettingsRow title="Rescan existing mail" description="Reads mail already in the mailbox, including replies received before the bridge started. Duplicate prompts are ignored.">
               <ui.Button size="small" disabled={busy()} onClick={() => void run("Inbox rescanned", () => rpc().rescanInbox({}))}>Rescan inbox</ui.Button>
             </ui.SettingsRow>
+            <ui.SettingsRow id="deleteAfterRead" title="Delete mail after processing" description="When on, each message is expunged from the IMAP server after the bridge handles it successfully. Failed or oversized messages stay in the mailbox.">
+              <ui.Switch label="Delete mail after processing" hideLabel checked={checked("deleteAfterRead")} onChange={(v) => setField("deleteAfterRead", v)} />
+            </ui.SettingsRow>
             <ui.SettingsRow title="Reset learned key">
               <ui.Button size="small" variant="danger" disabled={busy()} onClick={() => void run("Contact reset", () => rpc().resetContact({}))}>Reset contact</ui.Button>
             </ui.SettingsRow>
@@ -539,6 +543,7 @@ export default Plugin.define({
         { id: "emailDecisions", title: "Remote controls", keywords: "permission decision question answer watch danger" },
         { id: "emailHighRiskDecisions", title: "High-risk email approval", keywords: "danger shell file access" },
         { id: "emailReadReceipts", title: "Read receipts", keywords: "mdn receipt confirmation" },
+        { id: "deleteAfterRead", title: "Delete after processing", keywords: "imap expunge mailbox cleanup" },
       ],
       render: () => <Settings />,
     })

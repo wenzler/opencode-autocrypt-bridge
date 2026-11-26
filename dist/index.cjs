@@ -126294,6 +126294,15 @@ function checkpointStart(store, mailbox, validity, uidNext) {
   }
   return raw.uid + 1;
 }
+async function deleteProcessedMessage(client, uid, log2) {
+  try {
+    await client.messageDelete(uid, { uid: true });
+    return true;
+  } catch (error) {
+    log2(`Could not delete processed message UID ${uid}: ${error.message}`);
+    return false;
+  }
+}
 async function startImap(cfg, store, onMessage, signal, log2) {
   let failures = 0;
   while (!signal.aborted) {
@@ -126332,6 +126341,7 @@ async function startImap(cfg, store, onMessage, signal, log2) {
               try {
                 await onMessage(fetched.source);
                 store.set(key5, { validity, uid: message.uid });
+                if (cfg.imap.deleteAfterRead) await deleteProcessedMessage(client, message.uid, log2);
               } catch (error) {
                 log2(`Failed to handle message UID ${message.uid}: ${error.message}`);
               }
@@ -126399,6 +126409,7 @@ async function rescanMailbox(cfg, store, onMessage, log2, signal = new AbortCont
         const current = store.get(checkpoint);
         const previousUid = current && current.validity === validity ? Number(current.uid) || 0 : 0;
         store.set(checkpoint, { validity, uid: Math.max(previousUid, message.uid) });
+        if (cfg.imap.deleteAfterRead) await deleteProcessedMessage(client, message.uid, log2);
         processed += 1;
       } catch (error) {
         log2(`Rescan failed to handle message UID ${message.uid}: ${error.message}`);
@@ -128215,7 +128226,8 @@ function loadConfig(options2 = {}, env = process.env) {
       password: String(get6("imapPassword", "AC_IMAP_PASSWORD", "")),
       mailbox: String(get6("imapMailbox", "AC_IMAP_MAILBOX", "INBOX")),
       pollIntervalMs: integer2(get6("pollIntervalMs", "AC_POLL_INTERVAL_MS"), 3e4),
-      verifyCertificate: boolean2(get6("verifyCertificate", "AC_VERIFY_CERTIFICATE"), true)
+      verifyCertificate: boolean2(get6("verifyCertificate", "AC_VERIFY_CERTIFICATE"), true),
+      deleteAfterRead: boolean2(get6("deleteAfterRead", "AC_DELETE_AFTER_READ"), false)
     },
     smtp: {
       host: normalizeHost(get6("smtpHost", "AC_SMTP_HOST", "")),
@@ -128312,6 +128324,7 @@ var settingsProperties = {
   requireEncrypted: { type: "boolean" },
   pollIntervalMs: { type: "number" },
   verifyCertificate: { type: "boolean" },
+  deleteAfterRead: { type: "boolean" },
   privateKeyArmored: { type: "string" },
   keyPassphrase: { type: "string" },
   generateKey: { type: "boolean" },
@@ -128611,6 +128624,7 @@ var SETTING_KEYS = [
   "requireEncrypted",
   "pollIntervalMs",
   "verifyCertificate",
+  "deleteAfterRead",
   "privateKeyArmored",
   "keyPassphrase",
   "generateKey",
@@ -128636,6 +128650,7 @@ var UI_DEFAULTS = {
   remoteMode: "securejoin",
   secureJoinVersion: "3",
   verifyCertificate: true,
+  deleteAfterRead: false,
   generateKey: true,
   preferEncryptMutual: true,
   emailDecisions: true,

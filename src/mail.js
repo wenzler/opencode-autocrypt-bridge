@@ -68,6 +68,16 @@ function checkpointStart(store, mailbox, validity, uidNext) {
   return raw.uid + 1
 }
 
+export async function deleteProcessedMessage(client, uid, log) {
+  try {
+    await client.messageDelete(uid, { uid: true })
+    return true
+  } catch (error) {
+    log(`Could not delete processed message UID ${uid}: ${error.message}`)
+    return false
+  }
+}
+
 /** Ported from opencode-email-sync: IDLE with a periodic reconciliation wake-up. */
 export async function startImap(cfg, store, onMessage, signal, log) {
   let failures = 0
@@ -104,6 +114,7 @@ export async function startImap(cfg, store, onMessage, signal, log) {
               try {
                 await onMessage(fetched.source)
                 store.set(key, { validity, uid: message.uid })
+                if (cfg.imap.deleteAfterRead) await deleteProcessedMessage(client, message.uid, log)
               } catch (error) {
                 log(`Failed to handle message UID ${message.uid}: ${error.message}`)
               }
@@ -173,6 +184,7 @@ export async function rescanMailbox(cfg, store, onMessage, log, signal = new Abo
         const current = store.get(checkpoint)
         const previousUid = current && current.validity === validity ? Number(current.uid) || 0 : 0
         store.set(checkpoint, { validity, uid: Math.max(previousUid, message.uid) })
+        if (cfg.imap.deleteAfterRead) await deleteProcessedMessage(client, message.uid, log)
         processed += 1
       } catch (error) {
         log(`Rescan failed to handle message UID ${message.uid}: ${error.message}`)

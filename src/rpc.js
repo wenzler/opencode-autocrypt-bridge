@@ -27,6 +27,7 @@ const settingsProperties = {
   requireEncrypted: { type: 'boolean' },
   pollIntervalMs: { type: 'number' },
   verifyCertificate: { type: 'boolean' },
+  deleteAfterRead: { type: 'boolean' },
   privateKeyArmored: { type: 'string' },
   keyPassphrase: { type: 'string' },
   generateKey: { type: 'boolean' },

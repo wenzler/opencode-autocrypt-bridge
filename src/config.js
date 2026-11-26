@@ -118,6 +118,7 @@ export function loadConfig(options = {}, env = process.env) {
       mailbox: String(get('imapMailbox', 'AC_IMAP_MAILBOX', 'INBOX')),
       pollIntervalMs: integer(get('pollIntervalMs', 'AC_POLL_INTERVAL_MS'), 30_000),
       verifyCertificate: boolean(get('verifyCertificate', 'AC_VERIFY_CERTIFICATE'), true),
+      deleteAfterRead: boolean(get('deleteAfterRead', 'AC_DELETE_AFTER_READ'), false),
     },
     smtp: {
       host: normalizeHost(get('smtpHost', 'AC_SMTP_HOST', '')),

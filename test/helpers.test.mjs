@@ -122,6 +122,27 @@ test('config reads env and requires a pinned gate', () => {
   assert.throws(() => loadConfig({}, { ...baseEnv, AC_PINNED_CONTACT: 'me@example.net' }), /requires pinnedFingerprint/)
 })
 
+test('deleteAfterRead is opt-in through settings or env', () => {
+  const values = {
+    address: 'bot@example.org',
+    imapHost: 'imap.example.org',
+    imapPassword: 'secret',
+    smtpHost: 'smtp.example.org',
+    smtpPassword: 'secret',
+    pinnedContact: 'me@example.net',
+    pinnedFingerprint: '669AE77C1D829C65258FC4F8F220CFCAEAA9A4CE',
+  }
+  assert.equal(loadConfig(values, {}).imap.deleteAfterRead, false)
+  assert.equal(loadConfig({ ...values, deleteAfterRead: true }, {}).imap.deleteAfterRead, true)
+  const fromEnv = loadConfig({}, {
+    ...baseEnv,
+    AC_PINNED_CONTACT: 'me@example.net',
+    AC_PINNED_FINGERPRINT: '669AE77C1D829C65258FC4F8F220CFCAEAA9A4CE',
+    AC_DELETE_AFTER_READ: 'on',
+  })
+  assert.equal(fromEnv.imap.deleteAfterRead, true)
+})
+
 const fingerprint = '669AE77C1D829C65258FC4F8F220CFCAEAA9A4CE'
 
 test('pinned fingerprint can be pasted from an invite-style URI', () => {

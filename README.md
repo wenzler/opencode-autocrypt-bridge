@@ -10,6 +10,7 @@ Design rules:
 - **Invites come from the contact:** the bridge never generates a QR. A pasted invite URL (or manually entered fields) supplies the inviter's fingerprint/address/name and the `s=` auth code. The auth code is kept only in local settings and used solely for the IMAP/SMTP handshake; no URL is fetched.
 - **No website calls:** the plugin never fetches the domain in an invite URL. All traffic is IMAP/SMTP to the configured mail host.
 - **Session-aware email:** every outbound subject carries `[session:ses_…]`. Delta Chat keeps that subject on replies, so the bridge returns to the same OpenCode session even across projects. Threading headers and explicit email commands are also supported.
+- **Optional mailbox cleanup:** with **Delete mail after processing** enabled, the bridge expunges each message from IMAP only after handling it successfully. Failures and oversized messages stay in the mailbox.
 - **No remote shell:** encrypted email can answer OpenCode permission requests, answer native multiple-choice question forms, read session output, send project files, and subscribe to session notices. It never exposes arbitrary shell execution.
 - **Ported transport:** IMAP IDLE/checkpoint and SMTP sending patterns are adapted from the MIT-licensed [`opencode-email-sync`](https://github.com/Sponn/opencode-email-sync).
 
@@ -155,7 +156,7 @@ OPENPGP4FPR:FPR#v=3&s=AUTHCODE&a=you%40example.org&n=Bot+contact
 - live status via RPC events: configured/unconfigured state, remote mode, learned fingerprint, established state, fingerprint verification, SecureJoin status, bound session, last error;
 - **Email session**: list open projects/sessions and switch the email thread to a session by title; the switch is announced as a new email thread. Session-screen command and location-menu item switch to the current session;
 - **Remote controls**: independent gates for permission decisions, high-risk email approval, questions, session output, terminal tail, project file sending, watch subscriptions, and read receipts;
-- **Rescan inbox**, **Reset contact**, and **Save & restart**.
+- **Delete mail after processing** (off by default), **Rescan inbox**, **Reset contact**, and **Save & restart**.
 
 Saved passwords and private keys are hidden; leaving a password field blank keeps the saved value.
 
@@ -203,6 +204,7 @@ All fields can be set in the GUI, in the `options` object, or with environment v
 | Send project files / `emailSendFiles` | `AC_EMAIL_SEND_FILES` | Allow `!send` for files inside the session project | `true` |
 | Watch subscriptions / `emailWatch` | `AC_EMAIL_WATCH` | Allow `!watch` and `!unwatch` notices | `true` |
 | Read receipts / `emailReadReceipts` | `AC_EMAIL_READ_RECEIPTS` | Request encrypted receipts for outbound mail and answer receipt requests | `true` |
+| Delete after processing / `deleteAfterRead` | `AC_DELETE_AFTER_READ` | Expunge each successfully handled message from the IMAP server | `false` |
 
 ## Messages and attachments
 
