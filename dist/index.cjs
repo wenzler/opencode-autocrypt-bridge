@@ -126740,6 +126740,19 @@ function formatSessionDirectory(catalog, boundSessionID = "") {
 // src/bridge.js
 var hashId = (value3) => `msg_ac_${(0, import_node_crypto5.createHash)("sha256").update(String(value3)).digest("hex").slice(0, 32)}`;
 var STATE_KEY = "autocrypt.state";
+var BRIDGE_WATCH_EVENTS = [
+  "permission.asked",
+  "permission.replied",
+  "form.created",
+  "form.replied",
+  "form.cancelled",
+  "session.status",
+  "session.idle",
+  "session.text.delta",
+  "session.execution.succeeded",
+  "session.execution.failed",
+  "session.step.failed"
+];
 async function loadState(ctx) {
   const stored = await ctx.storage.get(STATE_KEY);
   const data = stored && typeof stored === "object" ? stored : {
@@ -126815,19 +126828,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
   const announcedDecisions = /* @__PURE__ */ new Set();
   const announcingQuestions = /* @__PURE__ */ new Set();
   let started = false;
-  const WATCH_EVENTS = [
-    "permission.asked",
-    "permission.replied",
-    "form.created",
-    "form.replied",
-    "form.cancelled",
-    "session.status",
-    "session.idle",
-    "message.part.delta",
-    "session.execution.succeeded",
-    "session.execution.failed",
-    "session.step.failed"
-  ];
+  const WATCH_EVENTS = BRIDGE_WATCH_EVENTS;
   const allowed = (from) => {
     if (cfg.pinned.contact) return from === cfg.pinned.contact;
     if (from === cfg.address) return false;
@@ -127265,8 +127266,8 @@ async function createBridge(ctx, cfg, options2 = {}) {
     if (!active || String(data.field || "text") !== "text") return;
     const created = Number(event.created);
     if (Number.isFinite(created) && created < active.startedAt) return;
-    const messageID = String(data.messageID || "");
-    if (messageID && messageID === active.userMessageID) return;
+    const assistantMessageID = String(data.assistantMessageID || "");
+    if (assistantMessageID && assistantMessageID === active.userMessageID) return;
     const delta = String(data.delta || "");
     if (!delta) return;
     active.text += delta;
@@ -127301,7 +127302,7 @@ ${chunk}`
       case "form.replied":
       case "form.cancelled":
         return handleFormSettled(data);
-      case "message.part.delta":
+      case "session.text.delta":
         return handleProgressEvent(event);
       case "session.status":
       case "session.idle":
@@ -128747,7 +128748,7 @@ var BridgeRpc = rpc_exports.define({
 });
 
 // src/index.js
-var PLUGIN_VERSION = "0.5.18";
+var PLUGIN_VERSION = "0.5.19";
 var SETTING_KEYS = [
   "address",
   "displayName",

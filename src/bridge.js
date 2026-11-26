@@ -53,6 +53,25 @@ const hashId = (value) => `msg_ac_${createHash('sha256').update(String(value)).d
 
 const STATE_KEY = 'autocrypt.state'
 
+/**
+ * Native events exposed to server plugins. OpenCode V2 streams assistant text
+ * as `session.text.delta`; `message.part.delta` is TUI-only and is rejected by
+ * `ctx.event.subscribe`, so subscribing to it silently disables progress mail.
+ */
+export const BRIDGE_WATCH_EVENTS = [
+  'permission.asked',
+  'permission.replied',
+  'form.created',
+  'form.replied',
+  'form.cancelled',
+  'session.status',
+  'session.idle',
+  'session.text.delta',
+  'session.execution.succeeded',
+  'session.execution.failed',
+  'session.step.failed',
+]
+
 async function loadState(ctx) {
   const stored = await ctx.storage.get(STATE_KEY)
   const data = stored && typeof stored === 'object'
@@ -122,19 +141,7 @@ export async function createBridge(ctx, cfg, options = {}) {
   const announcingQuestions = new Set()
   let started = false
 
-  const WATCH_EVENTS = [
-    'permission.asked',
-    'permission.replied',
-    'form.created',
-    'form.replied',
-    'form.cancelled',
-    'session.status',
-    'session.idle',
-    'message.part.delta',
-    'session.execution.succeeded',
-    'session.execution.failed',
-    'session.step.failed',
-  ]
+  const WATCH_EVENTS = BRIDGE_WATCH_EVENTS
 
   const allowed = (from) => {
     // The pin is the hard gate and takes precedence over the self-address guard.
@@ -618,8 +625,8 @@ export async function createBridge(ctx, cfg, options = {}) {
     if (!active || String(data.field || 'text') !== 'text') return
     const created = Number(event.created)
     if (Number.isFinite(created) && created < active.startedAt) return
-    const messageID = String(data.messageID || '')
-    if (messageID && messageID === active.userMessageID) return
+    const assistantMessageID = String(data.assistantMessageID || '')
+    if (assistantMessageID && assistantMessageID === active.userMessageID) return
     const delta = String(data.delta || '')
     if (!delta) return
     active.text += delta
@@ -651,7 +658,7 @@ export async function createBridge(ctx, cfg, options = {}) {
       case 'form.created': return handleFormCreated(data)
       case 'form.replied':
       case 'form.cancelled': return handleFormSettled(data)
-      case 'message.part.delta': return handleProgressEvent(event)
+      case 'session.text.delta': return handleProgressEvent(event)
       case 'session.status':
       case 'session.idle':
       case 'session.execution.succeeded':

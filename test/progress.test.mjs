@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import * as openpgp from 'openpgp'
 import { simpleParser } from 'mailparser'
-import { createBridge } from '../src/bridge.js'
+import { BRIDGE_WATCH_EVENTS, createBridge } from '../src/bridge.js'
 import { decryptMessage, keyFingerprint } from '../src/crypto.js'
 import { loadConfig } from '../src/config.js'
 import { armorToBase64, autocryptHeader } from '../src/headers.js'
@@ -141,6 +141,11 @@ async function decryptedText(sent, index, bot) {
   return String(parsed.text || '')
 }
 
+test('subscribes to the plugin-visible assistant text stream', () => {
+  assert.ok(BRIDGE_WATCH_EVENTS.includes('session.text.delta'))
+  assert.ok(!BRIDGE_WATCH_EVENTS.includes('message.part.delta'))
+})
+
 test('progressive mail is throttled, final mail sends only the remainder and attaches session files', async () => {
   const bot = await keyPair('bot@example.org')
   const contact = await keyPair('contact@example.net')
@@ -175,12 +180,10 @@ test('progressive mail is throttled, final mail sends only the remainder and att
   ])
 
   await bridge.processEvent({
-    type: 'message.part.delta',
+    type: 'session.text.delta',
     data: {
       sessionID: h.session.id,
-      messageID: 'assistant-1',
-      partID: 'part-1',
-      field: 'text',
+      assistantMessageID: 'assistant-1',
       delta: 'Working ',
     },
   })
@@ -221,8 +224,8 @@ test('a fully mailed progress answer still gets one short completion mail', asyn
     { id: 'assistant-1', type: 'assistant', content: [{ type: 'text', text: 'All done' }] },
   ])
   await bridge.processEvent({
-    type: 'message.part.delta',
-    data: { sessionID: h.session.id, messageID: 'assistant-1', field: 'text', delta: 'All done' },
+    type: 'session.text.delta',
+    data: { sessionID: h.session.id, assistantMessageID: 'assistant-1', delta: 'All done' },
   })
   h.release()
   await pending
