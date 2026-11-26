@@ -1,3 +1,4 @@
+import { createCipheriv, randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import * as openpgp from 'openpgp'
 import { armorToBase64, normalizeBase64 } from './headers.js'
@@ -80,15 +81,50 @@ export async function encryptMime(bytes, identity, peerKeys) {
   })
 }
 
+/**
+ * Build a v4 SKESK using classic salted S2K (type 1).
+ *
+ * OpenPGP.js only offers iterated/Argon2 S2K for password encryption, but
+ * Delta Chat deliberately accepts only salted S2K for SecureJoin shared
+ * secrets. Constructing the SKESK ourselves keeps the handshake compatible.
+ */
+async function saltedSessionKeyPacket(passphrase, sessionKey) {
+  const algorithm = openpgp.enums.write(openpgp.enums.symmetric, sessionKey.algorithm)
+  const packet = new openpgp.SymEncryptedSessionKeyPacket()
+  packet.read(Uint8Array.from([
+    4,
+    algorithm,
+    openpgp.enums.s2k.salted,
+    openpgp.enums.hash.sha256,
+    ...randomBytes(8),
+  ]))
+  const key = await packet.s2k.produceKey(String(passphrase), sessionKey.data.length)
+  const cipher = createCipheriv(`aes-${sessionKey.data.length * 8}-cfb`, Buffer.from(key), Buffer.alloc(16))
+  const plaintext = Buffer.concat([
+    Buffer.from([algorithm]),
+    Buffer.from(sessionKey.data),
+  ])
+  packet.encrypted = new Uint8Array(Buffer.concat([cipher.update(plaintext), cipher.final()]))
+  packet.sessionKeyEncryptionAlgorithm = algorithm
+  delete packet.sessionKey
+  return packet
+}
+
 /** Encrypt an inner MIME entity with a shared secret, as SecureJoin v3 uses. */
 export async function encryptMimeWithPassword(bytes, sharedSecret, identity) {
+  const sessionKey = {
+    data: new Uint8Array(randomBytes(32)),
+    algorithm: 'aes256',
+  }
   const message = await openpgp.createMessage({ binary: Uint8Array.from(bytes) })
-  return openpgp.encrypt({
+  const encrypted = await openpgp.encrypt({
     message,
-    passwords: [String(sharedSecret)],
+    sessionKey,
     signingKeys: identity?.privateKey,
-    format: 'armored',
+    format: 'object',
   })
+  encrypted.packets.unshift(await saltedSessionKeyPacket(sharedSecret, sessionKey))
+  return encrypted.armor()
 }
 
 /**

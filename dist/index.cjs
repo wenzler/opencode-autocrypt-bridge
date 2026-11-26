@@ -99524,7 +99524,7 @@ var Resolved = durable({
 var Event18 = { Updated: Updated14, Resolved, Definitions: inventory(Updated14, Resolved) };
 
 // src/bridge.js
-var import_node_crypto4 = require("node:crypto");
+var import_node_crypto5 = require("node:crypto");
 var import_promises2 = require("node:fs/promises");
 var import_node_path3 = __toESM(require("node:path"), 1);
 
@@ -99851,6 +99851,7 @@ function formatPeek(messages = [], limit = 5) {
 }
 
 // src/crypto.js
+var import_node_crypto2 = require("node:crypto");
 var import_node_fs = require("node:fs");
 
 // node_modules/openpgp/dist/node/openpgp.mjs
@@ -103427,10 +103428,10 @@ function getPKCS1Padding(length3) {
   const result3 = new Uint8Array(length3);
   let count = 0;
   while (count < length3) {
-    const randomBytes2 = getRandomBytes(length3 - count);
-    for (let i = 0; i < randomBytes2.length; i++) {
-      if (randomBytes2[i] !== 0) {
-        result3[count++] = randomBytes2[i];
+    const randomBytes3 = getRandomBytes(length3 - count);
+    for (let i = 0; i < randomBytes3.length; i++) {
+      if (randomBytes3[i] !== 0) {
+        result3[count++] = randomBytes3[i];
       }
     }
   }
@@ -125900,14 +125901,41 @@ async function encryptMime(bytes2, identity2, peerKeys) {
     format: "armored"
   });
 }
+async function saltedSessionKeyPacket(passphrase, sessionKey) {
+  const algorithm = enums.write(enums.symmetric, sessionKey.algorithm);
+  const packet = new SymEncryptedSessionKeyPacket();
+  packet.read(Uint8Array.from([
+    4,
+    algorithm,
+    enums.s2k.salted,
+    enums.hash.sha256,
+    ...(0, import_node_crypto2.randomBytes)(8)
+  ]));
+  const key5 = await packet.s2k.produceKey(String(passphrase), sessionKey.data.length);
+  const cipher = (0, import_node_crypto2.createCipheriv)(`aes-${sessionKey.data.length * 8}-cfb`, Buffer.from(key5), Buffer.alloc(16));
+  const plaintext = Buffer.concat([
+    Buffer.from([algorithm]),
+    Buffer.from(sessionKey.data)
+  ]);
+  packet.encrypted = new Uint8Array(Buffer.concat([cipher.update(plaintext), cipher.final()]));
+  packet.sessionKeyEncryptionAlgorithm = algorithm;
+  delete packet.sessionKey;
+  return packet;
+}
 async function encryptMimeWithPassword(bytes2, sharedSecret, identity2) {
+  const sessionKey = {
+    data: new Uint8Array((0, import_node_crypto2.randomBytes)(32)),
+    algorithm: "aes256"
+  };
   const message = await createMessage({ binary: Uint8Array.from(bytes2) });
-  return encrypt({
+  const encrypted = await encrypt({
     message,
-    passwords: [String(sharedSecret)],
+    sessionKey,
     signingKeys: identity2?.privateKey,
-    format: "armored"
+    format: "object"
   });
+  encrypted.packets.unshift(await saltedSessionKeyPacket(sharedSecret, sessionKey));
+  return encrypted.armor();
 }
 async function decryptMessageWithPasswordDetailed(armored, sharedSecret, verificationKeyB64) {
   const message = await readMessage({ armoredMessage: armored });
@@ -125944,7 +125972,7 @@ async function decryptMessage(armored, identity2, verificationKeyB64) {
 }
 
 // src/mail.js
-var import_node_crypto3 = require("node:crypto");
+var import_node_crypto4 = require("node:crypto");
 var import_promises = require("node:fs/promises");
 var import_node_path2 = __toESM(require("node:path"), 1);
 var import_node_url = require("node:url");
@@ -125954,7 +125982,7 @@ var import_mailparser = __toESM(require_mailparser(), 1);
 var import_nodemailer = __toESM(require_nodemailer(), 1);
 
 // src/mime.js
-var import_node_crypto2 = require("node:crypto");
+var import_node_crypto3 = require("node:crypto");
 var CRLF = "\r\n";
 function encodeHeader(value3) {
   const text = String(value3 || "");
@@ -126007,7 +126035,7 @@ function attachmentPart(attachment) {
   ].join("");
 }
 function buildInnerMime({ text, attachments = [], headers: extraHeaders = [] }) {
-  const boundary = `opencode-${(0, import_node_crypto2.randomUUID)()}`;
+  const boundary = `opencode-${(0, import_node_crypto3.randomUUID)()}`;
   const parts2 = [textPart(text), ...attachments.map(attachmentPart)];
   const body = parts2.map((part) => `--${boundary}${CRLF}${part}${CRLF}`).join("") + `--${boundary}--${CRLF}`;
   const contentType = `multipart/mixed; boundary="${boundary}"`;
@@ -126025,7 +126053,7 @@ function buildInnerMime({ text, attachments = [], headers: extraHeaders = [] }) 
   };
 }
 function buildReadReceiptMime({ originalMessageID }) {
-  const boundary = `opencode-mdn-${(0, import_node_crypto2.randomUUID)()}`;
+  const boundary = `opencode-mdn-${(0, import_node_crypto3.randomUUID)()}`;
   const original = String(originalMessageID || "").trim().replace(/^<|>$/g, "").replace(/[\r\n]/g, "");
   const body = [
     `--${boundary}`,
@@ -126051,7 +126079,7 @@ function buildReadReceiptMime({ originalMessageID }) {
   };
 }
 function buildPgpMime(armored) {
-  const boundary = `opencode-encrypted-${(0, import_node_crypto2.randomUUID)()}`;
+  const boundary = `opencode-encrypted-${(0, import_node_crypto3.randomUUID)()}`;
   const body = [
     `--${boundary}${CRLF}`,
     `Content-Type: application/pgp-encrypted${CRLF}`,
@@ -126398,7 +126426,7 @@ async function saveAttachments(cfg, parsed, messageId, log2) {
   const saved = [];
   if (!parsed.attachments?.length) return saved;
   await (0, import_promises.mkdir)(cfg.attachmentDir, { recursive: true });
-  const hash2 = (0, import_node_crypto3.createHash)("sha256").update(messageId || String(Date.now())).digest("hex").slice(0, 12);
+  const hash2 = (0, import_node_crypto4.createHash)("sha256").update(messageId || String(Date.now())).digest("hex").slice(0, 12);
   for (const attachment of parsed.attachments) {
     const filename = safeFilename(attachment.filename || attachment.contentId || "attachment");
     const contentType = String(attachment.contentType || "").split(";")[0].toLowerCase();
@@ -126518,7 +126546,7 @@ async function parseIncoming(raw, cfg, identity2, log2, pinned = cfg.pinned || {
       throw new Error("encrypted message is not signed by the pinned contact key");
     }
   }
-  const messageId = parsed.messageId || rawHeaders.get("message-id") || `<${(0, import_node_crypto3.createHash)("sha256").update(raw).digest("hex")}@local>`;
+  const messageId = parsed.messageId || rawHeaders.get("message-id") || `<${(0, import_node_crypto4.createHash)("sha256").update(raw).digest("hex")}@local>`;
   const attachments = await saveAttachments(cfg, parsed, messageId, log2);
   const secureJoin = secureJoinFrom(rawHeaders, innerHeaders);
   const gossip = [
@@ -126663,7 +126691,7 @@ function formatSessionDirectory(catalog, boundSessionID = "") {
 }
 
 // src/bridge.js
-var hashId = (value3) => `msg_ac_${(0, import_node_crypto4.createHash)("sha256").update(String(value3)).digest("hex").slice(0, 32)}`;
+var hashId = (value3) => `msg_ac_${(0, import_node_crypto5.createHash)("sha256").update(String(value3)).digest("hex").slice(0, 32)}`;
 var STATE_KEY = "autocrypt.state";
 async function loadState(ctx) {
   const stored = await ctx.storage.get(STATE_KEY);
@@ -127265,7 +127293,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
   async function transmit({ to, text, attachments = [], inReplyTo, subject, headers = [], encrypt: encrypt2 = true, sessionID = "" }) {
     const protectedBody = await protect(buildInnerMime({ text, attachments }), to, encrypt2);
     const domain = cfg.address.split("@")[1] || "localhost";
-    const messageId = `${Date.now()}.${(0, import_node_crypto4.randomUUID)()}@${domain}`;
+    const messageId = `${Date.now()}.${(0, import_node_crypto5.randomUUID)()}@${domain}`;
     const baseSubject = subject || (inReplyTo ? `Re: Message from ${cfg.displayName}` : `Message from ${cfg.displayName}`);
     const finalSubject = withSessionSubject(baseSubject, sessionID);
     const receiptHeaders = cfg.remote?.readReceipts === false ? [] : [`Chat-Disposition-Notification-To: ${cfg.address}`];
@@ -127290,7 +127318,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
     const receipt = buildReadReceiptMime({ originalMessageID });
     const protectedBody = await protect(receipt, to);
     const domain = cfg.address.split("@")[1] || "localhost";
-    const messageId = `${Date.now()}.${(0, import_node_crypto4.randomUUID)()}@${domain}`;
+    const messageId = `${Date.now()}.${(0, import_node_crypto5.randomUUID)()}@${domain}`;
     const id2 = normalizeMessageId(originalMessageID).replace(/[\r\n]/g, "");
     const raw = buildMail({
       cfg,
@@ -127442,7 +127470,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
     });
     const armored = await encryptMimeWithPassword(inner.entity, secureJoinSecret(auth), void 0);
     const pgp = buildPgpMime(armored);
-    const messageId = `${Date.now()}.${(0, import_node_crypto4.randomUUID)()}@${cfg.address.split("@")[1] || "localhost"}`;
+    const messageId = `${Date.now()}.${(0, import_node_crypto5.randomUUID)()}@${cfg.address.split("@")[1] || "localhost"}`;
     const raw = buildMail({
       cfg,
       to,
@@ -127476,7 +127504,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
     });
     const armored = await encryptMime(inner.entity, identity2, [peerKeyB64]);
     const pgp = buildPgpMime(armored);
-    const messageId = `${Date.now()}.${(0, import_node_crypto4.randomUUID)()}@${cfg.address.split("@")[1] || "localhost"}`;
+    const messageId = `${Date.now()}.${(0, import_node_crypto5.randomUUID)()}@${cfg.address.split("@")[1] || "localhost"}`;
     const raw = buildMail({
       cfg,
       to,

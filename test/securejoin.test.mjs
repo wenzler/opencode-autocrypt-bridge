@@ -148,6 +148,36 @@ async function buildAsymmetricHandshake(cfg, contact, bot, auth, headers) {
   })
 }
 
+test('symmetric SecureJoin messages use salted S2K for Delta Chat compatibility', async () => {
+  const contact = await keyPair('contact@example.net')
+  const secret = secretFor(contact.fingerprint)
+  const inner = buildInnerMime({
+    text: 'Secure-Join',
+    headers: [
+      'From: Contact <contact@example.net>',
+      'To: <bot@example.org>',
+      'Subject: Secure-Join',
+      'Secure-Join: vc-pubkey',
+      `Secure-Join-Auth: ${AUTH}`,
+      'Chat-Version: 1.0',
+    ],
+  })
+  const armored = await encryptMimeWithPassword(inner.entity, secret, { privateKey: contact.privateKey })
+  const parsed = await openpgp.readMessage({ armoredMessage: armored })
+  const skesk = parsed.packets.find((packet) => packet.constructor === openpgp.SymEncryptedSessionKeyPacket)
+  assert.ok(skesk)
+  assert.equal(skesk.s2k.type, 'salted')
+  const opened = await openpgp.decrypt({
+    message: parsed,
+    passwords: [secret],
+    verificationKeys: [contact.privateKey.toPublic()],
+    expectSigned: true,
+    format: 'binary',
+  })
+  await Promise.all(opened.signatures.map((signature) => signature.verified))
+  assert.match(Buffer.from(opened.data).toString('utf8'), /Secure-Join: vc-pubkey/)
+})
+
 test('SecureJoin joins the contact invite, verifies the pin and then rejects plaintext', async () => {
   const contact = await keyPair('contact@example.net')
   const h = await makeBridge(contact, { inviteUrl: inviteFor(contact) })
