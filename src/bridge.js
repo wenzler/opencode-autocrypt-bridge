@@ -1,6 +1,15 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
+import {
+  classifyPermission,
+  decisionCode,
+  formatDecisionRequest,
+  formatPeek,
+  formatQuestionRequest,
+  formatRemoteHelp,
+  parseQuestionAnswers,
+} from './commands.js'
 import { loadIdentity, encryptMime, keyFingerprint, validatePublicKey } from './crypto.js'
 import { createSender, parseIncoming, rescanMailbox, startImap } from './mail.js'
 import { buildInnerMime, buildMail, buildPgpMime, contentTypeOf, safeFilename } from './mime.js'
@@ -22,7 +31,10 @@ async function loadState(ctx) {
   const stored = await ctx.storage.get(STATE_KEY)
   const data = stored && typeof stored === 'object'
     ? stored
-    : { sessions: {}, peers: {}, seen: [], threads: {}, sessionContacts: {}, meta: {}, handshake: {} }
+    : {
+      sessions: {}, peers: {}, seen: [], threads: {}, sessionContacts: {}, meta: {}, handshake: {},
+      watches: {}, pending: {}, questions: {},
+    }
   data.sessions ||= {}
   data.peers ||= {}
   data.seen ||= []
@@ -30,6 +42,9 @@ async function loadState(ctx) {
   data.sessionContacts ||= {}
   data.meta ||= {}
   data.handshake ||= {}
+  data.watches ||= {}
+  data.pending ||= {}
+  data.questions ||= {}
   return {
     data,
     async save() {
@@ -41,6 +56,8 @@ async function loadState(ctx) {
 export async function createBridge(ctx, cfg, options = {}) {
   const log = options.log || ((message) => console.log(`[autocrypt] ${message}`))
   const onStatus = options.onStatus || (() => {})
+  const onQuestion = options.onQuestion || (() => {})
+  const onQuestionAnswer = options.onQuestionAnswer || (() => {})
   const identity = options.identity || await loadIdentity(ctx, cfg)
 
   if (cfg.pinned.contact) {
@@ -69,7 +86,24 @@ export async function createBridge(ctx, cfg, options = {}) {
   const sender = options.sender || createSender(cfg)
   const queues = new Map()
   const controller = new AbortController()
+  const inFlight = new Set()
+  const sessionStatus = new Map()
+  const lastWatchNotify = new Map()
+  const announcedDecisions = new Set()
   let started = false
+
+  const WATCH_EVENTS = [
+    'permission.asked',
+    'permission.replied',
+    'form.created',
+    'form.replied',
+    'form.cancelled',
+    'session.status',
+    'session.idle',
+    'session.execution.succeeded',
+    'session.execution.failed',
+    'session.step.failed',
+  ]
 
   const allowed = (from) => {
     // The pin is the hard gate and takes precedence over the self-address guard.
@@ -286,6 +320,248 @@ export async function createBridge(ctx, cfg, options = {}) {
     return Object.entries(state.data.sessions).find(([, id]) => id === sessionID)?.[0]
   }
 
+  async function sessionRoot(sessionID) {
+    if (sessionID) {
+      try {
+        const session = await ctx.session.get({ sessionID })
+        if (session?.location?.directory) return path.resolve(String(session.location.directory))
+      } catch {}
+    }
+    return path.resolve(String(cfg.session?.defaultDirectory || ctx.location.directory || '.'))
+  }
+
+  const normalizeCode = (value) => String(value || '').trim().toUpperCase().replace(/^D-/, '')
+
+  /** Keep form events small and stable across the RPC and IPC boundaries. */
+  function formFieldView(fields) {
+    return (Array.isArray(fields) ? fields : []).map((field, index) => ({
+      key: String(field?.key || `q${index}`),
+      title: String(field?.title || field?.description || `Question ${index + 1}`),
+      description: field?.description ? String(field.description) : '',
+      type: String(field?.type || (Array.isArray(field?.options) ? 'select' : 'string')),
+      options: (Array.isArray(field?.options) ? field.options : []).map((option, optionIndex) => ({
+        value: String(option?.value ?? option?.label ?? optionIndex + 1),
+        label: String(option?.label ?? option?.value ?? optionIndex + 1),
+        description: option?.description ? String(option.description) : '',
+      })),
+    }))
+  }
+
+  function findPending(collection, from, code) {
+    const needle = normalizeCode(code)
+    if (!needle) return undefined
+    return Object.values(collection).find((entry) => (
+      entry
+      && !entry.answered
+      && entry.from === from
+      && (normalizeCode(entry.code) === needle
+        || String(entry.requestID || entry.formID || '').toLowerCase().startsWith(needle.toLowerCase()))
+    ))
+  }
+
+  function watchersFor(sessionID) {
+    const contacts = new Set()
+    for (const [contact, watch] of Object.entries(state.data.watches)) {
+      if (watch?.sessionID === sessionID && allowed(contact)) contacts.add(contact)
+    }
+    return [...contacts]
+  }
+
+  async function sendSessionNotice(sessionID, subject, text, kind = 'session-notice') {
+    const recipients = watchersFor(sessionID)
+    for (const to of recipients) {
+      await transmit({
+        to,
+        sessionID,
+        subject,
+        headers: [`X-OpenCode-Notice: ${kind}`],
+        text,
+      })
+    }
+  }
+
+  async function handlePermissionAsked(data = {}) {
+    const requestID = String(data.id || data.requestID || '')
+    if (!requestID || announcedDecisions.has(requestID) || state.data.pending[requestID]) return
+    const sessionID = String(data.sessionID || '')
+    const to = contactForSession(sessionID) || cfg.pinned.contact
+    if (!to || !allowed(to)) return
+    announcedDecisions.add(requestID)
+    const resources = Array.isArray(data.resources) ? data.resources.map(String) : []
+    const risk = classifyPermission(data.action, resources, await sessionRoot(sessionID))
+    const code = decisionCode(requestID)
+    const options = Array.isArray(data.save) && data.save.length
+      ? ['once', 'always', 'reject']
+      : ['once', 'reject']
+    state.data.pending[requestID] = {
+      requestID,
+      code,
+      sessionID,
+      from: to,
+      action: String(data.action || ''),
+      resources,
+      risk,
+      options,
+      createdAt: Date.now(),
+      answered: false,
+    }
+    await state.save()
+    try {
+      await transmit({
+        to,
+        sessionID,
+        subject: `Decision needed: ${data.action || 'permission'}`,
+        headers: [`X-OpenCode-Decision: ${code}`],
+        text: formatDecisionRequest({
+          code,
+          action: data.action,
+          resources,
+          risk,
+          enabled: Boolean(cfg.remote.decisions),
+          canAnswer: Boolean(cfg.remote.decisions) && (risk.level !== 'high' || cfg.remote.highRiskDecisions),
+          highRiskAllowed: Boolean(cfg.remote.highRiskDecisions),
+          options,
+          sessionID,
+        }),
+      })
+    } catch (error) {
+      log(`Could not send decision mail: ${error.message}`)
+    }
+  }
+
+  async function handlePermissionReplied(data = {}) {
+    const requestID = String(data.requestID || data.id || '')
+    const pending = state.data.pending[requestID]
+    if (!pending || pending.answered) return
+    pending.answered = true
+    pending.repliedAt = Date.now()
+    await state.save()
+  }
+
+  async function handleFormCreated(data = {}) {
+    const form = data.form || {}
+    const formID = String(form.id || '')
+    if (!formID || state.data.questions[formID]) return
+    if (String(form.metadata?.kind || '') !== 'question') return
+    if (!cfg.remote.questions) return
+    const sessionID = String(form.sessionID || '')
+    const to = contactForSession(sessionID) || cfg.pinned.contact
+    if (!to || !allowed(to)) return
+    const fields = formFieldView(form.fields)
+    const code = decisionCode(formID)
+    state.data.questions[formID] = {
+      formID,
+      code,
+      sessionID,
+      from: to,
+      title: String(form.title || 'Questions'),
+      fields,
+      createdAt: Date.now(),
+      answered: false,
+    }
+    await state.save()
+    try {
+      await onQuestion({
+        formID,
+        code,
+        sessionID,
+        title: state.data.questions[formID].title,
+        fields: state.data.questions[formID].fields,
+      })
+    } catch (error) {
+      log(`Could not notify the GUI about a question: ${error.message}`)
+    }
+    try {
+      await transmit({
+        to,
+        sessionID,
+        subject: `Question: ${form.title || 'OpenCode'}`,
+        headers: [`X-OpenCode-Question: ${code}`],
+        text: formatQuestionRequest({ code, title: form.title, fields, sessionID }),
+      })
+    } catch (error) {
+      log(`Could not send question mail: ${error.message}`)
+    }
+  }
+
+  async function handleFormSettled(data = {}) {
+    const formID = String(data.id || data.formID || '')
+    const pending = state.data.questions[formID]
+    if (!pending || pending.answered) return
+    pending.answered = true
+    pending.repliedAt = Date.now()
+    await state.save()
+  }
+
+  async function handleSessionEvent(event) {
+    const data = event.data || {}
+    const sessionID = String(data.sessionID || '')
+    if (!sessionID) return
+    if (event.type === 'session.status') {
+      sessionStatus.set(sessionID, String(data.status?.type || 'idle'))
+    } else if (event.type === 'session.idle') {
+      sessionStatus.set(sessionID, 'idle')
+    }
+    if (!cfg.remote.watch || inFlight.has(sessionID)) return
+    const last = Number(lastWatchNotify.get(sessionID) || 0)
+    if (Date.now() - last < 30_000) return
+    let subject = ''
+    let text = ''
+    let kind = 'session-notice'
+    if (event.type === 'session.status') {
+      if (data.status?.type !== 'idle') return
+      subject = `Session idle: ${sessionID}`
+      text = `Session ${sessionID} is idle.`
+      kind = 'idle'
+    } else if (event.type === 'session.idle') {
+      subject = `Session idle: ${sessionID}`
+      text = `Session ${sessionID} is idle.`
+      kind = 'idle'
+    } else if (event.type === 'session.execution.failed' || event.type === 'session.step.failed') {
+      const error = data.error?.message || data.error || 'unknown error'
+      subject = `Session failed: ${sessionID}`
+      text = `Session ${sessionID} failed: ${error}`
+      kind = 'failure'
+    } else if (event.type === 'session.execution.succeeded') {
+      subject = `Session finished: ${sessionID}`
+      text = `Session ${sessionID} finished. Use !peek to read the result.`
+      kind = 'success'
+    } else {
+      return
+    }
+    if (!watchersFor(sessionID).length) return
+    lastWatchNotify.set(sessionID, Date.now())
+    await sendSessionNotice(sessionID, subject, text, kind)
+  }
+
+  async function handleEvent(event) {
+    const data = event.data || {}
+    switch (event.type) {
+      case 'permission.asked': return handlePermissionAsked(data)
+      case 'permission.replied': return handlePermissionReplied(data)
+      case 'form.created': return handleFormCreated(data)
+      case 'form.replied':
+      case 'form.cancelled': return handleFormSettled(data)
+      case 'session.status':
+      case 'session.idle':
+      case 'session.execution.succeeded':
+      case 'session.execution.failed':
+      case 'session.step.failed': return handleSessionEvent(event)
+      default: return undefined
+    }
+  }
+
+  function startEvents() {
+    if (!ctx.event?.subscribe || typeof ctx.event.subscribe !== 'function') return
+    void (async () => {
+      for await (const event of ctx.event.subscribe({ types: WATCH_EVENTS, signal: controller.signal })) {
+        void handleEvent(event).catch((error) => log(`Event ${event.type} failed: ${error.message}`))
+      }
+    })().catch((error) => {
+      if (!controller.signal.aborted) log(`Event subscription stopped: ${error.message}`)
+    })
+  }
+
   async function learnPeer(from, autocrypt) {
     if (!autocrypt) return { learned: false, establishedNow: false }
     if (cfg.pinned.fingerprint) {
@@ -358,27 +634,38 @@ export async function createBridge(ctx, cfg, options = {}) {
     log(`Sent ${contentType.includes('encrypted') ? 'encrypted' : 'cleartext'} reply to ${to}${sessionID ? ` [session:${sessionID}]` : ''}`)
   }
 
-  /** Confirm the learned key with a signed encrypted PGP/MIME reply. */
-  async function sendKeyConfirmation(from, message, sessionID = '') {
+  /** Send the one-time encrypted welcome mail with the full command list. */
+  async function maybeSendWelcome(from, message, sessionID = '') {
+    const flag = `welcome:${from}:${cfg.pinned.fingerprint}`
+    if (state.data.meta[flag]) return
+    const status = await getStatus()
+    if (!status.established || !status.verified) return
     await transmit({
       to: from,
       sessionID,
-      subject: `Re: ${message.subject || 'Autocrypt key confirmation'}`,
+      subject: `Re: ${message.subject || 'Connected'}`,
       inReplyTo: message.messageId,
-      headers: ['X-OpenCode-Handshake: autocrypt-confirm'],
+      headers: ['X-OpenCode-Handshake: autocrypt-confirm', 'X-OpenCode-Command: help'],
       encrypt: true,
       text: [
         `Key confirmed for ${from}.`,
         `Fingerprint: ${cfg.pinned.fingerprint}`,
         'OpenCode will now sign and encrypt replies to this address.',
-      ].join('\n\n'),
+        '',
+        formatRemoteHelp(cfg.remote, {
+          sessionID,
+          sessionTitle: status.sessionTitle,
+        }),
+      ].join('\n'),
     })
+    state.data.meta[flag] = Date.now()
+    await state.save()
   }
 
   async function sendFile({ sessionID, filePath, text }) {
     const to = contactForSession(sessionID)
     if (!to) return { content: 'This session is not linked to an Autocrypt contact' }
-    const root = path.resolve(ctx.location.directory)
+    const root = await sessionRoot(sessionID)
     const target = path.resolve(root, String(filePath))
     if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
       return { content: 'Refusing to send a file outside the project directory' }
@@ -468,25 +755,200 @@ export async function createBridge(ctx, cfg, options = {}) {
     return { sessionID: await sessionFor(from), reason: 'default' }
   }
 
-  async function commandReplyText(command, catalog, sessionID, resolution) {
-    if (command.command === 'sessions' || command.command === 'help') {
-      return formatSessionDirectory(catalog, sessionID)
+  async function answerDecision(from, message, command) {
+    if (!cfg.remote.decisions) {
+      await sendCommandReply(from, message, '', 'Permission decisions by email are disabled in Settings → Autocrypt Bridge → Remote controls.', 'error')
+      return
     }
-    if (command.command === 'status') {
-      const status = await getStatus()
-      return [
-        `Email-bound session: ${status.sessionID || '(none)'}`,
-        `Title: ${status.sessionTitle || '(untitled)'}`,
-        `Directory: ${status.sessionDirectory || '(unknown)'}`,
-        `Project: ${status.sessionProjectID || '(none)'}`,
-        `This thread's session: ${sessionID}`,
-        `Established: ${status.established ? 'yes' : 'no'}`,
-      ].join('\n')
+    const pending = findPending(state.data.pending, from, command.argument)
+    if (!pending) {
+      await sendCommandReply(from, message, '', `Unknown decision code "${command.argument || ''}". Use the code in the decision email.`, 'error')
+      return
     }
-    return `${resolution.note || `Using session ${sessionID}`}.\n\nFurther replies in this subject stay in this session.`
+    if (pending.risk.level === 'high' && !cfg.remote.highRiskDecisions) {
+      await sendCommandReply(from, message, pending.sessionID, [
+        `Decision ${pending.code} is HIGH RISK: ${pending.risk.reasons.join('; ') || pending.action}.`,
+        'Email approval is disabled for high-risk requests.',
+        'Enable it in Settings → Autocrypt Bridge → Remote controls, or answer at the desktop.',
+      ].join('\n'), 'error')
+      return
+    }
+    const wantsAlways = /\balways\b/i.test(command.rest)
+    const decision = command.command === 'deny'
+      ? 'reject'
+      : (wantsAlways && pending.options.includes('always') ? 'always' : 'once')
+    const note = decision === 'reject' ? command.rest.trim() : ''
+    try {
+      await ctx.permission.reply({
+        sessionID: pending.sessionID,
+        requestID: pending.requestID,
+        decision,
+        ...(note ? { message: note } : {}),
+      })
+    } catch (error) {
+      await sendCommandReply(from, message, pending.sessionID, `Could not record the decision: ${error.message}`, 'error')
+      return
+    }
+    pending.answered = true
+    pending.repliedAt = Date.now()
+    await state.save()
+    await sendCommandReply(from, message, pending.sessionID, `Decision recorded: ${decision} for ${pending.code}. The desktop session can continue.`)
   }
 
-  const LOCAL_COMMANDS = new Set(['sessions', 'help', 'status', 'use', 'new', 'default'])
+  async function answerQuestion(from, message, command) {
+    if (!cfg.remote.questions) {
+      await sendCommandReply(from, message, '', 'Multiple-choice answers by email are disabled in Settings → Autocrypt Bridge → Remote controls.', 'error')
+      return
+    }
+    const pending = findPending(state.data.questions, from, command.argument)
+    if (!pending) {
+      await sendCommandReply(from, message, '', `Unknown question code "${command.argument || ''}". Use the code in the question email.`, 'error')
+      return
+    }
+    const parsed = parseQuestionAnswers(pending.fields, command.rest)
+    if (parsed.error) {
+      await sendCommandReply(from, message, pending.sessionID, `${parsed.error}\n\nUse: !answer ${pending.code} 1`, 'error')
+      return
+    }
+    const entries = Object.entries(parsed.answer).map(([key, values]) => ({ key, values }))
+    try {
+      await onQuestionAnswer({
+        formID: pending.formID,
+        sessionID: pending.sessionID,
+        answer: entries,
+      })
+    } catch (error) {
+      await sendCommandReply(from, message, pending.sessionID, `Could not forward the answer: ${error.message}`, 'error')
+      return
+    }
+    pending.submittedAt = Date.now()
+    pending.lastAnswer = entries
+    await state.save()
+    const chosen = Object.values(parsed.answer).flat().join(', ')
+    await sendCommandReply(from, message, pending.sessionID, `Answer forwarded for ${pending.code}: ${chosen}. The desktop form will be completed when OpenCode Desktop handles it.`)
+  }
+
+  async function confirmQuestionReply({ formID, ok, error = '' }) {
+    const pending = state.data.questions[String(formID || '')]
+    if (!pending) return
+    if (ok) {
+      pending.answered = true
+      pending.repliedAt = Date.now()
+      await state.save()
+      await transmit({
+        to: pending.from,
+        sessionID: pending.sessionID,
+        subject: `Re: Question: ${pending.title}`,
+        headers: ['X-OpenCode-Command: question-answered'],
+        text: `Question ${pending.code} was completed on the desktop. The session can continue.`,
+      })
+      return
+    }
+    await transmit({
+      to: pending.from,
+      sessionID: pending.sessionID,
+      subject: `Re: Question: ${pending.title}`,
+      headers: ['X-OpenCode-Command: error'],
+      text: [
+        `The desktop could not complete question ${pending.code}: ${error || 'unknown error'}`,
+        '',
+        `Retry with the same choices: !answer ${pending.code} <choice>`,
+      ].join('\n'),
+    })
+  }
+
+  async function localCommandReply(from, message, command, catalog, sessionID, resolution) {
+    switch (command.command) {
+      case 'sessions':
+        return `${formatSessionDirectory(catalog, catalog.boundSessionID)}\n\nUse !help for the full remote-control list.`
+      case 'help': {
+        const status = await getStatus()
+        return formatRemoteHelp(cfg.remote, {
+          sessionID,
+          sessionTitle: status.sessionTitle,
+        })
+      }
+      case 'status': {
+        const status = await getStatus()
+        return [
+          `Email-bound session: ${status.sessionID || '(none)'}`,
+          `Title: ${status.sessionTitle || '(untitled)'}`,
+          `Directory: ${status.sessionDirectory || '(unknown)'}`,
+          `Project: ${status.sessionProjectID || '(none)'}`,
+          `This thread's session: ${sessionID}`,
+          `Established: ${status.established ? 'yes' : 'no'}`,
+          `Verified: ${status.verified ? 'yes' : 'no'}`,
+          `Permission decisions: ${cfg.remote.decisions ? 'on' : 'off'}`,
+          `Multiple-choice answers: ${cfg.remote.questions ? 'on' : 'off'}`,
+          `High-risk email approval: ${cfg.remote.highRiskDecisions ? 'on' : 'off'}`,
+          `Session watch: ${cfg.remote.watch ? 'on' : 'off'}`,
+        ].join('\n')
+      }
+      case 'peek': {
+        if (!cfg.remote.peek) return 'Session output by email is disabled in the GUI.'
+        let target = sessionID
+        let limit = 5
+        for (const token of [command.argument, command.rest].filter(Boolean)) {
+          if (/^\d+$/.test(token)) limit = Number(token)
+          else {
+            const match = resolveSessionRef(catalog.sessions, token)
+            if (!match) throw new Error(`Unknown session "${token}"; use !sessions to list sessions`)
+            target = match.id
+          }
+        }
+        return formatPeek(await ctx.session.context({ sessionID: target }), limit)
+      }
+      case 'tail': {
+        if (!cfg.remote.tail) return 'Terminal tail by email is disabled in the GUI.'
+        if (!ctx.experimental?.terminal?.read) return 'This OpenCode version does not expose a terminal tail to plugins.'
+        const tokens = [command.argument, command.rest].filter(Boolean)
+        const lineToken = tokens.find((token) => /^\d+$/.test(token))
+        const lines = Math.max(1, Math.min(Number(lineToken) || 80, 500))
+        const result = await ctx.experimental.terminal.read({ sessionID, lines })
+        const text = typeof result === 'string'
+          ? result
+          : String(result?.text || result?.output || JSON.stringify(result || ''))
+        return text.trim().slice(-12_000) || `No terminal output for session ${sessionID}.`
+      }
+      case 'send': {
+        if (!cfg.remote.sendFiles) return 'Sending project files by email is disabled in the GUI.'
+        const filePath = [command.argument, command.rest].filter(Boolean).join(' ').trim()
+        if (!filePath) return 'Usage: !send <project-file>'
+        const result = await sendFile({ sessionID, filePath, text: 'Attached on request.' })
+        return result.content
+      }
+      case 'watch': {
+        if (!cfg.remote.watch) return 'Session watch is disabled in the GUI.'
+        let target = sessionID
+        if (command.argument) {
+          const match = resolveSessionRef(catalog.sessions, command.argument)
+          if (!match) throw new Error(`Unknown session "${command.argument}"; use !sessions to list sessions`)
+          target = match.id
+        }
+        state.data.watches[from] = {
+          sessionID: target,
+          inReplyTo: message.messageId,
+          subject: message.subject,
+          at: Date.now(),
+        }
+        await state.save()
+        return `Watching session ${target}. You will get an encrypted mail when it finishes, fails or asks for a decision. Use !unwatch to stop.`
+      }
+      case 'unwatch': {
+        delete state.data.watches[from]
+        await state.save()
+        return 'Session watch is off for this contact.'
+      }
+      default:
+        return `${resolution.note || `Using session ${sessionID}`}.\n\nFurther replies in this subject stay in this session.`
+    }
+  }
+
+  const LOCAL_ONLY_COMMANDS = new Set([
+    'sessions', 'help', 'status', 'new', 'default',
+    'peek', 'tail', 'send', 'watch', 'unwatch',
+  ])
+  const DECISION_COMMANDS = new Set(['approve', 'deny'])
 
   async function handle(raw) {
     let message
@@ -513,6 +975,14 @@ export async function createBridge(ctx, cfg, options = {}) {
 
     const command = parseSessionCommand(message.text)
     const { establishedNow } = await learnPeer(from, message.autocrypt)
+    if (command && DECISION_COMMANDS.has(command.command)) {
+      await answerDecision(from, message, command)
+      return
+    }
+    if (command?.command === 'answer') {
+      await answerQuestion(from, message, command)
+      return
+    }
     let resolution
     try {
       resolution = await resolveInboundSession(from, message, command)
@@ -528,54 +998,70 @@ export async function createBridge(ctx, cfg, options = {}) {
 
     if (establishedNow) {
       try {
-        await sendKeyConfirmation(from, message, sessionID)
+        await maybeSendWelcome(from, message, sessionID)
       } catch (error) {
-        log(`Could not send key confirmation: ${error.message}`)
+        log(`Could not send welcome mail: ${error.message}`)
       }
     }
 
-    if (command && LOCAL_COMMANDS.has(command.command)) {
+    if (command && LOCAL_ONLY_COMMANDS.has(command.command)) {
       const catalog = await listSessions()
-      const text = await commandReplyText(command, catalog, sessionID, resolution)
-      if (!command.rest) {
-        await sendCommandReply(from, message, sessionID, text)
-        return
-      }
+      const text = await localCommandReply(from, message, command, catalog, sessionID, resolution)
+      await sendCommandReply(from, message, sessionID, text)
+      return
+    }
+    if (command?.command === 'use' && !command.rest) {
+      await sendCommandReply(from, message, sessionID, `${resolution.note || `Using session ${sessionID}`}.\n\nFurther replies in this subject stay in this session.`)
+      return
+    }
+    if (command?.command === 'use') {
       // `!use <id> question` switches the thread and asks in one email.
       command.rest = `${resolution.note || `Using session ${sessionID}`}\n\n${command.rest}`
     }
 
     await enqueue(sessionID, async () => {
-      const files = message.attachments.map((attachment) => ({
-        uri: attachment.uri,
-        name: attachment.filename,
-        description: attachment.description,
-      }))
-      const promptId = hashId(message.messageId)
-      const text = [
-        command?.rest || message.text || '(message contained no plain text)',
-        `[Autocrypt email from ${from}${message.fromName ? ` (${message.fromName})` : ''}]`,
-        `[OpenCode session: ${sessionID}${resolution.note ? ` — ${resolution.note}` : ''}]`,
-        ...(message.attachments.length ? [`[Attachments: ${message.attachments.map((a) => a.filename).join(', ')}]`] : []),
-      ].join('\n\n')
-      const promptResult = await ctx.session.prompt({
-        sessionID,
-        id: promptId,
-        text,
-        ...(files.length ? { files } : {}),
-        metadata: { source: 'autocrypt-email', from, messageId: message.messageId, sessionID },
-      })
-      const userMessageID = promptResult?.id || promptId
-      await ctx.session.wait({ sessionID })
-      const messages = await ctx.session.context({ sessionID })
-      const index = messages.findIndex((entry) => entry.id === userMessageID)
-      const replies = (index < 0 ? [] : messages.slice(index + 1))
-        .filter((entry) => entry.type === 'assistant' && !entry.error)
-        .flatMap((entry) => entry.content.filter((part) => part.type === 'text').map((part) => part.text))
-        .join('\n\n')
-        .trim()
-      if (replies) await transmit({ to: from, text: replies, inReplyTo: message.messageId, sessionID })
-      else log(`No assistant text to send to ${from}`)
+      const current = sessionStatus.get(sessionID)
+      const wasBusy = inFlight.has(sessionID) || current === 'busy' || current === 'retry'
+      inFlight.add(sessionID)
+      try {
+        const files = message.attachments.map((attachment) => ({
+          uri: attachment.uri,
+          name: attachment.filename,
+          description: attachment.description,
+        }))
+        const promptId = hashId(message.messageId)
+        const text = [
+          command?.rest || message.text || '(message contained no plain text)',
+          `[Autocrypt email from ${from}${message.fromName ? ` (${message.fromName})` : ''}]`,
+          `[OpenCode session: ${sessionID}${resolution.note ? ` — ${resolution.note}` : ''}]`,
+          ...(message.attachments.length ? [`[Attachments: ${message.attachments.map((a) => a.filename).join(', ')}]`] : []),
+        ].join('\n\n')
+        const promptResult = await ctx.session.prompt({
+          sessionID,
+          id: promptId,
+          text,
+          ...(files.length ? { files } : {}),
+          delivery: wasBusy ? 'queue' : 'steer',
+          metadata: { source: 'autocrypt-email', from, messageId: message.messageId, sessionID },
+        })
+        if (wasBusy) {
+          await sendCommandReply(from, message, sessionID, `Session ${sessionID} is busy; your prompt was queued. !watch ${sessionID} emails you when it finishes.`)
+          return
+        }
+        const userMessageID = promptResult?.id || promptId
+        await ctx.session.wait({ sessionID })
+        const messages = await ctx.session.context({ sessionID })
+        const index = messages.findIndex((entry) => entry.id === userMessageID)
+        const replies = (index < 0 ? [] : messages.slice(index + 1))
+          .filter((entry) => entry.type === 'assistant' && !entry.error)
+          .flatMap((entry) => entry.content.filter((part) => part.type === 'text').map((part) => part.text))
+          .join('\n\n')
+          .trim()
+        if (replies) await transmit({ to: from, text: replies, inReplyTo: message.messageId, sessionID })
+        else log(`No assistant text to send to ${from}`)
+      } finally {
+        inFlight.delete(sessionID)
+      }
     })
   }
 
@@ -599,6 +1085,7 @@ export async function createBridge(ctx, cfg, options = {}) {
       if (started) return
       started = true
       log(`Listening for Autocrypt mail at ${cfg.address} (${cfg.imap.mailbox})`)
+      startEvents()
       void startImap(cfg, store, handle, controller.signal, log)
       if (cfg.pinned.contact && !state.data.peers[cfg.pinned.contact]?.keydata) {
         const last = Number(state.data.meta.autocryptBootstrapAt || 0)
@@ -619,6 +1106,8 @@ export async function createBridge(ctx, cfg, options = {}) {
     },
     // Exposed for tests and for local loopback checks against a real mail server.
     process: handle,
+    processEvent: handleEvent,
+    confirmQuestionReply,
     getStatus,
     async startHandshake() {
       return startAutocryptHandshake(true)

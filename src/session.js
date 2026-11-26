@@ -1,12 +1,16 @@
 const ALIASES = {
   list: 'sessions',
   projects: 'sessions',
+  commands: 'help',
+  shortcuts: 'help',
   session: 'use',
   create: 'new',
   reset: 'default',
+  reject: 'deny',
+  decide: 'approve',
 }
 
-const SIMPLE_COMMANDS = new Set(['sessions', 'help', 'status', 'default'])
+const SIMPLE_COMMANDS = new Set(['sessions', 'help', 'status', 'default', 'unwatch'])
 const SUBJECT_MARKER = /\[session:([^\]]+)\]/i
 
 /** Add or replace the routing marker in an outbound subject. */
@@ -41,7 +45,10 @@ export function parseSessionCommand(text) {
     return { command, argument: id || '', rest: rest.join(' ').trim() }
   }
   if (command === 'new') return { command, argument, rest: '' }
-  return { command, argument, rest: '' }
+  // Remote-control commands keep the first token as the selector/code and put
+  // the remainder in `rest` (decision, answer choices, line counts, captions).
+  const [selector, ...rest] = argument.split(/\s+/)
+  return { command, argument: selector || '', rest: rest.join(' ').trim() }
 }
 
 export function normalizeMessageId(value) {
@@ -130,5 +137,6 @@ export function formatSessionDirectory(catalog, boundSessionID = '') {
   lines.push('  !new <title> in <project> create a session in a listed project')
   lines.push('  !default                  return this thread to the email-bound session')
   lines.push('  !status                   show the current bridge binding')
+  lines.push('  !help                     full remote-control command list')
   return lines.join('\n')
 }

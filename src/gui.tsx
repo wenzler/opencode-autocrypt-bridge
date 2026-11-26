@@ -1,11 +1,30 @@
 import { createSignal, onCleanup, onMount } from "solid-js"
 import { Plugin, SettingsPage } from "@opencode/plugin/gui"
+import { QuestionBridge } from "./question-ipc"
 import { BridgeRpc } from "./rpc.js"
 
 export default Plugin.define({
   setup(ctx) {
     const rpc = () => ctx.client.rpc(BridgeRpc)
     const ui = ctx.ui
+
+    // Email answers arrive as an RPC event. This window forwards them to the
+    // main process, which is the only place with session.form.reply().
+    const questionRpc = rpc()
+    onCleanup(questionRpc.events.on("questionAnswer", (event) => {
+      const answer = event.data
+      void ctx.main(QuestionBridge).reply({
+        sessionID: answer.sessionID,
+        formID: answer.formID,
+        answer: answer.answer,
+      }).catch((error) => {
+        ctx.toast.show({
+          title: "Autocrypt question answer failed",
+          description: error?.message || String(error),
+          variant: "error",
+        })
+      })
+    }))
 
     const Settings = () => {
       const [settings, setSettings] = createSignal({})
@@ -40,7 +59,18 @@ export default Plugin.define({
         onCleanup(stop)
       })
 
-      const defaults = { generateKey: true, preferEncryptMutual: true, verifyCertificate: true }
+      const defaults = {
+        generateKey: true,
+        preferEncryptMutual: true,
+        verifyCertificate: true,
+        emailDecisions: true,
+        emailHighRiskDecisions: false,
+        emailQuestions: true,
+        emailPeek: true,
+        emailTail: true,
+        emailSendFiles: true,
+        emailWatch: true,
+      }
       const setField = (key, value) => setSettings((prev) => ({ ...prev, [key]: value }))
       const value = (key) => settings()[key] ?? ""
       const checked = (key) => {
@@ -147,6 +177,13 @@ export default Plugin.define({
           preferEncryptMutual: checked("preferEncryptMutual"),
           defaultSessionID: value("defaultSessionID"),
           defaultSessionDirectory: value("defaultSessionDirectory"),
+          emailDecisions: checked("emailDecisions"),
+          emailHighRiskDecisions: checked("emailHighRiskDecisions"),
+          emailQuestions: checked("emailQuestions"),
+          emailPeek: checked("emailPeek"),
+          emailTail: checked("emailTail"),
+          emailSendFiles: checked("emailSendFiles"),
+          emailWatch: checked("emailWatch"),
         }
         return run("Settings saved", () => rpc().updateSettings(payload))
       }
@@ -282,6 +319,33 @@ export default Plugin.define({
             </ui.SettingsRow>
           </ui.SettingsSection>
 
+          <ui.SettingsSection title="Remote controls" description="All commands arrive as encrypted mail from the pinned contact. No shell or arbitrary remote command execution is added.">
+            <ui.SettingsRow title="Permission decisions by email" description="Allow !approve and !deny for low- and medium-risk OpenCode permission requests.">
+              <ui.Switch label="Permission decisions by email" hideLabel checked={checked("emailDecisions")} onChange={(v) => setField("emailDecisions", v)} />
+            </ui.SettingsRow>
+            <ui.SettingsRow title="High-risk decisions by email" description="DANGER: also allow email approval of shell-like actions and file access outside the session project. Off by default.">
+              <ui.Switch label="High-risk decisions by email" hideLabel checked={checked("emailHighRiskDecisions")} onChange={(v) => setField("emailHighRiskDecisions", v)} />
+            </ui.SettingsRow>
+            <ui.SettingsRow title="Multiple-choice answers by email" description="Allow !answer to complete OpenCode question forms from the phone. Requires OpenCode Desktop to be running.">
+              <ui.Switch label="Multiple-choice answers by email" hideLabel checked={checked("emailQuestions")} onChange={(v) => setField("emailQuestions", v)} />
+            </ui.SettingsRow>
+            <ui.SettingsRow title="Session output by email" description="Allow !peek to read recent assistant output.">
+              <ui.Switch label="Session output by email" hideLabel checked={checked("emailPeek")} onChange={(v) => setField("emailPeek", v)} />
+            </ui.SettingsRow>
+            <ui.SettingsRow title="Terminal tail by email" description="Allow !tail to read the session terminal tail.">
+              <ui.Switch label="Terminal tail by email" hideLabel checked={checked("emailTail")} onChange={(v) => setField("emailTail", v)} />
+            </ui.SettingsRow>
+            <ui.SettingsRow title="Send project files by email" description="Allow !send to attach a file from the session project directory. Paths outside that project are refused.">
+              <ui.Switch label="Send project files by email" hideLabel checked={checked("emailSendFiles")} onChange={(v) => setField("emailSendFiles", v)} />
+            </ui.SettingsRow>
+            <ui.SettingsRow title="Session watch subscriptions" description="Allow !watch and !unwatch to email completion, failure and idle notices for a session.">
+              <ui.Switch label="Session watch subscriptions" hideLabel checked={checked("emailWatch")} onChange={(v) => setField("emailWatch", v)} />
+            </ui.SettingsRow>
+            <ui.SettingsRow title="Command reference" description="Reply !help in the encrypted email thread for the live command list and current gate state.">
+              <ui.Code content={"!sessions · !use <id> · !new <title> in <project>\n!default · !status · !help\n!approve <code> once|always · !deny <code> [reason]\n!answer <code> <choice>[,choice][;choice…]\n!peek [session] [count] · !tail [lines]\n!send <project-file> · !watch [session] · !unwatch"} language="text" />
+            </ui.SettingsRow>
+          </ui.SettingsSection>
+
           <ui.SettingsSection title="Sessions">
             <ui.SettingsRow id="sessions" title="Open projects and sessions" description="Every outbound email carries [session:ses_…] in its subject, so Delta Chat replies stay in that OpenCode session. Email commands: !sessions, !use <id>, !new <title> in <project>, !default, !status.">
               <ui.Code content={sessionText()} language="text" />
@@ -328,8 +392,38 @@ export default Plugin.define({
         { id: "inviteUrl", title: "Contact invite URL", keywords: "fingerprint prefill" },
         { id: "sessions", title: "Open sessions", keywords: "session project routing" },
         { id: "defaultSessionID", title: "Default session", keywords: "session project binding" },
+        { id: "emailDecisions", title: "Remote controls", keywords: "permission decision question answer watch danger" },
+        { id: "emailHighRiskDecisions", title: "High-risk email approval", keywords: "danger shell file access" },
       ],
       render: () => <Settings />,
     })
+  },
+  main(ctx) {
+    const provider = ctx.provide(QuestionBridge, {
+      async reply(input) {
+        const answer = Object.fromEntries(
+          input.answer.map((entry) => [entry.key, entry.values]),
+        )
+        let ok = true
+        let error = ""
+        try {
+          await ctx.client.session.form.reply({
+            sessionID: input.sessionID,
+            formID: input.formID,
+            answer,
+          })
+        } catch (cause) {
+          ok = false
+          error = cause?.message || String(cause)
+        }
+        await ctx.client.rpc(BridgeRpc).reportQuestionReply({
+          formID: input.formID,
+          ok,
+          error,
+        }).catch(() => undefined)
+        if (!ok) throw new Error(error || "The desktop could not complete the form")
+      },
+    })
+    ctx.onCleanup(() => provider.dispose())
   },
 })

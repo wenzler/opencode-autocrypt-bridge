@@ -27,6 +27,13 @@ const settingsProperties = {
   preferEncryptMutual: { type: 'boolean' },
   defaultSessionID: { type: 'string' },
   defaultSessionDirectory: { type: 'string' },
+  emailDecisions: { type: 'boolean' },
+  emailHighRiskDecisions: { type: 'boolean' },
+  emailQuestions: { type: 'boolean' },
+  emailPeek: { type: 'boolean' },
+  emailTail: { type: 'boolean' },
+  emailSendFiles: { type: 'boolean' },
+  emailWatch: { type: 'boolean' },
 }
 
 const emptyInput = {
@@ -105,6 +112,67 @@ const sessionsOutput = {
   additionalProperties: false,
 }
 
+const questionFieldSchema = {
+  type: 'object',
+  properties: {
+    key: { type: 'string' },
+    title: { type: 'string' },
+    description: { type: 'string' },
+    type: { type: 'string' },
+    options: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          value: { type: 'string' },
+          label: { type: 'string' },
+          description: { type: 'string' },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  additionalProperties: false,
+}
+
+const questionEvent = {
+  type: 'object',
+  properties: {
+    formID: { type: 'string' },
+    code: { type: 'string' },
+    sessionID: { type: 'string' },
+    title: { type: 'string' },
+    fields: { type: 'array', items: questionFieldSchema },
+  },
+  additionalProperties: false,
+}
+
+const questionAnswerEvent = {
+  type: 'object',
+  properties: {
+    formID: { type: 'string' },
+    sessionID: { type: 'string' },
+    answer: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          key: { type: 'string' },
+          values: { type: 'array', items: { type: 'string' } },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  additionalProperties: false,
+}
+
+const ackOutput = {
+  type: 'object',
+  properties: { accepted: { type: 'boolean' } },
+  additionalProperties: false,
+}
+
 export const BridgeRpc = Rpc.define({
   id: 'autocrypt-bridge',
   methods: {
@@ -178,10 +246,29 @@ export const BridgeRpc = Rpc.define({
       },
       output: statusOutput,
     },
+    reportQuestionReply: {
+      input: {
+        type: 'object',
+        properties: {
+          formID: { type: 'string' },
+          ok: { type: 'boolean' },
+          error: { type: 'string' },
+        },
+        required: ['formID', 'ok'],
+        additionalProperties: false,
+      },
+      output: ackOutput,
+    },
   },
   events: {
     status: {
       schema: statusOutput,
+    },
+    question: {
+      schema: questionEvent,
+    },
+    questionAnswer: {
+      schema: questionAnswerEvent,
     },
   },
 })

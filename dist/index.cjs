@@ -292,8 +292,8 @@ var require_req = __commonJS({
       if (req.originalUrl) {
         _req.url = req.originalUrl;
       } else {
-        const path4 = req.path;
-        _req.url = typeof path4 === "string" ? path4 : req.url ? req.url.path || req.url : void 0;
+        const path5 = req.path;
+        _req.url = typeof path5 === "string" ? path5 : req.url ? req.url.path || req.url : void 0;
       }
       if (req.query) {
         _req.query = req.query;
@@ -482,17 +482,17 @@ var require_parse = __commonJS({
       const wildcards = [];
       var wcLen = 0;
       const secret = paths.reduce(function(o, strPath, ix) {
-        var path4 = strPath.match(rx).map((p) => p.replace(/'|"|`/g, ""));
+        var path5 = strPath.match(rx).map((p) => p.replace(/'|"|`/g, ""));
         const leadingBracket = strPath[0] === "[";
-        path4 = path4.map((p) => {
+        path5 = path5.map((p) => {
           if (p[0] === "[") return p.substr(1, p.length - 2);
           else return p;
         });
-        const star = path4.indexOf("*");
+        const star = path5.indexOf("*");
         if (star > -1) {
-          const before = path4.slice(0, star);
+          const before = path5.slice(0, star);
           const beforeStr = before.join(".");
-          const after = path4.slice(star + 1, path4.length);
+          const after = path5.slice(star + 1, path5.length);
           const nested = after.length > 0;
           wcLen++;
           wildcards.push({
@@ -503,7 +503,7 @@ var require_parse = __commonJS({
           });
         } else {
           o[strPath] = {
-            path: path4,
+            path: path5,
             val: void 0,
             precensored: false,
             circle: "",
@@ -549,20 +549,20 @@ var require_redactor = __commonJS({
       return redact4;
     }
     function redactTmpl(secret, isCensorFct, censorFctTakesPath) {
-      return Object.keys(secret).map((path4) => {
-        const { escPath, leadingBracket, path: arrPath } = secret[path4];
+      return Object.keys(secret).map((path5) => {
+        const { escPath, leadingBracket, path: arrPath } = secret[path5];
         const skip = leadingBracket ? 1 : 0;
         const delim = leadingBracket ? "" : ".";
         const hops = [];
         var match8;
-        while ((match8 = rx.exec(path4)) !== null) {
+        while ((match8 = rx.exec(path5)) !== null) {
           const [, ix] = match8;
           const { index: index3, input } = match8;
           if (index3 > skip) hops.push(input.substring(0, index3 - (ix ? 0 : 1)));
         }
         var existence = hops.map((p) => `o${delim}${p}`).join(" && ");
-        if (existence.length === 0) existence += `o${delim}${path4} != null`;
-        else existence += ` && o${delim}${path4} != null`;
+        if (existence.length === 0) existence += `o${delim}${path5} != null`;
+        else existence += ` && o${delim}${path5} != null`;
         const circularDetection = `
       switch (true) {
         ${hops.reverse().map((p) => `
@@ -575,12 +575,12 @@ var require_redactor = __commonJS({
         const censorArgs = censorFctTakesPath ? `val, ${JSON.stringify(arrPath)}` : `val`;
         return `
       if (${existence}) {
-        const val = o${delim}${path4}
+        const val = o${delim}${path5}
         if (val === censor) {
           secret[${escPath}].precensored = true
         } else {
           secret[${escPath}].val = val
-          o${delim}${path4} = ${isCensorFct ? `censor(${censorArgs})` : "censor"}
+          o${delim}${path5} = ${isCensorFct ? `censor(${censorArgs})` : "censor"}
           ${circularDetection}
         }
       }
@@ -632,13 +632,13 @@ var require_modifiers = __commonJS({
         target[k] = values2[i];
       }
     }
-    function groupRedact(o, path4, censor, isCensorFct, censorFctTakesPath) {
-      const target = get6(o, path4);
+    function groupRedact(o, path5, censor, isCensorFct, censorFctTakesPath) {
+      const target = get6(o, path5);
       if (target == null || typeof target === "string") return { keys: null, values: null, target, flat: true };
       const keys4 = Object.keys(target);
       const keysLength = keys4.length;
-      const pathLength = path4.length;
-      const pathWithKey = censorFctTakesPath ? [...path4] : void 0;
+      const pathLength = path5.length;
+      const pathWithKey = censorFctTakesPath ? [...path5] : void 0;
       const values2 = new Array(keysLength);
       for (var i = 0; i < keysLength; i++) {
         const key5 = keys4[i];
@@ -656,29 +656,29 @@ var require_modifiers = __commonJS({
     }
     function nestedRestore(instructions) {
       for (let i = 0; i < instructions.length; i++) {
-        const { target, path: path4, value: value3 } = instructions[i];
+        const { target, path: path5, value: value3 } = instructions[i];
         let current = target;
-        for (let i2 = path4.length - 1; i2 > 0; i2--) {
-          current = current[path4[i2]];
+        for (let i2 = path5.length - 1; i2 > 0; i2--) {
+          current = current[path5[i2]];
         }
-        current[path4[0]] = value3;
+        current[path5[0]] = value3;
       }
     }
-    function nestedRedact(store, o, path4, ns, censor, isCensorFct, censorFctTakesPath) {
-      const target = get6(o, path4);
+    function nestedRedact(store, o, path5, ns, censor, isCensorFct, censorFctTakesPath) {
+      const target = get6(o, path5);
       if (target == null) return;
       const keys4 = Object.keys(target);
       const keysLength = keys4.length;
       for (var i = 0; i < keysLength; i++) {
         const key5 = keys4[i];
-        specialSet(store, target, key5, path4, ns, censor, isCensorFct, censorFctTakesPath);
+        specialSet(store, target, key5, path5, ns, censor, isCensorFct, censorFctTakesPath);
       }
       return store;
     }
     function has5(obj, prop) {
       return obj !== void 0 && obj !== null ? "hasOwn" in Object ? Object.hasOwn(obj, prop) : Object.prototype.hasOwnProperty.call(obj, prop) : false;
     }
-    function specialSet(store, o, k, path4, afterPath, censor, isCensorFct, censorFctTakesPath) {
+    function specialSet(store, o, k, path5, afterPath, censor, isCensorFct, censorFctTakesPath) {
       const afterPathLen = afterPath.length;
       const lastPathIndex = afterPathLen - 1;
       const originalKey = k;
@@ -721,7 +721,7 @@ var require_modifiers = __commonJS({
             if (consecutive) {
               redactPathCurrent = node(redactPathCurrent, wck, depth);
               level = i;
-              ov = iterateNthLevel(wcov, level - 1, k, path4, afterPath, censor, isCensorFct, censorFctTakesPath, originalKey, n, nv, ov, kIsWc, wck, i, lastPathIndex, redactPathCurrent, store, o[originalKey], depth + 1);
+              ov = iterateNthLevel(wcov, level - 1, k, path5, afterPath, censor, isCensorFct, censorFctTakesPath, originalKey, n, nv, ov, kIsWc, wck, i, lastPathIndex, redactPathCurrent, store, o[originalKey], depth + 1);
             } else {
               if (kIsWc || typeof wcov === "object" && wcov !== null && k in wcov) {
                 if (kIsWc) {
@@ -729,7 +729,7 @@ var require_modifiers = __commonJS({
                 } else {
                   ov = wcov[k];
                 }
-                nv = i !== lastPathIndex ? ov : isCensorFct ? censorFctTakesPath ? censor(ov, [...path4, originalKey, ...afterPath]) : censor(ov) : censor;
+                nv = i !== lastPathIndex ? ov : isCensorFct ? censorFctTakesPath ? censor(ov, [...path5, originalKey, ...afterPath]) : censor(ov) : censor;
                 if (kIsWc) {
                   const rv = restoreInstr(node(redactPathCurrent, wck, depth), ov, o[originalKey]);
                   store.push(rv);
@@ -752,7 +752,7 @@ var require_modifiers = __commonJS({
         } else {
           ov = n[k];
           redactPathCurrent = node(redactPathCurrent, k, depth);
-          nv = i !== lastPathIndex ? ov : isCensorFct ? censorFctTakesPath ? censor(ov, [...path4, originalKey, ...afterPath]) : censor(ov) : censor;
+          nv = i !== lastPathIndex ? ov : isCensorFct ? censorFctTakesPath ? censor(ov, [...path5, originalKey, ...afterPath]) : censor(ov) : censor;
           if (has5(n, k) && nv === ov || nv === void 0 && censor !== void 0) {
           } else {
             const rv = restoreInstr(redactPathCurrent, ov, o[originalKey]);
@@ -775,7 +775,7 @@ var require_modifiers = __commonJS({
       }
       return n;
     }
-    function iterateNthLevel(wcov, level, k, path4, afterPath, censor, isCensorFct, censorFctTakesPath, originalKey, n, nv, ov, kIsWc, wck, i, lastPathIndex, redactPathCurrent, store, parent, depth) {
+    function iterateNthLevel(wcov, level, k, path5, afterPath, censor, isCensorFct, censorFctTakesPath, originalKey, n, nv, ov, kIsWc, wck, i, lastPathIndex, redactPathCurrent, store, parent, depth) {
       if (level === 0) {
         if (kIsWc || typeof wcov === "object" && wcov !== null && k in wcov) {
           if (kIsWc) {
@@ -783,7 +783,7 @@ var require_modifiers = __commonJS({
           } else {
             ov = wcov[k];
           }
-          nv = i !== lastPathIndex ? ov : isCensorFct ? censorFctTakesPath ? censor(ov, [...path4, originalKey, ...afterPath]) : censor(ov) : censor;
+          nv = i !== lastPathIndex ? ov : isCensorFct ? censorFctTakesPath ? censor(ov, [...path5, originalKey, ...afterPath]) : censor(ov) : censor;
           if (kIsWc) {
             const rv = restoreInstr(redactPathCurrent, ov, parent);
             store.push(rv);
@@ -802,7 +802,7 @@ var require_modifiers = __commonJS({
       for (const key5 in wcov) {
         if (typeof wcov[key5] === "object") {
           redactPathCurrent = node(redactPathCurrent, key5, depth);
-          iterateNthLevel(wcov[key5], level - 1, k, path4, afterPath, censor, isCensorFct, censorFctTakesPath, originalKey, n, nv, ov, kIsWc, wck, i, lastPathIndex, redactPathCurrent, store, parent, depth + 1);
+          iterateNthLevel(wcov[key5], level - 1, k, path5, afterPath, censor, isCensorFct, censorFctTakesPath, originalKey, n, nv, ov, kIsWc, wck, i, lastPathIndex, redactPathCurrent, store, parent, depth + 1);
         }
       }
     }
@@ -824,12 +824,12 @@ var require_modifiers = __commonJS({
     }
     function restoreInstr(node2, value3, target) {
       let current = node2;
-      const path4 = [];
+      const path5 = [];
       do {
-        path4.push(current.key);
+        path5.push(current.key);
         current = current.parent;
       } while (current.parent != null);
-      return { path: path4, value: value3, target };
+      return { path: path5, value: value3, target };
     }
   }
 });
@@ -859,10 +859,10 @@ var require_restorer = __commonJS({
       };
     }
     function resetTmpl(secret, paths) {
-      return paths.map((path4) => {
-        const { circle, escPath, leadingBracket } = secret[path4];
+      return paths.map((path5) => {
+        const { circle, escPath, leadingBracket } = secret[path5];
         const delim = leadingBracket ? "" : ".";
-        const reset = circle ? `o.${circle} = secret[${escPath}].val` : `o${delim}${path4} = secret[${escPath}].val`;
+        const reset = circle ? `o.${circle} = secret[${escPath}].val` : `o${delim}${path5} = secret[${escPath}].val`;
         const clear = `secret[${escPath}].val = undefined`;
         return `
       if (secret[${escPath}].val !== undefined) {
@@ -1094,8 +1094,8 @@ var require_redaction = __commonJS({
         if (shape[k] === null) {
           o[k] = (value3) => topCensor(value3, [k]);
         } else {
-          const wrappedCensor = typeof censor === "function" ? (value3, path4) => {
-            return censor(value3, [k, ...path4]);
+          const wrappedCensor = typeof censor === "function" ? (value3, path5) => {
+            return censor(value3, [k, ...path5]);
           } : censor;
           o[k] = fastRedact({
             paths: shape[k],
@@ -1298,7 +1298,7 @@ var require_sonic_boom = __commonJS({
     var fs = require("fs");
     var EventEmitter = require("events");
     var inherits = require("util").inherits;
-    var path4 = require("path");
+    var path5 = require("path");
     var sleep4 = require_atomic_sleep();
     var assert = require("assert");
     var BUSY_WRITE_TIMEOUT = 100;
@@ -1352,7 +1352,7 @@ var require_sonic_boom = __commonJS({
       const mode = sonic.mode;
       if (sonic.sync) {
         try {
-          if (sonic.mkdir) fs.mkdirSync(path4.dirname(file), { recursive: true });
+          if (sonic.mkdir) fs.mkdirSync(path5.dirname(file), { recursive: true });
           const fd2 = fs.openSync(file, flags, mode);
           fileOpened(null, fd2);
         } catch (err2) {
@@ -1360,7 +1360,7 @@ var require_sonic_boom = __commonJS({
           throw err2;
         }
       } else if (sonic.mkdir) {
-        fs.mkdir(path4.dirname(file), { recursive: true }, (err2) => {
+        fs.mkdir(path5.dirname(file), { recursive: true }, (err2) => {
           if (err2) return fileOpened(err2);
           fs.open(file, flags, mode, fileOpened);
         });
@@ -2948,8 +2948,8 @@ var require_tools = __commonJS({
         if (opts.prettyPrint) {
           throw new Error("prettyPrint option is no longer supported, see the pino-pretty package (https://github.com/pinojs/pino-pretty)");
         }
-        const { enabled, onChild } = opts;
-        if (enabled === false) opts.level = "silent";
+        const { enabled: enabled2, onChild } = opts;
+        if (enabled2 === false) opts.level = "silent";
         if (!onChild) opts.onChild = noop;
         if (!stream) {
           if (!hasBeenTampered(process.stdout)) {
@@ -39198,7 +39198,7 @@ var require_tools2 = __commonJS({
     var libmime = require_libmime();
     var { resolveCharset } = require_charsets2();
     var { compiler: compiler2 } = require_imap_handler();
-    var { createHash: createHash4 } = require("crypto");
+    var { createHash: createHash5 } = require("crypto");
     var { JPDecoder } = require_jp_decoder();
     var iconv = require_lib2();
     var FLAG_COLORS = ["red", "orange", "yellow", "green", "blue", "purple", "grey"];
@@ -39206,37 +39206,37 @@ var require_tools2 = __commonJS({
       authenticationFailed = true;
     };
     var tools = {
-      encodePath(connection, path4) {
-        path4 = (path4 || "").toString();
-        if (!connection.enabled.has("UTF8=ACCEPT") && /[&\x00-\x08\x0b-\x0c\x0e-\x1f\u0080-\uffff]/.test(path4)) {
+      encodePath(connection, path5) {
+        path5 = (path5 || "").toString();
+        if (!connection.enabled.has("UTF8=ACCEPT") && /[&\x00-\x08\x0b-\x0c\x0e-\x1f\u0080-\uffff]/.test(path5)) {
           try {
-            path4 = iconv.encode(path4, "utf-7-imap").toString();
+            path5 = iconv.encode(path5, "utf-7-imap").toString();
           } catch (err2) {
           }
         }
-        return path4;
+        return path5;
       },
-      decodePath(connection, path4) {
-        path4 = (path4 || "").toString();
-        if (!connection.enabled.has("UTF8=ACCEPT") && /[&]/.test(path4)) {
+      decodePath(connection, path5) {
+        path5 = (path5 || "").toString();
+        if (!connection.enabled.has("UTF8=ACCEPT") && /[&]/.test(path5)) {
           try {
-            path4 = iconv.decode(Buffer.from(path4), "utf-7-imap").toString();
+            path5 = iconv.decode(Buffer.from(path5), "utf-7-imap").toString();
           } catch (err2) {
           }
         }
-        return path4;
+        return path5;
       },
-      normalizePath(connection, path4, skipNamespace) {
-        if (Array.isArray(path4)) {
-          path4 = path4.join(connection.namespace && connection.namespace.delimiter || "");
+      normalizePath(connection, path5, skipNamespace) {
+        if (Array.isArray(path5)) {
+          path5 = path5.join(connection.namespace && connection.namespace.delimiter || "");
         }
-        if (path4.toUpperCase() === "INBOX") {
+        if (path5.toUpperCase() === "INBOX") {
           return "INBOX";
         }
-        if (!skipNamespace && connection.namespace && connection.namespace.prefix && path4.indexOf(connection.namespace.prefix) !== 0) {
-          path4 = connection.namespace.prefix + path4;
+        if (!skipNamespace && connection.namespace && connection.namespace.prefix && path5.indexOf(connection.namespace.prefix) !== 0) {
+          path5 = connection.namespace.prefix + path5;
         }
-        return path4;
+        return path5;
       },
       comparePaths(connection, a, b) {
         if (!a || !b) {
@@ -39492,14 +39492,14 @@ var require_tools2 = __commonJS({
           }
         }
         if (map12.emailId || map12.uid) {
-          let path4 = mailbox.path;
-          if (/[0x80-0xff]/.test(path4)) {
+          let path5 = mailbox.path;
+          if (/[0x80-0xff]/.test(path5)) {
             try {
-              path4 = iconv.encode(path4, "utf-7-imap").toString();
+              path5 = iconv.encode(path5, "utf-7-imap").toString();
             } catch (err2) {
             }
           }
-          map12.id = map12.emailId || createHash4("md5").update([path4, mailbox.uidValidity?.toString() || "", map12.uid.toString()].join(":")).digest("hex");
+          map12.id = map12.emailId || createHash5("md5").update([path5, mailbox.uidValidity?.toString() || "", map12.uid.toString()].join(":")).digest("hex");
         }
         if (map12.flags) {
           let flagColor = tools.getFlagColor(map12.flags);
@@ -39641,16 +39641,16 @@ var require_tools2 = __commonJS({
         return params2;
       },
       parseBodystructure(entry) {
-        let walk = (node, path4) => {
-          path4 = path4 || [];
+        let walk = (node, path5) => {
+          path5 = path5 || [];
           let curNode = {}, i = 0, part = 0;
-          if (path4.length) {
-            curNode.part = path4.join(".");
+          if (path5.length) {
+            curNode.part = path5.join(".");
           }
           if (Array.isArray(node[0])) {
             curNode.childNodes = [];
             while (Array.isArray(node[i])) {
-              curNode.childNodes.push(walk(node[i], path4.concat(++part)));
+              curNode.childNodes.push(walk(node[i], path5.concat(++part)));
               i++;
             }
             curNode.type = "multipart/" + ((node[i++] || {}).value || "").toString().toLowerCase();
@@ -39692,7 +39692,7 @@ var require_tools2 = __commonJS({
                   // rfc822 bodyparts share the same path, difference is between MIME and HEADER
                   // path.MIME returns message/rfc822 header
                   // path.HEADER returns inlined message header
-                  walk(node[i], path4)
+                  walk(node[i], path5)
                 ];
               }
               i++;
@@ -40684,7 +40684,7 @@ var require_enable = __commonJS({
       }
       let response2;
       try {
-        let enabled = /* @__PURE__ */ new Set();
+        let enabled2 = /* @__PURE__ */ new Set();
         response2 = await connection.exec(
           "ENABLE",
           extensionList.map((extension) => ({ type: "ATOM", value: extension.toUpperCase() })),
@@ -40696,16 +40696,16 @@ var require_enable = __commonJS({
                 }
                 untagged.attributes.forEach((attr) => {
                   if (attr.value && typeof attr.value === "string") {
-                    enabled.add(attr.value.toUpperCase().trim());
+                    enabled2.add(attr.value.toUpperCase().trim());
                   }
                 });
               }
             }
           }
         );
-        connection.enabled = enabled;
+        connection.enabled = enabled2;
         response2.next();
-        return enabled;
+        return enabled2;
       } catch (err2) {
         connection.log.warn({ err: err2, cid: connection.id });
         return false;
@@ -40719,14 +40719,14 @@ var require_select = __commonJS({
   "node_modules/imapflow/lib/commands/select.js"(exports2, module2) {
     "use strict";
     var { encodePath, normalizePath, getStatusCode, getErrorText } = require_tools2();
-    module2.exports = async (connection, path4, options2) => {
+    module2.exports = async (connection, path5, options2) => {
       if (![connection.states.AUTHENTICATED, connection.states.SELECTED].includes(connection.state)) {
         return;
       }
       options2 = options2 || {};
-      path4 = normalizePath(connection, path4);
-      if (!connection.folders.has(path4)) {
-        let folders = await connection.run("LIST", "", path4);
+      path5 = normalizePath(connection, path5);
+      if (!connection.folders.has(path5)) {
+        let folders = await connection.run("LIST", "", path5);
         if (!folders) {
           throw new Error("Failed to fetch folders");
         }
@@ -40734,10 +40734,10 @@ var require_select = __commonJS({
           connection.folders.set(folder.path, folder);
         });
       }
-      let folderListData = connection.folders.has(path4) ? connection.folders.get(path4) : false;
+      let folderListData = connection.folders.has(path5) ? connection.folders.get(path5) : false;
       let response2;
       try {
-        let map12 = { path: path4 };
+        let map12 = { path: path5 };
         if (folderListData) {
           ["delimiter", "specialUse", "subscribed", "listed"].forEach((key5) => {
             if (folderListData[key5]) {
@@ -40756,7 +40756,7 @@ var require_select = __commonJS({
           ]);
           map12.qresync = true;
         }
-        let encodedPath = encodePath(connection, path4);
+        let encodedPath = encodePath(connection, path5);
         let selectCommand = {
           command: !options2.readOnly ? "SELECT" : "EXAMINE",
           arguments: [{ type: encodedPath.indexOf("&") >= 0 ? "STRING" : "ATOM", value: encodedPath }].concat(extraArgs || [])
@@ -40834,7 +40834,7 @@ var require_select = __commonJS({
               await connection.untaggedVanished(
                 untagged,
                 // mailbox is not yet open, so use a dummy mailbox object
-                { path: path4, uidNext: false, uidValidity: false }
+                { path: path5, uidNext: false, uidValidity: false }
               );
             },
             // we should only get an untagged FETCH for a SELECT/EXAMINE if QRESYNC was asked for
@@ -40842,7 +40842,7 @@ var require_select = __commonJS({
               await connection.untaggedFetch(
                 untagged,
                 // mailbox is not yet open, so use a dummy mailbox object
-                { path: path4, uidNext: false, uidValidity: false }
+                { path: path5, uidNext: false, uidValidity: false }
               );
             }
           }
@@ -40867,13 +40867,13 @@ var require_select = __commonJS({
         }
         let currentMailbox = connection.mailbox;
         connection.mailbox = false;
-        if (currentMailbox && currentMailbox.path !== path4) {
+        if (currentMailbox && currentMailbox.path !== path5) {
           connection.emit("mailboxClose", currentMailbox);
         }
         connection.mailbox = map12;
         connection.currentSelectCommand = selectCommand;
         connection.state = connection.states.SELECTED;
-        if (!currentMailbox || currentMailbox.path !== path4) {
+        if (!currentMailbox || currentMailbox.path !== path5) {
           connection.emit("mailboxOpen", connection.mailbox);
         }
         response2.next();
@@ -41090,17 +41090,17 @@ var require_create = __commonJS({
   "node_modules/imapflow/lib/commands/create.js"(exports2, module2) {
     "use strict";
     var { encodePath, normalizePath, getStatusCode, getErrorText } = require_tools2();
-    module2.exports = async (connection, path4) => {
+    module2.exports = async (connection, path5) => {
       if (![connection.states.AUTHENTICATED, connection.states.SELECTED].includes(connection.state)) {
         return;
       }
-      path4 = normalizePath(connection, path4);
+      path5 = normalizePath(connection, path5);
       let response2;
       try {
         let map12 = {
-          path: path4
+          path: path5
         };
-        response2 = await connection.exec("CREATE", [{ type: "ATOM", value: encodePath(connection, path4) }]);
+        response2 = await connection.exec("CREATE", [{ type: "ATOM", value: encodePath(connection, path5) }]);
         let section = response2.response.attributes && response2.response.attributes[0] && response2.response.attributes[0].section && response2.response.attributes[0].section.length ? response2.response.attributes[0].section : false;
         if (section) {
           let key5;
@@ -41126,7 +41126,7 @@ var require_create = __commonJS({
         }
         map12.created = true;
         response2.next();
-        await connection.run("SUBSCRIBE", path4);
+        await connection.run("SUBSCRIBE", path5);
         return map12;
       } catch (err2) {
         let errorCode = getStatusCode(err2.response);
@@ -41137,7 +41137,7 @@ var require_create = __commonJS({
         switch (errorCode) {
           case "ALREADYEXISTS":
             return {
-              path: path4,
+              path: path5,
               created: false
             };
         }
@@ -41156,20 +41156,20 @@ var require_delete = __commonJS({
   "node_modules/imapflow/lib/commands/delete.js"(exports2, module2) {
     "use strict";
     var { encodePath, normalizePath, getStatusCode, getErrorText } = require_tools2();
-    module2.exports = async (connection, path4) => {
+    module2.exports = async (connection, path5) => {
       if (![connection.states.AUTHENTICATED, connection.states.SELECTED].includes(connection.state)) {
         return;
       }
-      path4 = normalizePath(connection, path4);
-      if (connection.state === connection.states.SELECTED && connection.mailbox.path === path4) {
+      path5 = normalizePath(connection, path5);
+      if (connection.state === connection.states.SELECTED && connection.mailbox.path === path5) {
         await connection.run("CLOSE");
       }
       let response2;
       try {
         let map12 = {
-          path: path4
+          path: path5
         };
-        response2 = await connection.exec("DELETE", [{ type: "ATOM", value: encodePath(connection, path4) }]);
+        response2 = await connection.exec("DELETE", [{ type: "ATOM", value: encodePath(connection, path5) }]);
         response2.next();
         return map12;
       } catch (err2) {
@@ -41190,23 +41190,23 @@ var require_rename = __commonJS({
   "node_modules/imapflow/lib/commands/rename.js"(exports2, module2) {
     "use strict";
     var { encodePath, normalizePath, getStatusCode, getErrorText } = require_tools2();
-    module2.exports = async (connection, path4, newPath) => {
+    module2.exports = async (connection, path5, newPath) => {
       if (![connection.states.AUTHENTICATED, connection.states.SELECTED].includes(connection.state)) {
         return;
       }
-      path4 = normalizePath(connection, path4);
+      path5 = normalizePath(connection, path5);
       newPath = normalizePath(connection, newPath);
-      if (connection.state === connection.states.SELECTED && connection.mailbox.path === path4) {
+      if (connection.state === connection.states.SELECTED && connection.mailbox.path === path5) {
         await connection.run("CLOSE");
       }
       let response2;
       try {
         let map12 = {
-          path: path4,
+          path: path5,
           newPath
         };
         response2 = await connection.exec("RENAME", [
-          { type: "ATOM", value: encodePath(connection, path4) },
+          { type: "ATOM", value: encodePath(connection, path5) },
           { type: "ATOM", value: encodePath(connection, newPath) }
         ]);
         response2.next();
@@ -41257,14 +41257,14 @@ var require_subscribe = __commonJS({
   "node_modules/imapflow/lib/commands/subscribe.js"(exports2, module2) {
     "use strict";
     var { encodePath, normalizePath, getStatusCode, getErrorText } = require_tools2();
-    module2.exports = async (connection, path4) => {
+    module2.exports = async (connection, path5) => {
       if (![connection.states.AUTHENTICATED, connection.states.SELECTED].includes(connection.state)) {
         return;
       }
-      path4 = normalizePath(connection, path4);
+      path5 = normalizePath(connection, path5);
       let response2;
       try {
-        response2 = await connection.exec("SUBSCRIBE", [{ type: "ATOM", value: encodePath(connection, path4) }]);
+        response2 = await connection.exec("SUBSCRIBE", [{ type: "ATOM", value: encodePath(connection, path5) }]);
         response2.next();
         return true;
       } catch (err2) {
@@ -41285,14 +41285,14 @@ var require_unsubscribe = __commonJS({
   "node_modules/imapflow/lib/commands/unsubscribe.js"(exports2, module2) {
     "use strict";
     var { encodePath, normalizePath, getStatusCode, getErrorText } = require_tools2();
-    module2.exports = async (connection, path4) => {
+    module2.exports = async (connection, path5) => {
       if (![connection.states.AUTHENTICATED, connection.states.SELECTED].includes(connection.state)) {
         return;
       }
-      path4 = normalizePath(connection, path4);
+      path5 = normalizePath(connection, path5);
       let response2;
       try {
-        response2 = await connection.exec("UNSUBSCRIBE", [{ type: "ATOM", value: encodePath(connection, path4) }]);
+        response2 = await connection.exec("UNSUBSCRIBE", [{ type: "ATOM", value: encodePath(connection, path5) }]);
         response2.next();
         return true;
       } catch (err2) {
@@ -41893,12 +41893,12 @@ var require_status = __commonJS({
   "node_modules/imapflow/lib/commands/status.js"(exports2, module2) {
     "use strict";
     var { encodePath, normalizePath } = require_tools2();
-    module2.exports = async (connection, path4, query) => {
-      if (![connection.states.AUTHENTICATED, connection.states.SELECTED].includes(connection.state) || !path4) {
+    module2.exports = async (connection, path5, query) => {
+      if (![connection.states.AUTHENTICATED, connection.states.SELECTED].includes(connection.state) || !path5) {
         return false;
       }
-      path4 = normalizePath(connection, path4);
-      let encodedPath = encodePath(connection, path4);
+      path5 = normalizePath(connection, path5);
+      let encodedPath = encodePath(connection, path5);
       let attributes = [{ type: encodedPath.indexOf("&") >= 0 ? "STRING" : "ATOM", value: encodedPath }];
       let queryAttributes = [];
       Object.keys(query || {}).forEach((key5) => {
@@ -41926,11 +41926,11 @@ var require_status = __commonJS({
       attributes.push(queryAttributes);
       let response2;
       try {
-        let map12 = { path: path4 };
+        let map12 = { path: path5 };
         response2 = await connection.exec("STATUS", attributes, {
           untagged: {
             STATUS: async (untagged) => {
-              let updateCurrent = connection.state === connection.states.SELECTED && path4 === connection.mailbox.path;
+              let updateCurrent = connection.state === connection.states.SELECTED && path5 === connection.mailbox.path;
               let list = untagged.attributes && Array.isArray(untagged.attributes[1]) ? untagged.attributes[1] : false;
               if (!list) {
                 return;
@@ -41954,7 +41954,7 @@ var require_status = __commonJS({
                       if (prevCount !== value3) {
                         connection.mailbox.exists = value3;
                         connection.emit("exists", {
-                          path: path4,
+                          path: path5,
                           count: value3,
                           prevCount
                         });
@@ -42000,9 +42000,9 @@ var require_status = __commonJS({
         return map12;
       } catch (err2) {
         if (err2.responseStatus === "NO") {
-          let folders = await connection.run("LIST", "", path4, { listOnly: true });
+          let folders = await connection.run("LIST", "", path5, { listOnly: true });
           if (folders && !folders.length) {
-            let error = new Error(`Mailbox doesn't exist: ${path4}`);
+            let error = new Error(`Mailbox doesn't exist: ${path5}`);
             error.code = "NotFound";
             error.response = err2;
             throw error;
@@ -42157,15 +42157,15 @@ var require_quota = __commonJS({
   "node_modules/imapflow/lib/commands/quota.js"(exports2, module2) {
     "use strict";
     var { encodePath, getStatusCode, normalizePath, getErrorText } = require_tools2();
-    module2.exports = async (connection, path4) => {
-      if (![connection.states.AUTHENTICATED, connection.states.SELECTED].includes(connection.state) || !path4) {
+    module2.exports = async (connection, path5) => {
+      if (![connection.states.AUTHENTICATED, connection.states.SELECTED].includes(connection.state) || !path5) {
         return;
       }
       if (!connection.capabilities.has("QUOTA")) {
         return false;
       }
-      path4 = normalizePath(connection, path4);
-      let map12 = { path: path4 };
+      path5 = normalizePath(connection, path5);
+      let map12 = { path: path5 };
       let processQuotaResponse = (untagged) => {
         let attributes = untagged.attributes && untagged.attributes[1];
         if (!attributes || !attributes.length) {
@@ -42204,7 +42204,7 @@ var require_quota = __commonJS({
       let quotaFound = false;
       let response2;
       try {
-        response2 = await connection.exec("GETQUOTAROOT", [{ type: "ATOM", value: encodePath(connection, path4) }], {
+        response2 = await connection.exec("GETQUOTAROOT", [{ type: "ATOM", value: encodePath(connection, path5) }], {
           untagged: {
             QUOTAROOT: async (untagged) => {
               let quotaRoot = untagged.attributes && untagged.attributes[1] && typeof untagged.attributes[1].value === "string" ? untagged.attributes[1].value : false;
@@ -43632,12 +43632,12 @@ var require_imap_flow = __commonJS({
           this.emit("flags", updateEvent);
         }
       }
-      async ensureSelectedMailbox(path4) {
-        if (!path4) {
+      async ensureSelectedMailbox(path5) {
+        if (!path5) {
           return false;
         }
-        if (!this.mailbox && path4 || this.mailbox && path4 && !comparePaths(this, this.mailbox.path, path4)) {
-          return await this.mailboxOpen(path4);
+        if (!this.mailbox && path5 || this.mailbox && path5 && !comparePaths(this, this.mailbox.path, path5)) {
+          return await this.mailboxOpen(path5);
         }
         return true;
       }
@@ -43951,9 +43951,9 @@ var require_imap_flow = __commonJS({
        * let quota = await client.getQuota();
        * console.log(quota.storage.used, quota.storage.available)
        */
-      async getQuota(path4) {
-        path4 = path4 || "INBOX";
-        return await this.run("QUOTA", path4);
+      async getQuota(path5) {
+        path5 = path5 || "INBOX";
+        return await this.run("QUOTA", path5);
       }
       /**
        * @typedef {Object} ListResponse
@@ -44058,8 +44058,8 @@ var require_imap_flow = __commonJS({
        * console.log(info.path);
        * // "INBOX.parent.child" // assumes "INBOX." as namespace prefix and "." as delimiter
        */
-      async mailboxCreate(path4) {
-        return await this.run("CREATE", path4);
+      async mailboxCreate(path5) {
+        return await this.run("CREATE", path5);
       }
       /**
        * @typedef {Object} MailboxRenameResponse
@@ -44080,8 +44080,8 @@ var require_imap_flow = __commonJS({
        * console.log(info.newPath);
        * // "INBOX.Important stuff ❗️" // assumes "INBOX." as namespace prefix
        */
-      async mailboxRename(path4, newPath) {
-        return await this.run("RENAME", path4, newPath);
+      async mailboxRename(path5, newPath) {
+        return await this.run("RENAME", path5, newPath);
       }
       /**
        * @typedef {Object} MailboxDeleteResponse
@@ -44100,8 +44100,8 @@ var require_imap_flow = __commonJS({
        * console.log(info.path);
        * // "INBOX.Important stuff ❗️" // assumes "INBOX." as namespace prefix
        */
-      async mailboxDelete(path4) {
-        return await this.run("DELETE", path4);
+      async mailboxDelete(path5) {
+        return await this.run("DELETE", path5);
       }
       /**
        * Subscribes to a mailbox
@@ -44112,8 +44112,8 @@ var require_imap_flow = __commonJS({
        * @example
        * await client.mailboxSubscribe('Important stuff ❗️');
        */
-      async mailboxSubscribe(path4) {
-        return await this.run("SUBSCRIBE", path4);
+      async mailboxSubscribe(path5) {
+        return await this.run("SUBSCRIBE", path5);
       }
       /**
        * Unsubscribes from a mailbox
@@ -44124,8 +44124,8 @@ var require_imap_flow = __commonJS({
        * @example
        * await client.mailboxUnsubscribe('Important stuff ❗️');
        */
-      async mailboxUnsubscribe(path4) {
-        return await this.run("UNSUBSCRIBE", path4);
+      async mailboxUnsubscribe(path5) {
+        return await this.run("UNSUBSCRIBE", path5);
       }
       /**
        * Opens a mailbox to access messages. You can perform message operations only against an opened mailbox.
@@ -44143,8 +44143,8 @@ var require_imap_flow = __commonJS({
        * console.log(mailbox.exists);
        * // 125
        */
-      async mailboxOpen(path4, options2) {
-        return await this.run("SELECT", path4, options2);
+      async mailboxOpen(path5, options2) {
+        return await this.run("SELECT", path5, options2);
       }
       /**
        * Closes a previously opened mailbox
@@ -44187,8 +44187,8 @@ var require_imap_flow = __commonJS({
        * console.log(status.unseen);
        * // 123
        */
-      async status(path4, query) {
-        return await this.run("STATUS", path4, query);
+      async status(path5, query) {
+        return await this.run("STATUS", path5, query);
       }
       /**
        * Starts listening for new or deleted messages from the currently opened mailbox. Only required if {@link ImapFlow#disableAutoIdle} is set to `true`
@@ -44442,8 +44442,8 @@ var require_imap_flow = __commonJS({
        * @example
        * await client.append('INBOX', rawMessageBuffer, ['\\Seen'], new Date(2000, 1, 1));
        */
-      async append(path4, content, flags, idate) {
-        let response2 = await this.run("APPEND", path4, content, flags, idate);
+      async append(path5, content, flags, idate) {
+        let response2 = await this.run("APPEND", path5, content, flags, idate);
         if (!response2) {
           return false;
         }
@@ -45240,52 +45240,52 @@ var require_imap_flow = __commonJS({
               });
             };
             const lock = this.locks.shift();
-            const { resolve: resolve3, reject, path: path4, options: options2, lockId } = lock;
+            const { resolve: resolve3, reject, path: path5, options: options2, lockId } = lock;
             if (!this.usable || !this.socket || this.socket.destroyed) {
-              this.log.trace({ msg: "Failed to acquire mailbox lock", path: path4, lockId, idling: this.idling });
+              this.log.trace({ msg: "Failed to acquire mailbox lock", path: path5, lockId, idling: this.idling });
               let error = new Error("Connection not available");
               error.code = "NoConnection";
               reject(error);
               continue;
             }
-            if (this.mailbox && this.mailbox.path === path4 && !!this.mailbox.readOnly === !!options2.readOnly) {
+            if (this.mailbox && this.mailbox.path === path5 && !!this.mailbox.readOnly === !!options2.readOnly) {
               this.log.trace({
                 msg: "Mailbox lock acquired [existing]",
-                path: path4,
+                path: path5,
                 lockId,
                 idling: this.idling,
                 ...options2.description && { description: options2.description }
               });
               this.currentLock = lock;
-              resolve3({ path: path4, release });
+              resolve3({ path: path5, release });
               break;
             } else {
               try {
-                await this.mailboxOpen(path4, options2);
+                await this.mailboxOpen(path5, options2);
                 this.log.trace({
                   msg: "Mailbox lock acquired [selected]",
-                  path: path4,
+                  path: path5,
                   lockId,
                   idling: this.idling,
                   ...options2.description && { description: options2.description }
                 });
                 this.currentLock = lock;
-                resolve3({ path: path4, release });
+                resolve3({ path: path5, release });
                 break;
               } catch (err2) {
                 if (err2.responseStatus === "NO") {
                   try {
-                    let folders = await this.run("LIST", "", path4, { listOnly: true });
+                    let folders = await this.run("LIST", "", path5, { listOnly: true });
                     if (!folders || !folders.length) {
                       err2.mailboxMissing = true;
                     }
                   } catch (E) {
-                    this.log.trace({ msg: "Failed to verify failed mailbox", path: path4, err: E });
+                    this.log.trace({ msg: "Failed to verify failed mailbox", path: path5, err: E });
                   }
                 }
                 this.log.trace({
                   msg: "Failed to acquire mailbox lock",
-                  path: path4,
+                  path: path5,
                   lockId,
                   idling: this.idling,
                   ...options2.description && { description: options2.description },
@@ -45325,13 +45325,13 @@ var require_imap_flow = __commonJS({
        *   lock.release();
        * }
        */
-      async getMailboxLock(path4, options2) {
+      async getMailboxLock(path5, options2) {
         options2 = options2 || {};
-        path4 = normalizePath(this, path4);
+        path5 = normalizePath(this, path5);
         let lockId = ++this.lockCounter;
         this.log.trace({
           msg: "Requesting lock",
-          path: path4,
+          path: path5,
           lockId,
           ...options2.description && { description: options2.description },
           activeLock: this.currentLock ? {
@@ -45340,7 +45340,7 @@ var require_imap_flow = __commonJS({
           } : null
         });
         return await new Promise((resolve3, reject) => {
-          this.locks.push({ resolve: resolve3, reject, path: path4, options: options2, lockId });
+          this.locks.push({ resolve: resolve3, reject, path: path5, options: options2, lockId });
           this.processLocks().catch((err2) => reject(err2));
         });
       }
@@ -55763,8 +55763,8 @@ var require_html_to_text = __commonJS({
       return [...map12.values()].reverse();
     }
     var overwriteMerge$1 = (acc, src, options2) => [...src];
-    function get6(obj, path4) {
-      for (const key5 of path4) {
+    function get6(obj, path5) {
+      for (const key5 of path5) {
         if (!obj) {
           return void 0;
         }
@@ -56913,8 +56913,8 @@ var require_html_to_text = __commonJS({
       const rbr = typeof brackets[1] === "string" ? brackets[1] : "]";
       return lbr + str + rbr;
     }
-    function pathRewrite(path4, rewriter, baseUrl, metadata, elem) {
-      const modifiedPath = typeof rewriter === "function" ? rewriter(path4, metadata, elem) : path4;
+    function pathRewrite(path5, rewriter, baseUrl, metadata, elem) {
+      const modifiedPath = typeof rewriter === "function" ? rewriter(path5, metadata, elem) : path5;
       return modifiedPath[0] === "/" && baseUrl ? trimCharacterEnd(baseUrl, "/") + modifiedPath : modifiedPath;
     }
     function formatImage(elem, walk, builder, formatOptions2) {
@@ -57245,9 +57245,9 @@ var require_html_to_text = __commonJS({
         options2.selectors.push(...tagDefinitions);
         options2.selectors = mergeDuplicatesPreferLast(options2.selectors, ((s) => s.selector));
       }
-      function set4(obj, path4, value3) {
-        const valueKey = path4.pop();
-        for (const key5 of path4) {
+      function set4(obj, path5, value3) {
+        const valueKey = path5.pop();
+        for (const key5 of path5) {
           let nested = obj[key5];
           if (!nested) {
             nested = {};
@@ -60625,8 +60625,8 @@ var require_cookies = __commonJS({
         if (urlparts.hostname !== cookie.domain && (cookie.domain.charAt(0) !== "." || ("." + urlparts.hostname).substr(-cookie.domain.length) !== cookie.domain)) {
           return false;
         }
-        let path4 = this.getPath(urlparts.pathname);
-        if (path4.substr(0, cookie.path.length) !== cookie.path) {
+        let path5 = this.getPath(urlparts.pathname);
+        if (path5.substr(0, cookie.path.length) !== cookie.path) {
           return false;
         }
         if (cookie.secure && urlparts.protocol !== "https:") {
@@ -60686,16 +60686,16 @@ var require_cookies = __commonJS({
        * @returns {String} Normalized path
        */
       getPath(pathname) {
-        let path4 = (pathname || "/").split("/");
-        path4.pop();
-        path4 = path4.join("/").trim();
-        if (path4.charAt(0) !== "/") {
-          path4 = "/" + path4;
+        let path5 = (pathname || "/").split("/");
+        path5.pop();
+        path5 = path5.join("/").trim();
+        if (path5.charAt(0) !== "/") {
+          path5 = "/" + path5;
         }
-        if (path4.substr(-1) !== "/") {
-          path4 += "/";
+        if (path5.substr(-1) !== "/") {
+          path5 += "/";
         }
-        return path4;
+        return path5;
       }
     };
     module2.exports = Cookies2;
@@ -61520,7 +61520,7 @@ var require_shared = __commonJS({
 var require_mime_types = __commonJS({
   "node_modules/nodemailer/lib/mime-funcs/mime-types.js"(exports2, module2) {
     "use strict";
-    var path4 = require("path");
+    var path5 = require("path");
     var defaultMimeType = "application/octet-stream";
     var defaultExtension = "bin";
     var mimeTypes = /* @__PURE__ */ new Map([
@@ -63578,7 +63578,7 @@ var require_mime_types = __commonJS({
         if (!filename) {
           return defaultMimeType;
         }
-        let parsed = path4.parse(filename);
+        let parsed = path5.parse(filename);
         let extension = (parsed.ext.substr(1) || parsed.name || "").split("?").shift().trim().toLowerCase();
         let value3 = defaultMimeType;
         if (extensions.has(extension)) {
@@ -66744,7 +66744,7 @@ var require_dkim = __commonJS({
     var sign2 = require_sign();
     var PassThrough = require("stream").PassThrough;
     var fs = require("fs");
-    var path4 = require("path");
+    var path5 = require("path");
     var crypto2 = require("crypto");
     var DKIM_ALGO = "sha256";
     var MAX_MESSAGE_SIZE = 2 * 1024 * 1024;
@@ -66758,7 +66758,7 @@ var require_dkim = __commonJS({
         this.chunks = [];
         this.chunklen = 0;
         this.readPos = 0;
-        this.cachePath = this.cacheDir ? path4.join(this.cacheDir, "message." + Date.now() + "-" + crypto2.randomBytes(14).toString("hex")) : false;
+        this.cachePath = this.cacheDir ? path5.join(this.cacheDir, "message." + Date.now() + "-" + crypto2.randomBytes(14).toString("hex")) : false;
         this.cache = false;
         this.headers = false;
         this.bodyHash = false;
@@ -72579,8 +72579,8 @@ var CIRCULAR = "[Circular]";
 function formatPropertyKey(name) {
   return typeof name === "string" ? JSON.stringify(name) : String(name);
 }
-function formatPath(path4) {
-  return path4.map((key5) => `[${formatPropertyKey(key5)}]`).join("");
+function formatPath(path5) {
+  return path5.map((key5) => `[${formatPropertyKey(key5)}]`).join("");
 }
 function formatDate(date) {
   try {
@@ -84536,9 +84536,9 @@ var Pointer = class extends IssueNodeImpl {
    * The issue that occurred.
    */
   issue;
-  constructor(path4, issue) {
+  constructor(path5, issue) {
     super();
-    this.path = path4;
+    this.path = path5;
     this.issue = issue;
   }
 };
@@ -84729,27 +84729,27 @@ function getFilterMessage(issue, checkHook) {
   const expected = findExpected(issue.issue);
   return expected === void 0 ? getExpectedMessage(formatCheck(issue.filter), issue) : getExpectedMessage(expected, issue.issue);
 }
-function toDefaultIssues(issue, path4, leafHook, checkHook, messageOverride) {
+function toDefaultIssues(issue, path5, leafHook, checkHook, messageOverride) {
   switch (issue._tag) {
     case "Filter":
-      return toDefaultIssues(issue.issue, path4, leafHook, checkHook, messageOverride ?? getFilterMessage(issue, checkHook));
+      return toDefaultIssues(issue.issue, path5, leafHook, checkHook, messageOverride ?? getFilterMessage(issue, checkHook));
     case "Encoding":
-      return toDefaultIssues(issue.issue, path4, leafHook, checkHook, messageOverride);
+      return toDefaultIssues(issue.issue, path5, leafHook, checkHook, messageOverride);
     case "Pointer":
-      return toDefaultIssues(issue.issue, [...path4, ...issue.path], leafHook, checkHook, messageOverride);
+      return toDefaultIssues(issue.issue, [...path5, ...issue.path], leafHook, checkHook, messageOverride);
     case "Composite":
     case "AnyOf": {
       if (issue._tag === "Composite" || issue.issues.length > 0) {
-        return issue.issues.flatMap((issue2) => toDefaultIssues(issue2, path4, leafHook, checkHook, messageOverride));
+        return issue.issues.flatMap((issue2) => toDefaultIssues(issue2, path5, leafHook, checkHook, messageOverride));
       }
       return [{
-        path: path4,
+        path: path5,
         message: messageOverride ?? findMessage(issue) ?? getExpectedMessage(getExpected(issue.ast), issue)
       }];
     }
     default:
       return [{
-        path: path4,
+        path: path5,
         message: messageOverride ?? leafHook(issue)
       }];
   }
@@ -84768,19 +84768,19 @@ function makeFormatterDefault() {
   return (issue) => formatIssue(issue, "");
 }
 var defaultFormatter = /* @__PURE__ */ makeFormatterDefault();
-function formatIssue(issue, path4, messageOverride) {
+function formatIssue(issue, path5, messageOverride) {
   let message;
   switch (issue._tag) {
     case "Filter":
-      return formatIssue(issue.issue, path4, messageOverride ?? getFilterMessage(issue, defaultCheckHook));
+      return formatIssue(issue.issue, path5, messageOverride ?? getFilterMessage(issue, defaultCheckHook));
     case "Encoding":
-      return formatIssue(issue.issue, path4, messageOverride);
+      return formatIssue(issue.issue, path5, messageOverride);
     case "Pointer":
-      return formatIssue(issue.issue, path4 + formatPath(issue.path), messageOverride);
+      return formatIssue(issue.issue, path5 + formatPath(issue.path), messageOverride);
     case "Composite":
     case "AnyOf": {
       if (issue._tag === "Composite" || issue.issues.length > 0) {
-        return issue.issues.map((issue2) => formatIssue(issue2, path4, messageOverride)).join("\n");
+        return issue.issues.map((issue2) => formatIssue(issue2, path5, messageOverride)).join("\n");
       }
       message = messageOverride ?? findMessage(issue) ?? getExpectedMessage(getExpected(issue.ast), issue);
       break;
@@ -84789,8 +84789,8 @@ function formatIssue(issue, path4, messageOverride) {
       message = messageOverride ?? defaultLeafHook(issue);
       break;
   }
-  return path4 ? `${message}
-  at ${path4}` : message;
+  return path5 ? `${message}
+  at ${path5}` : message;
 }
 function findMessage(issue) {
   if (issue._tag === "Pointer" || issue._tag === "Composite") return;
@@ -85908,13 +85908,13 @@ var Enum = class extends ASTNodeImpl {
     return this.enums.map(([_2, value3]) => JSON.stringify(value3)).join(" | ");
   }
 };
-function formatTemplateLiteralPath(path4) {
-  return typeof path4 === "number" ? `parts[${path4}]` : path4;
+function formatTemplateLiteralPath(path5) {
+  return typeof path5 === "number" ? `parts[${path5}]` : path5;
 }
-function isTemplateLiteralPart(ast, path4, validated) {
+function isTemplateLiteralPart(ast, path5, validated) {
   if (validated.has(ast)) return true;
   if (ast.encoding) {
-    throw new Error(`TemplateLiteral parts cannot have an encoding at ${formatTemplateLiteralPath(path4)}`);
+    throw new Error(`TemplateLiteral parts cannot have an encoding at ${formatTemplateLiteralPath(path5)}`);
   }
   let valid;
   switch (ast._tag) {
@@ -85927,12 +85927,12 @@ function isTemplateLiteralPart(ast, path4, validated) {
       valid = !ast.checks;
       break;
     case "TemplateLiteral": {
-      const currentPath = formatTemplateLiteralPath(path4);
+      const currentPath = formatTemplateLiteralPath(path5);
       valid = !ast.checks && ast.parts.every((part, index3) => isTemplateLiteralPart(part, `${currentPath}.parts[${index3}]`, validated));
       break;
     }
     case "Union": {
-      const currentPath = formatTemplateLiteralPath(path4);
+      const currentPath = formatTemplateLiteralPath(path5);
       valid = !ast.checks && ast.types.every((part, index3) => isTemplateLiteralPart(part, `${currentPath}.types[${index3}]`, validated));
       break;
     }
@@ -88551,8 +88551,8 @@ function parseUriFragment(fragment) {
   const pointer = decodeUriFragment(fragment);
   return pointer === void 0 ? void 0 : pointer.length === 0 ? [] : pointer.slice(1).split("/").map(unescapeToken);
 }
-function formatUriFragment(path4) {
-  return path4.reduce((fragment, token) => `${fragment}/${formatUriFragmentToken(token)}`, "#");
+function formatUriFragment(path5) {
+  return path5.reduce((fragment, token) => `${fragment}/${formatUriFragmentToken(token)}`, "#");
 }
 
 // node_modules/effect/dist/JsonSchema.js
@@ -89184,10 +89184,10 @@ var RegExp2 = globalThis.RegExp;
 var escape = (string3) => string3.replace(/[/\\^$*+?.()|[\]{}]/g, "\\$&");
 
 // node_modules/effect/dist/internal/errors.js
-function errorWithPath(message, path4) {
-  if (path4.length > 0) {
+function errorWithPath(message, path5) {
+  if (path5.length > 0) {
     message += `
-  at ${formatPath(path4)}`;
+  at ${formatPath(path5)}`;
   }
   return new Error(message);
 }
@@ -89411,14 +89411,14 @@ function compileJsonSchema(representations, rootPaths, references, options2) {
     if (Array.isArray(schema.oneOf)) pendingOneOf.get(schema.oneOf)?.schemas.push(schema);
     return schema;
   }
-  function compileAnnotatedMember(member, path4, dependencies) {
-    const schema = recur2(member.type, [...path4, "type"], dependencies);
+  function compileAnnotatedMember(member, path5, dependencies) {
+    const schema = recur2(member.type, [...path5, "type"], dependencies);
     const annotations = collectJsonSchemaAnnotations(member.annotations, options2);
     return annotations === void 0 ? schema : registerPendingOneOf(appendJsonSchema(schema, annotations));
   }
-  function compileDefinition(key5, path4) {
+  function compileDefinition(key5, path5) {
     if (!Object.hasOwn(references, key5)) {
-      throw errorWithPath(`Invalid reference ${key5}`, [...path4, "$ref"]);
+      throw errorWithPath(`Invalid reference ${key5}`, [...path5, "$ref"]);
     }
     const cached3 = compiledDefinitions.get(key5);
     if (cached3 !== void 0) return cached3;
@@ -89451,11 +89451,11 @@ function compileJsonSchema(representations, rootPaths, references, options2) {
     const annotations = representation.checks.length === 0 ? representation.annotations : representation.checks[representation.checks.length - 1].annotations;
     return typeof annotations?.identifier !== "string" && typeof annotations?.[IDENTIFIER_FALLBACK_KEY] === "string" ? annotations[IDENTIFIER_FALLBACK_KEY] : void 0;
   }
-  function compileCheck(check2, type, path4, dependencies) {
+  function compileCheck(check2, type, path5, dependencies) {
     const annotations = check2.annotations;
     const callback3 = annotations?.toJsonSchema;
     if (callback3 !== void 0) {
-      const schemas3 = check2.representation?.schemas?.map((schema3, index3) => recur2(schema3, [...path4, "representation", "schemas", index3], dependencies)) ?? [];
+      const schemas3 = check2.representation?.schemas?.map((schema3, index3) => recur2(schema3, [...path5, "representation", "schemas", index3], dependencies)) ?? [];
       const result3 = callback3({
         type,
         schemas: schemas3
@@ -89478,7 +89478,7 @@ function compileJsonSchema(representations, rootPaths, references, options2) {
       return void 0;
     }
     const schemas2 = check2.checks.flatMap((child, index3) => {
-      const result3 = compileCheck(child, type, [...path4, "checks", index3], dependencies);
+      const result3 = compileCheck(child, type, [...path5, "checks", index3], dependencies);
       return result3 === void 0 ? [] : [result3[0]];
     });
     if (schemas2.length === 0) return void 0;
@@ -89491,9 +89491,9 @@ function compileJsonSchema(representations, rootPaths, references, options2) {
       ...ordinary
     }];
   }
-  function recur2(representation, path4, dependencies) {
+  function recur2(representation, path5, dependencies) {
     if (representation._tag === "Reference") {
-      dependencies.push(compileDefinition(representation.$ref, path4).dependencies);
+      dependencies.push(compileDefinition(representation.$ref, path5).dependencies);
       return {
         $ref: formatDefinitionReference(representation.$ref)
       };
@@ -89506,7 +89506,7 @@ function compileJsonSchema(representations, rootPaths, references, options2) {
     const local = [];
     dependencies.push(local);
     let output = {
-      ...on(representation, path4, local),
+      ...on(representation, path5, local),
       ...collectJsonSchemaAnnotations(representation.annotations, options2)
     };
     if (representation._tag === "String" && representation.content !== void 0) {
@@ -89514,12 +89514,12 @@ function compileJsonSchema(representations, rootPaths, references, options2) {
       output.contentMediaType = content.mediaType;
       delete output.contentSchema;
       if (content.schema !== void 0) {
-        output.contentSchema = recur2(content.schema, [...path4, "content", "schema"], []);
+        output.contentSchema = recur2(content.schema, [...path5, "content", "schema"], []);
       }
     }
     for (let index3 = 0; index3 < representation.checks.length; index3++) {
       const type = typeof output.type === "string" && isJsonSchemaType(output.type) ? output.type : void 0;
-      const check2 = compileCheck(representation.checks[index3], type, [...path4, "checks", index3], local);
+      const check2 = compileCheck(representation.checks[index3], type, [...path5, "checks", index3], local);
       if (check2 !== void 0) output = appendJsonSchema(output, ...check2);
     }
     compiledRepresentations.set(representation, {
@@ -89528,7 +89528,7 @@ function compileJsonSchema(representations, rootPaths, references, options2) {
     });
     return registerPendingOneOf(output);
   }
-  function on(representation, path4, dependencies) {
+  function on(representation, path5, dependencies) {
     switch (representation._tag) {
       case "Any":
       case "Unknown":
@@ -89572,7 +89572,7 @@ function compileJsonSchema(representations, rootPaths, references, options2) {
         dependencies.push(false);
         return {};
       case "Suspend":
-        return recur2(representation.thunk, [...path4, "thunk"], dependencies);
+        return recur2(representation.thunk, [...path5, "thunk"], dependencies);
       case "Never":
         return {
           not: {}
@@ -89634,7 +89634,7 @@ function compileJsonSchema(representations, rootPaths, references, options2) {
         let minItems = representation.elements.length;
         const prefixItems = representation.elements.map((element, index3) => {
           if (element.isOptional) minItems--;
-          return compileAnnotatedMember(element, [...path4, "elements", index3], dependencies);
+          return compileAnnotatedMember(element, [...path5, "elements", index3], dependencies);
         });
         if (prefixItems.length > 0) {
           out.prefixItems = prefixItems;
@@ -89645,7 +89645,7 @@ function compileJsonSchema(representations, rootPaths, references, options2) {
         }
         if (representation.rest.length === 1) {
           delete out.maxItems;
-          const rest = recur2(representation.rest[0], [...path4, "rest", 0], dependencies);
+          const rest = recur2(representation.rest[0], [...path5, "rest", 0], dependencies);
           if (Object.keys(rest).length > 0) out.items = rest;
           else delete out.items;
         } else if (representation.rest.length > 1) {
@@ -89657,10 +89657,10 @@ function compileJsonSchema(representations, rootPaths, references, options2) {
         return out;
       }
       case "Objects":
-        return compileObjects(representation, path4, dependencies);
+        return compileObjects(representation, path5, dependencies);
       case "Union": {
         const branches = [];
-        const types = representation.types.map((type, index3) => recur2(type, [...path4, "types", index3], branches));
+        const types = representation.types.map((type, index3) => recur2(type, [...path5, "types", index3], branches));
         dependencies.push(branches);
         if (types.length === 0) return {
           not: {}
@@ -89684,7 +89684,7 @@ function compileJsonSchema(representations, rootPaths, references, options2) {
       }
     }
   }
-  function compileObjects(representation, path4, dependencies) {
+  function compileObjects(representation, path5, dependencies) {
     const {
       indexSignatures,
       propertySignatures
@@ -89700,7 +89700,7 @@ function compileJsonSchema(representations, rootPaths, references, options2) {
     const properties = {};
     const required3 = [];
     for (const [index3, property] of propertySignatures.entries()) {
-      const propertyPath = [...path4, "propertySignatures", index3];
+      const propertyPath = [...path5, "propertySignatures", index3];
       if (typeof property.name !== "string") {
         throw errorWithPath("Objects property names must be strings", [...propertyPath, "name"]);
       }
@@ -89710,7 +89710,7 @@ function compileJsonSchema(representations, rootPaths, references, options2) {
     if (propertySignatures.length > 0) out.properties = properties;
     if (required3.length > 0) out.required = required3;
     const indexes = indexSignatures.map((signature, index3) => {
-      const indexPath = [...path4, "indexSignatures", index3];
+      const indexPath = [...path5, "indexSignatures", index3];
       const schema = recur2(signature.type, [...indexPath, "type"], dependencies);
       const type = equals(schema, {
         not: {}
@@ -89748,7 +89748,7 @@ function compileJsonSchema(representations, rootPaths, references, options2) {
         enum: Object.keys(properties)
       });
       for (const [index3, signature] of indexSignatures.entries()) {
-        propertyNames.push(getPropertyNameSchema(signature.parameter, [...path4, "indexSignatures", index3, "parameter"], dependencies, /* @__PURE__ */ new Set()));
+        propertyNames.push(getPropertyNameSchema(signature.parameter, [...path5, "indexSignatures", index3, "parameter"], dependencies, /* @__PURE__ */ new Set()));
       }
       out.propertyNames = propertyNames.length === 1 ? propertyNames[0] : {
         anyOf: propertyNames
@@ -89780,7 +89780,7 @@ function compileJsonSchema(representations, rootPaths, references, options2) {
     }
     return out;
   }
-  function getPropertyNameSchema(parameter, path4, dependencies, seenReferences) {
+  function getPropertyNameSchema(parameter, path5, dependencies, seenReferences) {
     switch (parameter._tag) {
       case "Number":
         return {
@@ -89795,16 +89795,16 @@ function compileJsonSchema(representations, rootPaths, references, options2) {
       }
       case "Union":
         return {
-          anyOf: parameter.types.map((type) => getPropertyNameSchema(type, path4, dependencies, seenReferences))
+          anyOf: parameter.types.map((type) => getPropertyNameSchema(type, path5, dependencies, seenReferences))
         };
       default:
-        return recur2(parameter, path4, dependencies);
+        return recur2(parameter, path5, dependencies);
     }
   }
-  function getParameterPatterns(parameter, path4, seenReferences) {
+  function getParameterPatterns(parameter, path5, seenReferences) {
     switch (parameter._tag) {
       case "Reference": {
-        compileDefinition(parameter.$ref, path4);
+        compileDefinition(parameter.$ref, path5);
         if (seenReferences.has(parameter.$ref)) return void 0;
         const next = new Set(seenReferences).add(parameter.$ref);
         return getParameterPatterns(references[parameter.$ref], ["references", parameter.$ref], next);
@@ -89815,7 +89815,7 @@ function compileJsonSchema(representations, rootPaths, references, options2) {
           return void 0;
         }
         const dependencies = [];
-        const schema = recur2(parameter, path4, dependencies);
+        const schema = recur2(parameter, path5, dependencies);
         if (!isExact(dependencies)) return void 0;
         return schema.type === "string" && typeof schema.pattern === "string" && hasOnlyKeywords(schema, "|type|pattern|title|description|default|examples|readOnly|writeOnly|") ? [schema.pattern] : void 0;
       }
@@ -89833,7 +89833,7 @@ function compileJsonSchema(representations, rootPaths, references, options2) {
         }
         const patterns = [];
         for (let index3 = 0; index3 < parameter.types.length; index3++) {
-          const memberPatterns = getParameterPatterns(parameter.types[index3], [...path4, "types", index3], seenReferences);
+          const memberPatterns = getParameterPatterns(parameter.types[index3], [...path5, "types", index3], seenReferences);
           if (memberPatterns === void 0) return void 0;
           if (memberPatterns.length === 0) return [];
           patterns.push(...memberPatterns);
@@ -89843,7 +89843,7 @@ function compileJsonSchema(representations, rootPaths, references, options2) {
       case "Number":
         return parameter.checks.length === 0 ? [numberKeyPattern] : void 0;
       default:
-        throw errorWithPath(`Invalid index signature parameter ${parameter._tag}`, path4);
+        throw errorWithPath(`Invalid index signature parameter ${parameter._tag}`, path5);
     }
   }
   function getTemplateLiteralPattern(parts2) {
@@ -90326,25 +90326,25 @@ function get4(oldValue, newValue) {
   getLoop(oldValue, newValue, "", patches);
   return patches;
 }
-function getLoop(oldValue, newValue, path4, patches) {
+function getLoop(oldValue, newValue, path5, patches) {
   if (Object.is(oldValue, newValue)) return;
   if (Array.isArray(oldValue) && Array.isArray(newValue)) {
     const len1 = oldValue.length;
     const len2 = newValue.length;
     const shared = Math.min(len1, len2);
     for (let i = 0; i < shared; i++) {
-      getLoop(oldValue[i], newValue[i], `${path4}/${i}`, patches);
+      getLoop(oldValue[i], newValue[i], `${path5}/${i}`, patches);
     }
     for (let i = len1 - 1; i >= len2; i--) {
       patches.push({
         op: "remove",
-        path: `${path4}/${i}`
+        path: `${path5}/${i}`
       });
     }
     for (let i = len1; i < len2; i++) {
       patches.push({
         op: "add",
-        path: `${path4}/${i}`,
+        path: `${path5}/${i}`,
         value: newValue[i]
       });
     }
@@ -90355,7 +90355,7 @@ function getLoop(oldValue, newValue, path4, patches) {
     const keys22 = Object.keys(newValue);
     const allKeys = Array.from(/* @__PURE__ */ new Set([...keys1, ...keys22])).sort();
     for (const key5 of allKeys) {
-      const keyPath = `${path4}/${escapeToken(key5)}`;
+      const keyPath = `${path5}/${escapeToken(key5)}`;
       const hasKey1 = Object.hasOwn(oldValue, key5);
       const hasKey2 = Object.hasOwn(newValue, key5);
       if (hasKey1 && hasKey2) {
@@ -90377,7 +90377,7 @@ function getLoop(oldValue, newValue, path4, patches) {
   }
   patches.push({
     op: "replace",
-    path: path4,
+    path: path5,
     value: newValue
   });
 }
@@ -91151,12 +91151,12 @@ var PathNode = class {
   path;
   get;
   set;
-  constructor(path4) {
-    this.path = path4;
+  constructor(path5) {
+    this.path = path5;
     this.get = (s) => {
       let out = s;
-      for (let i = 0; i < path4.length; i++) {
-        out = out[path4[i]];
+      for (let i = 0; i < path5.length; i++) {
+        out = out[path5[i]];
       }
       return out;
     };
@@ -91164,12 +91164,12 @@ var PathNode = class {
       const out = cloneShallow(s);
       let current = out;
       let i = 0;
-      for (; i < path4.length - 1; i++) {
-        const key5 = path4[i];
+      for (; i < path5.length - 1; i++) {
+        const key5 = path5[i];
         assignProperty(current, key5, cloneShallow(current[key5]));
         current = current[key5];
       }
-      assignProperty(current, path4[i], a);
+      assignProperty(current, path5[i], a);
       return out;
     };
   }
@@ -91933,9 +91933,9 @@ var UnixPathProto = {
     return this.toString();
   }
 };
-var unixPathAddress = (path4) => {
+var unixPathAddress = (path5) => {
   const self2 = Object.create(UnixPathProto);
-  self2.path = path4;
+  self2.path = path5;
   return Object.freeze(self2);
 };
 
@@ -99524,9 +99524,301 @@ var Resolved = durable({
 var Event18 = { Updated: Updated14, Resolved, Definitions: inventory(Updated14, Resolved) };
 
 // src/bridge.js
-var import_node_crypto3 = require("node:crypto");
+var import_node_crypto4 = require("node:crypto");
 var import_promises2 = require("node:fs/promises");
-var import_node_path2 = __toESM(require("node:path"), 1);
+var import_node_path3 = __toESM(require("node:path"), 1);
+
+// src/commands.js
+var import_node_crypto = require("node:crypto");
+var import_node_path = __toESM(require("node:path"), 1);
+var COMMAND_SPECS = [
+  {
+    names: ["sessions", "list", "projects"],
+    usage: "!sessions",
+    description: "list open projects and sessions",
+    gate: "always"
+  },
+  {
+    names: ["use", "session"],
+    usage: "!use <session-id> [question]",
+    description: "switch this email thread and optionally prompt in one mail",
+    gate: "always"
+  },
+  {
+    names: ["new", "create"],
+    usage: "!new <title> in <project>",
+    description: "create a session in a listed project",
+    gate: "always"
+  },
+  {
+    names: ["default", "reset"],
+    usage: "!default",
+    description: "return this thread to the email-bound session",
+    gate: "always"
+  },
+  {
+    names: ["status"],
+    usage: "!status",
+    description: "show binding, encryption and remote-control state",
+    gate: "always"
+  },
+  {
+    names: ["help", "commands", "shortcuts"],
+    usage: "!help",
+    description: "show this command list (also !commands, !shortcuts)",
+    gate: "always"
+  },
+  {
+    names: ["approve", "decide"],
+    usage: "!approve <code> once|always",
+    description: "answer a permission request that is stalling a session",
+    gate: "decisions"
+  },
+  {
+    names: ["deny", "reject"],
+    usage: "!deny <code> [reason]",
+    description: "reject a permission request with optional feedback",
+    gate: "decisions"
+  },
+  {
+    names: ["answer"],
+    usage: "!answer <code> <choice>[,choice][;choice\u2026]",
+    description: "answer a multiple-choice question that is stalling a session",
+    gate: "questions"
+  },
+  {
+    names: ["peek", "output"],
+    usage: "!peek [session-id] [count]",
+    description: "read the latest assistant output from a session",
+    gate: "peek"
+  },
+  {
+    names: ["tail"],
+    usage: "!tail [lines]",
+    description: "read the session terminal tail",
+    gate: "tail"
+  },
+  {
+    names: ["send"],
+    usage: "!send <project-file>",
+    description: "attach a file from the project directory",
+    gate: "sendFiles"
+  },
+  {
+    names: ["watch"],
+    usage: "!watch [session-id]",
+    description: "email this thread when the session finishes or fails",
+    gate: "watch"
+  },
+  {
+    names: ["unwatch"],
+    usage: "!unwatch",
+    description: "stop session notifications on this thread",
+    gate: "watch"
+  }
+];
+var GATE_LABELS = {
+  decisions: "Allow permission decisions by email",
+  questions: "Allow multiple-choice answers by email",
+  peek: "Allow session output by email",
+  tail: "Allow terminal tail by email",
+  sendFiles: "Allow sending project files",
+  watch: "Allow session watch subscriptions"
+};
+function enabled(remote, gate) {
+  if (gate === "always") return true;
+  return Boolean(remote?.[gate]);
+}
+function decisionCode(requestID) {
+  const digest = (0, import_node_crypto.createHash)("sha256").update(String(requestID || "")).digest("hex");
+  return `D-${digest.slice(0, 6).toUpperCase()}`;
+}
+function isLocalPath(resource) {
+  const value3 = String(resource || "").trim();
+  if (!value3) return true;
+  if (/^[a-z][a-z\d+.-]*:\/\//i.test(value3)) return false;
+  if (value3.startsWith("~")) return false;
+  return true;
+}
+function insideDirectory(resource, rootDirectory) {
+  const root = import_node_path.default.resolve(String(rootDirectory || process.cwd()));
+  const target = import_node_path.default.resolve(root, String(resource));
+  return target === root || target.startsWith(`${root}${import_node_path.default.sep}`);
+}
+function classifyPermission(action, resources = [], rootDirectory = "") {
+  const normalizedAction = String(action || "").trim().toLowerCase();
+  const highActions = /* @__PURE__ */ new Set([
+    "shell",
+    "bash",
+    "execute",
+    "external_directory",
+    "install",
+    "task",
+    "subagent",
+    "delegate"
+  ]);
+  const mediumActions = /* @__PURE__ */ new Set(["write", "edit", "patch", "apply_patch", "multiedit"]);
+  const reasons = [];
+  let level = mediumActions.has(normalizedAction) ? "medium" : "low";
+  if (highActions.has(normalizedAction)) {
+    level = "high";
+    reasons.push(`action ${normalizedAction || "unknown"}`);
+  }
+  for (const resource of resources || []) {
+    if (!isLocalPath(resource)) {
+      level = "high";
+      reasons.push(`non-local resource ${resource}`);
+      continue;
+    }
+    if (!insideDirectory(resource, rootDirectory)) {
+      level = "high";
+      reasons.push(`outside project directory: ${resource}`);
+    }
+  }
+  return { level, reasons };
+}
+function formatRemoteHelp(remote = {}, details = {}) {
+  const lines = ["Autocrypt remote commands (reply in this encrypted thread):", ""];
+  const active = [];
+  const inactive = [];
+  for (const spec of COMMAND_SPECS) {
+    const line = `  ${spec.usage.padEnd(34)} ${spec.description}`;
+    if (enabled(remote, spec.gate)) active.push(line);
+    else inactive.push(`  ${spec.usage.padEnd(34)} ${spec.description} [off: ${GATE_LABELS[spec.gate] || spec.gate}]`);
+  }
+  lines.push(...active);
+  if (inactive.length) {
+    lines.push("", "Disabled here:");
+    lines.push(...inactive);
+  }
+  lines.push("");
+  lines.push("Routing: each subject carries [session:ses_\u2026]; replies stay in that session.");
+  if (details.sessionID) lines.push(`This thread: ${details.sessionID}${details.sessionTitle ? ` \u2014 ${details.sessionTitle}` : ""}`);
+  lines.push(`Permission decisions by email: ${remote.decisions ? "on" : "off"}`);
+  lines.push(`Multiple-choice answers by email: ${remote.questions ? "on" : "off"}`);
+  lines.push(`High-risk decisions by email: ${remote.highRiskDecisions ? "on" : "off"} (out-of-project file access and shell-like actions are high risk)`);
+  if (Array.isArray(details.commands) && details.commands.length) {
+    lines.push("");
+    lines.push(`OpenCode commands also available at the desk: ${details.commands.slice(0, 24).join(", ")}`);
+  }
+  return lines.join("\n");
+}
+function formatDecisionRequest({ code, action, resources = [], risk, enabled: enabled2 = true, canAnswer, highRiskAllowed, options: options2 = [], sessionID }) {
+  const lines = [
+    "OpenCode is waiting for a permission decision.",
+    "",
+    `Code: ${code}`,
+    `Session: ${sessionID || "(unknown)"}`,
+    `Action: ${action || "(unknown)"}`,
+    `Risk: ${risk.level.toUpperCase()}${risk.reasons.length ? ` \u2014 ${risk.reasons.join("; ")}` : ""}`
+  ];
+  if (resources.length) {
+    lines.push("");
+    lines.push("Resources:");
+    for (const resource of resources.slice(0, 12)) lines.push(`  ${resource}`);
+    if (resources.length > 12) lines.push(`  \u2026and ${resources.length - 12} more`);
+  }
+  lines.push("");
+  if (!enabled2) {
+    lines.push("Permission decisions by email are disabled in Settings \u2192 Autocrypt Bridge \u2192 Remote controls.");
+    lines.push("You can still answer this request at the desktop.");
+  } else if (!canAnswer) {
+    lines.push("This request is HIGH RISK and email approval is disabled.");
+    lines.push(`Enable \u201CHigh-risk decisions by email\u201D in Settings \u2192 Autocrypt Bridge \u2192 Remote controls to answer it from here.`);
+    lines.push("You can still answer it at the desktop.");
+  } else {
+    lines.push("Reply with one of:");
+    lines.push(`  !approve ${code} once`);
+    if (options2.includes("always")) lines.push(`  !approve ${code} always`);
+    lines.push(`  !deny ${code} [reason]`);
+    if (risk.level === "high") lines.push("");
+    if (risk.level === "high") lines.push("This is HIGH RISK: out-of-project access or a shell-like action.");
+    if (highRiskAllowed) lines.push("High-risk email approval is enabled in the GUI.");
+  }
+  return lines.join("\n");
+}
+function formatQuestionRequest({ code, title, fields = [], sessionID }) {
+  const lines = [
+    "OpenCode is waiting for your answer.",
+    "",
+    `Code: ${code}`,
+    `Session: ${sessionID || "(unknown)"}`,
+    `Question: ${title || "Questions"}`
+  ];
+  for (const [index3, field2] of (Array.isArray(fields) ? fields : []).entries()) {
+    lines.push("", `${index3 + 1}. ${field2?.title || field2?.description || `Question ${index3 + 1}`}`);
+    if (field2?.description && field2.description !== field2.title) lines.push(`   ${field2.description}`);
+    const options2 = Array.isArray(field2?.options) ? field2.options : [];
+    for (const [optionIndex, option3] of options2.entries()) {
+      const label = option3?.label || option3?.value || String(optionIndex + 1);
+      const detail = option3?.description ? ` \u2014 ${option3.description}` : "";
+      lines.push(`   ${optionIndex + 1}) ${label}${detail}`);
+    }
+    if (field2?.type === "multiselect") lines.push("   (choose several with commas)");
+    else if (options2.length) lines.push("   (choose one number)");
+    else lines.push("   (reply with text)");
+  }
+  lines.push("");
+  lines.push(`Reply: !answer ${code} 1`);
+  lines.push("Separate answers to several questions with \u201C;\u201D, for example: !answer CODE 1;2,3");
+  lines.push("The desktop stays open; answering here continues the same session.");
+  return lines.join("\n");
+}
+function parseQuestionAnswers(fields = [], text = "") {
+  const raw = String(text || "").trim();
+  if (!raw) return { error: "No answer supplied. Use !answer <code> <choice>." };
+  const groups = raw.split(/[;|]/).map((part) => part.trim()).filter(Boolean);
+  const answer = {};
+  for (const [index3, field2] of (Array.isArray(fields) ? fields : []).entries()) {
+    const key5 = String(field2?.key || `q${index3}`);
+    const group = groups[Math.min(index3, groups.length - 1)] || "";
+    if (!group) continue;
+    const options2 = Array.isArray(field2?.options) ? field2.options : [];
+    if (!options2.length) {
+      answer[key5] = [group];
+      continue;
+    }
+    const tokens = group.split(",").map((part) => part.trim()).filter(Boolean);
+    const values2 = [];
+    for (const token of tokens) {
+      const numeric = /^\d+$/.exec(token);
+      let selected;
+      if (numeric) {
+        const position = Number(numeric[0]) - 1;
+        selected = options2[position];
+        if (!selected) return { error: `Choice ${token} is not listed for question ${index3 + 1}.` };
+      } else {
+        const needle = token.toLowerCase();
+        selected = options2.find((option3) => String(option3?.label || "").toLowerCase() === needle || String(option3?.value || "").toLowerCase() === needle);
+        if (!selected) return { error: `Choice "${token}" is not listed for question ${index3 + 1}.` };
+      }
+      values2.push(String(selected.value ?? selected.label));
+    }
+    answer[key5] = values2;
+  }
+  if (!Object.keys(answer).length) return { error: "No answer supplied. Use !answer <code> <choice>." };
+  return { answer };
+}
+function formatPeek(messages = [], limit = 5) {
+  const count = Math.max(1, Math.min(Number(limit) || 5, 20));
+  const selected = (Array.isArray(messages) ? messages : []).slice(-count);
+  if (!selected.length) return "No session messages are available yet.";
+  const lines = [`Last ${selected.length} message(s):`, ""];
+  for (const entry of selected) {
+    const role = entry?.type === "assistant" ? "assistant" : entry?.type === "user" ? "you" : entry?.type || "event";
+    const parts2 = Array.isArray(entry?.content) ? entry.content : [];
+    const text = parts2.filter((part) => part?.type === "text").map((part) => String(part.text || "").trim()).filter(Boolean).join(" ").slice(0, 1200);
+    const tools = parts2.filter((part) => part?.type === "tool").map((part) => {
+      const state = part.state || {};
+      const name = state.tool || part.tool || part.name || "tool";
+      const input = JSON.stringify(state.input || part.input || {}).slice(0, 200);
+      return `${name}(${input})`;
+    });
+    const body = [text, ...tools].filter(Boolean).join(" \xB7 ") || "(no text)";
+    lines.push(`[${role}] ${body}`);
+  }
+  return lines.join("\n");
+}
 
 // src/crypto.js
 var import_node_fs = require("node:fs");
@@ -124422,7 +124714,7 @@ var Blake2b = class {
     return out.buffer;
   }
 };
-function createHash(outlen, key5, salt, personal) {
+function createHash2(outlen, key5, salt, personal) {
   if (outlen > OUTBYTES_MAX) throw new Error(`outlen must be at most ${OUTBYTES_MAX} (given: ${outlen})`);
   return new Blake2b(outlen, key5, salt, personal);
 }
@@ -124464,15 +124756,15 @@ function H_(outlen, X2, res) {
   LE32(V1_in, outlen, 0);
   V1_in.set(X2, 4);
   if (outlen <= 64) {
-    createHash(outlen).update(V1_in).digest(res);
+    createHash2(outlen).update(V1_in).digest(res);
     return res;
   }
   const r = Math.ceil(outlen / 32) - 2;
   for (let i = 0; i < r; i++) {
-    createHash(64).update(i === 0 ? V1_in : V).digest(V);
+    createHash2(64).update(i === 0 ? V1_in : V).digest(V);
     res.set(V.subarray(0, 32), i * 32);
   }
-  const V_r1 = new Uint8Array(createHash(outlen - 32 * r).update(V).digest());
+  const V_r1 = new Uint8Array(createHash2(outlen - 32 * r).update(V).digest());
   res.set(V_r1, r * 32);
   return res;
 }
@@ -124616,7 +124908,7 @@ function argon2id(params2, { memory, instance: wasmInstance }) {
   return tag2;
 }
 function getH0(ctx) {
-  const H = createHash(ARGON2_PREHASH_DIGEST_LENGTH);
+  const H = createHash2(ARGON2_PREHASH_DIGEST_LENGTH);
   const ZERO32 = new Uint8Array(4);
   const params2 = new Uint8Array(24);
   LE32(params2, ctx.lanes, 0);
@@ -125596,9 +125888,9 @@ async function decryptMessage(armored, identity2, verificationKeyB64) {
 }
 
 // src/mail.js
-var import_node_crypto2 = require("node:crypto");
+var import_node_crypto3 = require("node:crypto");
 var import_promises = require("node:fs/promises");
-var import_node_path = __toESM(require("node:path"), 1);
+var import_node_path2 = __toESM(require("node:path"), 1);
 var import_node_url = require("node:url");
 var import_node_net = require("node:net");
 var import_imapflow = __toESM(require_imap_flow(), 1);
@@ -125606,7 +125898,7 @@ var import_mailparser = __toESM(require_mailparser(), 1);
 var import_nodemailer = __toESM(require_nodemailer(), 1);
 
 // src/mime.js
-var import_node_crypto = require("node:crypto");
+var import_node_crypto2 = require("node:crypto");
 var CRLF = "\r\n";
 function encodeHeader(value3) {
   const text = String(value3 || "");
@@ -125659,7 +125951,7 @@ function attachmentPart(attachment) {
   ].join("");
 }
 function buildInnerMime({ text, attachments = [] }) {
-  const boundary = `opencode-${(0, import_node_crypto.randomUUID)()}`;
+  const boundary = `opencode-${(0, import_node_crypto2.randomUUID)()}`;
   const parts2 = [textPart(text), ...attachments.map(attachmentPart)];
   const body = parts2.map((part) => `--${boundary}${CRLF}${part}${CRLF}`).join("") + `--${boundary}--${CRLF}`;
   const contentType = `multipart/mixed; boundary="${boundary}"`;
@@ -125671,7 +125963,7 @@ function buildInnerMime({ text, attachments = [] }) {
   };
 }
 function buildPgpMime(armored) {
-  const boundary = `opencode-encrypted-${(0, import_node_crypto.randomUUID)()}`;
+  const boundary = `opencode-encrypted-${(0, import_node_crypto2.randomUUID)()}`;
   const body = [
     `--${boundary}${CRLF}`,
     `Content-Type: application/pgp-encrypted${CRLF}`,
@@ -125962,7 +126254,7 @@ async function saveAttachments(cfg, parsed, messageId, log2) {
   const saved = [];
   if (!parsed.attachments?.length) return saved;
   await (0, import_promises.mkdir)(cfg.attachmentDir, { recursive: true });
-  const hash2 = (0, import_node_crypto2.createHash)("sha256").update(messageId || String(Date.now())).digest("hex").slice(0, 12);
+  const hash2 = (0, import_node_crypto3.createHash)("sha256").update(messageId || String(Date.now())).digest("hex").slice(0, 12);
   for (const attachment of parsed.attachments) {
     const filename = safeFilename(attachment.filename || attachment.contentId || "attachment");
     const contentType = String(attachment.contentType || "").split(";")[0].toLowerCase();
@@ -125975,7 +126267,7 @@ async function saveAttachments(cfg, parsed, messageId, log2) {
       log2(`Skipping oversized attachment ${filename} (${size6} bytes)`);
       continue;
     }
-    const target = import_node_path.default.join(cfg.attachmentDir, `${hash2}-${filename}`);
+    const target = import_node_path2.default.join(cfg.attachmentDir, `${hash2}-${filename}`);
     await (0, import_promises.writeFile)(target, attachment.content);
     saved.push({
       filename,
@@ -126061,7 +126353,7 @@ async function parseIncoming(raw, cfg, identity2, log2, pinned = cfg.pinned || {
       throw new Error("encrypted message is not signed by the pinned contact key");
     }
   }
-  const messageId = parsed.messageId || rawHeaders.get("message-id") || `<${(0, import_node_crypto2.createHash)("sha256").update(raw).digest("hex")}@local>`;
+  const messageId = parsed.messageId || rawHeaders.get("message-id") || `<${(0, import_node_crypto3.createHash)("sha256").update(raw).digest("hex")}@local>`;
   const attachments = await saveAttachments(cfg, parsed, messageId, log2);
   return {
     from,
@@ -126083,11 +126375,15 @@ async function parseIncoming(raw, cfg, identity2, log2, pinned = cfg.pinned || {
 var ALIASES = {
   list: "sessions",
   projects: "sessions",
+  commands: "help",
+  shortcuts: "help",
   session: "use",
   create: "new",
-  reset: "default"
+  reset: "default",
+  reject: "deny",
+  decide: "approve"
 };
-var SIMPLE_COMMANDS = /* @__PURE__ */ new Set(["sessions", "help", "status", "default"]);
+var SIMPLE_COMMANDS = /* @__PURE__ */ new Set(["sessions", "help", "status", "default", "unwatch"]);
 var SUBJECT_MARKER = /\[session:([^\]]+)\]/i;
 function withSessionSubject(subject, sessionID) {
   const base = String(subject || "").replace(SUBJECT_MARKER, "").replace(/\s+/g, " ").trim();
@@ -126109,11 +126405,12 @@ function parseSessionCommand(text) {
   const argument = String(match8[2] || "").trim();
   if (SIMPLE_COMMANDS.has(command)) return { command, argument: "", rest: "" };
   if (command === "use") {
-    const [id2, ...rest] = argument.split(/\s+/);
-    return { command, argument: id2 || "", rest: rest.join(" ").trim() };
+    const [id2, ...rest2] = argument.split(/\s+/);
+    return { command, argument: id2 || "", rest: rest2.join(" ").trim() };
   }
   if (command === "new") return { command, argument, rest: "" };
-  return { command, argument, rest: "" };
+  const [selector, ...rest] = argument.split(/\s+/);
+  return { command, argument: selector || "", rest: rest.join(" ").trim() };
 }
 function normalizeMessageId(value3) {
   return String(value3 || "").trim().replace(/^<|>$/g, "");
@@ -126187,15 +126484,27 @@ function formatSessionDirectory(catalog, boundSessionID = "") {
   lines.push("  !new <title> in <project> create a session in a listed project");
   lines.push("  !default                  return this thread to the email-bound session");
   lines.push("  !status                   show the current bridge binding");
+  lines.push("  !help                     full remote-control command list");
   return lines.join("\n");
 }
 
 // src/bridge.js
-var hashId = (value3) => `msg_ac_${(0, import_node_crypto3.createHash)("sha256").update(String(value3)).digest("hex").slice(0, 32)}`;
+var hashId = (value3) => `msg_ac_${(0, import_node_crypto4.createHash)("sha256").update(String(value3)).digest("hex").slice(0, 32)}`;
 var STATE_KEY = "autocrypt.state";
 async function loadState(ctx) {
   const stored = await ctx.storage.get(STATE_KEY);
-  const data = stored && typeof stored === "object" ? stored : { sessions: {}, peers: {}, seen: [], threads: {}, sessionContacts: {}, meta: {}, handshake: {} };
+  const data = stored && typeof stored === "object" ? stored : {
+    sessions: {},
+    peers: {},
+    seen: [],
+    threads: {},
+    sessionContacts: {},
+    meta: {},
+    handshake: {},
+    watches: {},
+    pending: {},
+    questions: {}
+  };
   data.sessions ||= {};
   data.peers ||= {};
   data.seen ||= [];
@@ -126203,6 +126512,9 @@ async function loadState(ctx) {
   data.sessionContacts ||= {};
   data.meta ||= {};
   data.handshake ||= {};
+  data.watches ||= {};
+  data.pending ||= {};
+  data.questions ||= {};
   return {
     data,
     async save() {
@@ -126213,6 +126525,10 @@ async function loadState(ctx) {
 async function createBridge(ctx, cfg, options2 = {}) {
   const log2 = options2.log || ((message) => console.log(`[autocrypt] ${message}`));
   const onStatus = options2.onStatus || (() => {
+  });
+  const onQuestion = options2.onQuestion || (() => {
+  });
+  const onQuestionAnswer = options2.onQuestionAnswer || (() => {
   });
   const identity2 = options2.identity || await loadIdentity(ctx, cfg);
   if (cfg.pinned.contact) {
@@ -126240,7 +126556,23 @@ async function createBridge(ctx, cfg, options2 = {}) {
   const sender = options2.sender || createSender(cfg);
   const queues = /* @__PURE__ */ new Map();
   const controller = new AbortController();
+  const inFlight = /* @__PURE__ */ new Set();
+  const sessionStatus = /* @__PURE__ */ new Map();
+  const lastWatchNotify = /* @__PURE__ */ new Map();
+  const announcedDecisions = /* @__PURE__ */ new Set();
   let started = false;
+  const WATCH_EVENTS = [
+    "permission.asked",
+    "permission.replied",
+    "form.created",
+    "form.replied",
+    "form.cancelled",
+    "session.status",
+    "session.idle",
+    "session.execution.succeeded",
+    "session.execution.failed",
+    "session.step.failed"
+  ];
   const allowed = (from) => {
     if (cfg.pinned.contact) return from === cfg.pinned.contact;
     if (from === cfg.address) return false;
@@ -126436,6 +126768,233 @@ async function createBridge(ctx, cfg, options2 = {}) {
     if (state.data.sessionContacts[sessionID]) return state.data.sessionContacts[sessionID];
     return Object.entries(state.data.sessions).find(([, id2]) => id2 === sessionID)?.[0];
   }
+  async function sessionRoot(sessionID) {
+    if (sessionID) {
+      try {
+        const session = await ctx.session.get({ sessionID });
+        if (session?.location?.directory) return import_node_path3.default.resolve(String(session.location.directory));
+      } catch {
+      }
+    }
+    return import_node_path3.default.resolve(String(cfg.session?.defaultDirectory || ctx.location.directory || "."));
+  }
+  const normalizeCode = (value3) => String(value3 || "").trim().toUpperCase().replace(/^D-/, "");
+  function formFieldView(fields) {
+    return (Array.isArray(fields) ? fields : []).map((field2, index3) => ({
+      key: String(field2?.key || `q${index3}`),
+      title: String(field2?.title || field2?.description || `Question ${index3 + 1}`),
+      description: field2?.description ? String(field2.description) : "",
+      type: String(field2?.type || (Array.isArray(field2?.options) ? "select" : "string")),
+      options: (Array.isArray(field2?.options) ? field2.options : []).map((option3, optionIndex) => ({
+        value: String(option3?.value ?? option3?.label ?? optionIndex + 1),
+        label: String(option3?.label ?? option3?.value ?? optionIndex + 1),
+        description: option3?.description ? String(option3.description) : ""
+      }))
+    }));
+  }
+  function findPending(collection, from, code) {
+    const needle = normalizeCode(code);
+    if (!needle) return void 0;
+    return Object.values(collection).find((entry) => entry && !entry.answered && entry.from === from && (normalizeCode(entry.code) === needle || String(entry.requestID || entry.formID || "").toLowerCase().startsWith(needle.toLowerCase())));
+  }
+  function watchersFor(sessionID) {
+    const contacts = /* @__PURE__ */ new Set();
+    for (const [contact, watch] of Object.entries(state.data.watches)) {
+      if (watch?.sessionID === sessionID && allowed(contact)) contacts.add(contact);
+    }
+    return [...contacts];
+  }
+  async function sendSessionNotice(sessionID, subject, text, kind = "session-notice") {
+    const recipients = watchersFor(sessionID);
+    for (const to of recipients) {
+      await transmit({
+        to,
+        sessionID,
+        subject,
+        headers: [`X-OpenCode-Notice: ${kind}`],
+        text
+      });
+    }
+  }
+  async function handlePermissionAsked(data = {}) {
+    const requestID = String(data.id || data.requestID || "");
+    if (!requestID || announcedDecisions.has(requestID) || state.data.pending[requestID]) return;
+    const sessionID = String(data.sessionID || "");
+    const to = contactForSession(sessionID) || cfg.pinned.contact;
+    if (!to || !allowed(to)) return;
+    announcedDecisions.add(requestID);
+    const resources = Array.isArray(data.resources) ? data.resources.map(String) : [];
+    const risk = classifyPermission(data.action, resources, await sessionRoot(sessionID));
+    const code = decisionCode(requestID);
+    const options3 = Array.isArray(data.save) && data.save.length ? ["once", "always", "reject"] : ["once", "reject"];
+    state.data.pending[requestID] = {
+      requestID,
+      code,
+      sessionID,
+      from: to,
+      action: String(data.action || ""),
+      resources,
+      risk,
+      options: options3,
+      createdAt: Date.now(),
+      answered: false
+    };
+    await state.save();
+    try {
+      await transmit({
+        to,
+        sessionID,
+        subject: `Decision needed: ${data.action || "permission"}`,
+        headers: [`X-OpenCode-Decision: ${code}`],
+        text: formatDecisionRequest({
+          code,
+          action: data.action,
+          resources,
+          risk,
+          enabled: Boolean(cfg.remote.decisions),
+          canAnswer: Boolean(cfg.remote.decisions) && (risk.level !== "high" || cfg.remote.highRiskDecisions),
+          highRiskAllowed: Boolean(cfg.remote.highRiskDecisions),
+          options: options3,
+          sessionID
+        })
+      });
+    } catch (error) {
+      log2(`Could not send decision mail: ${error.message}`);
+    }
+  }
+  async function handlePermissionReplied(data = {}) {
+    const requestID = String(data.requestID || data.id || "");
+    const pending = state.data.pending[requestID];
+    if (!pending || pending.answered) return;
+    pending.answered = true;
+    pending.repliedAt = Date.now();
+    await state.save();
+  }
+  async function handleFormCreated(data = {}) {
+    const form = data.form || {};
+    const formID = String(form.id || "");
+    if (!formID || state.data.questions[formID]) return;
+    if (String(form.metadata?.kind || "") !== "question") return;
+    if (!cfg.remote.questions) return;
+    const sessionID = String(form.sessionID || "");
+    const to = contactForSession(sessionID) || cfg.pinned.contact;
+    if (!to || !allowed(to)) return;
+    const fields = formFieldView(form.fields);
+    const code = decisionCode(formID);
+    state.data.questions[formID] = {
+      formID,
+      code,
+      sessionID,
+      from: to,
+      title: String(form.title || "Questions"),
+      fields,
+      createdAt: Date.now(),
+      answered: false
+    };
+    await state.save();
+    try {
+      await onQuestion({
+        formID,
+        code,
+        sessionID,
+        title: state.data.questions[formID].title,
+        fields: state.data.questions[formID].fields
+      });
+    } catch (error) {
+      log2(`Could not notify the GUI about a question: ${error.message}`);
+    }
+    try {
+      await transmit({
+        to,
+        sessionID,
+        subject: `Question: ${form.title || "OpenCode"}`,
+        headers: [`X-OpenCode-Question: ${code}`],
+        text: formatQuestionRequest({ code, title: form.title, fields, sessionID })
+      });
+    } catch (error) {
+      log2(`Could not send question mail: ${error.message}`);
+    }
+  }
+  async function handleFormSettled(data = {}) {
+    const formID = String(data.id || data.formID || "");
+    const pending = state.data.questions[formID];
+    if (!pending || pending.answered) return;
+    pending.answered = true;
+    pending.repliedAt = Date.now();
+    await state.save();
+  }
+  async function handleSessionEvent(event) {
+    const data = event.data || {};
+    const sessionID = String(data.sessionID || "");
+    if (!sessionID) return;
+    if (event.type === "session.status") {
+      sessionStatus.set(sessionID, String(data.status?.type || "idle"));
+    } else if (event.type === "session.idle") {
+      sessionStatus.set(sessionID, "idle");
+    }
+    if (!cfg.remote.watch || inFlight.has(sessionID)) return;
+    const last = Number(lastWatchNotify.get(sessionID) || 0);
+    if (Date.now() - last < 3e4) return;
+    let subject = "";
+    let text = "";
+    let kind = "session-notice";
+    if (event.type === "session.status") {
+      if (data.status?.type !== "idle") return;
+      subject = `Session idle: ${sessionID}`;
+      text = `Session ${sessionID} is idle.`;
+      kind = "idle";
+    } else if (event.type === "session.idle") {
+      subject = `Session idle: ${sessionID}`;
+      text = `Session ${sessionID} is idle.`;
+      kind = "idle";
+    } else if (event.type === "session.execution.failed" || event.type === "session.step.failed") {
+      const error = data.error?.message || data.error || "unknown error";
+      subject = `Session failed: ${sessionID}`;
+      text = `Session ${sessionID} failed: ${error}`;
+      kind = "failure";
+    } else if (event.type === "session.execution.succeeded") {
+      subject = `Session finished: ${sessionID}`;
+      text = `Session ${sessionID} finished. Use !peek to read the result.`;
+      kind = "success";
+    } else {
+      return;
+    }
+    if (!watchersFor(sessionID).length) return;
+    lastWatchNotify.set(sessionID, Date.now());
+    await sendSessionNotice(sessionID, subject, text, kind);
+  }
+  async function handleEvent(event) {
+    const data = event.data || {};
+    switch (event.type) {
+      case "permission.asked":
+        return handlePermissionAsked(data);
+      case "permission.replied":
+        return handlePermissionReplied(data);
+      case "form.created":
+        return handleFormCreated(data);
+      case "form.replied":
+      case "form.cancelled":
+        return handleFormSettled(data);
+      case "session.status":
+      case "session.idle":
+      case "session.execution.succeeded":
+      case "session.execution.failed":
+      case "session.step.failed":
+        return handleSessionEvent(event);
+      default:
+        return void 0;
+    }
+  }
+  function startEvents() {
+    if (!ctx.event?.subscribe || typeof ctx.event.subscribe !== "function") return;
+    void (async () => {
+      for await (const event of ctx.event.subscribe({ types: WATCH_EVENTS, signal: controller.signal })) {
+        void handleEvent(event).catch((error) => log2(`Event ${event.type} failed: ${error.message}`));
+      }
+    })().catch((error) => {
+      if (!controller.signal.aborted) log2(`Event subscription stopped: ${error.message}`);
+    });
+  }
   async function learnPeer(from, autocrypt) {
     if (!autocrypt) return { learned: false, establishedNow: false };
     if (cfg.pinned.fingerprint) {
@@ -126489,7 +127048,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
       log2(`No Autocrypt key for ${to}; sending cleartext so the peer can learn ours`);
     }
     const domain = cfg.address.split("@")[1] || "localhost";
-    const messageId = `${Date.now()}.${(0, import_node_crypto3.randomUUID)()}@${domain}`;
+    const messageId = `${Date.now()}.${(0, import_node_crypto4.randomUUID)()}@${domain}`;
     const baseSubject = subject || (inReplyTo ? `Re: Message from ${cfg.displayName}` : `Message from ${cfg.displayName}`);
     const raw = buildMail({
       cfg,
@@ -126506,31 +127065,42 @@ async function createBridge(ctx, cfg, options2 = {}) {
     if (sessionID) await rememberThread(messageId, sessionID, to);
     log2(`Sent ${contentType.includes("encrypted") ? "encrypted" : "cleartext"} reply to ${to}${sessionID ? ` [session:${sessionID}]` : ""}`);
   }
-  async function sendKeyConfirmation(from, message, sessionID = "") {
+  async function maybeSendWelcome(from, message, sessionID = "") {
+    const flag = `welcome:${from}:${cfg.pinned.fingerprint}`;
+    if (state.data.meta[flag]) return;
+    const status = await getStatus();
+    if (!status.established || !status.verified) return;
     await transmit({
       to: from,
       sessionID,
-      subject: `Re: ${message.subject || "Autocrypt key confirmation"}`,
+      subject: `Re: ${message.subject || "Connected"}`,
       inReplyTo: message.messageId,
-      headers: ["X-OpenCode-Handshake: autocrypt-confirm"],
+      headers: ["X-OpenCode-Handshake: autocrypt-confirm", "X-OpenCode-Command: help"],
       encrypt: true,
       text: [
         `Key confirmed for ${from}.`,
         `Fingerprint: ${cfg.pinned.fingerprint}`,
-        "OpenCode will now sign and encrypt replies to this address."
-      ].join("\n\n")
+        "OpenCode will now sign and encrypt replies to this address.",
+        "",
+        formatRemoteHelp(cfg.remote, {
+          sessionID,
+          sessionTitle: status.sessionTitle
+        })
+      ].join("\n")
     });
+    state.data.meta[flag] = Date.now();
+    await state.save();
   }
   async function sendFile({ sessionID, filePath, text }) {
     const to = contactForSession(sessionID);
     if (!to) return { content: "This session is not linked to an Autocrypt contact" };
-    const root = import_node_path2.default.resolve(ctx.location.directory);
-    const target = import_node_path2.default.resolve(root, String(filePath));
-    if (target !== root && !target.startsWith(`${root}${import_node_path2.default.sep}`)) {
+    const root = await sessionRoot(sessionID);
+    const target = import_node_path3.default.resolve(root, String(filePath));
+    if (target !== root && !target.startsWith(`${root}${import_node_path3.default.sep}`)) {
       return { content: "Refusing to send a file outside the project directory" };
     }
     const content = await (0, import_promises2.readFile)(target);
-    const filename = safeFilename(import_node_path2.default.basename(target));
+    const filename = safeFilename(import_node_path3.default.basename(target));
     await transmit({
       to,
       sessionID,
@@ -126607,26 +127177,206 @@ async function createBridge(ctx, cfg, options2 = {}) {
     if (threaded) return { sessionID: threaded, reason: "thread" };
     return { sessionID: await sessionFor(from), reason: "default" };
   }
-  async function commandReplyText(command, catalog, sessionID, resolution) {
-    if (command.command === "sessions" || command.command === "help") {
-      return formatSessionDirectory(catalog, sessionID);
+  async function answerDecision(from, message, command) {
+    if (!cfg.remote.decisions) {
+      await sendCommandReply(from, message, "", "Permission decisions by email are disabled in Settings \u2192 Autocrypt Bridge \u2192 Remote controls.", "error");
+      return;
     }
-    if (command.command === "status") {
-      const status = await getStatus();
-      return [
-        `Email-bound session: ${status.sessionID || "(none)"}`,
-        `Title: ${status.sessionTitle || "(untitled)"}`,
-        `Directory: ${status.sessionDirectory || "(unknown)"}`,
-        `Project: ${status.sessionProjectID || "(none)"}`,
-        `This thread's session: ${sessionID}`,
-        `Established: ${status.established ? "yes" : "no"}`
-      ].join("\n");
+    const pending = findPending(state.data.pending, from, command.argument);
+    if (!pending) {
+      await sendCommandReply(from, message, "", `Unknown decision code "${command.argument || ""}". Use the code in the decision email.`, "error");
+      return;
     }
-    return `${resolution.note || `Using session ${sessionID}`}.
+    if (pending.risk.level === "high" && !cfg.remote.highRiskDecisions) {
+      await sendCommandReply(from, message, pending.sessionID, [
+        `Decision ${pending.code} is HIGH RISK: ${pending.risk.reasons.join("; ") || pending.action}.`,
+        "Email approval is disabled for high-risk requests.",
+        "Enable it in Settings \u2192 Autocrypt Bridge \u2192 Remote controls, or answer at the desktop."
+      ].join("\n"), "error");
+      return;
+    }
+    const wantsAlways = /\balways\b/i.test(command.rest);
+    const decision = command.command === "deny" ? "reject" : wantsAlways && pending.options.includes("always") ? "always" : "once";
+    const note = decision === "reject" ? command.rest.trim() : "";
+    try {
+      await ctx.permission.reply({
+        sessionID: pending.sessionID,
+        requestID: pending.requestID,
+        decision,
+        ...note ? { message: note } : {}
+      });
+    } catch (error) {
+      await sendCommandReply(from, message, pending.sessionID, `Could not record the decision: ${error.message}`, "error");
+      return;
+    }
+    pending.answered = true;
+    pending.repliedAt = Date.now();
+    await state.save();
+    await sendCommandReply(from, message, pending.sessionID, `Decision recorded: ${decision} for ${pending.code}. The desktop session can continue.`);
+  }
+  async function answerQuestion(from, message, command) {
+    if (!cfg.remote.questions) {
+      await sendCommandReply(from, message, "", "Multiple-choice answers by email are disabled in Settings \u2192 Autocrypt Bridge \u2192 Remote controls.", "error");
+      return;
+    }
+    const pending = findPending(state.data.questions, from, command.argument);
+    if (!pending) {
+      await sendCommandReply(from, message, "", `Unknown question code "${command.argument || ""}". Use the code in the question email.`, "error");
+      return;
+    }
+    const parsed = parseQuestionAnswers(pending.fields, command.rest);
+    if (parsed.error) {
+      await sendCommandReply(from, message, pending.sessionID, `${parsed.error}
+
+Use: !answer ${pending.code} 1`, "error");
+      return;
+    }
+    const entries3 = Object.entries(parsed.answer).map(([key5, values2]) => ({ key: key5, values: values2 }));
+    try {
+      await onQuestionAnswer({
+        formID: pending.formID,
+        sessionID: pending.sessionID,
+        answer: entries3
+      });
+    } catch (error) {
+      await sendCommandReply(from, message, pending.sessionID, `Could not forward the answer: ${error.message}`, "error");
+      return;
+    }
+    pending.submittedAt = Date.now();
+    pending.lastAnswer = entries3;
+    await state.save();
+    const chosen = Object.values(parsed.answer).flat().join(", ");
+    await sendCommandReply(from, message, pending.sessionID, `Answer forwarded for ${pending.code}: ${chosen}. The desktop form will be completed when OpenCode Desktop handles it.`);
+  }
+  async function confirmQuestionReply({ formID, ok, error = "" }) {
+    const pending = state.data.questions[String(formID || "")];
+    if (!pending) return;
+    if (ok) {
+      pending.answered = true;
+      pending.repliedAt = Date.now();
+      await state.save();
+      await transmit({
+        to: pending.from,
+        sessionID: pending.sessionID,
+        subject: `Re: Question: ${pending.title}`,
+        headers: ["X-OpenCode-Command: question-answered"],
+        text: `Question ${pending.code} was completed on the desktop. The session can continue.`
+      });
+      return;
+    }
+    await transmit({
+      to: pending.from,
+      sessionID: pending.sessionID,
+      subject: `Re: Question: ${pending.title}`,
+      headers: ["X-OpenCode-Command: error"],
+      text: [
+        `The desktop could not complete question ${pending.code}: ${error || "unknown error"}`,
+        "",
+        `Retry with the same choices: !answer ${pending.code} <choice>`
+      ].join("\n")
+    });
+  }
+  async function localCommandReply(from, message, command, catalog, sessionID, resolution) {
+    switch (command.command) {
+      case "sessions":
+        return `${formatSessionDirectory(catalog, catalog.boundSessionID)}
+
+Use !help for the full remote-control list.`;
+      case "help": {
+        const status = await getStatus();
+        return formatRemoteHelp(cfg.remote, {
+          sessionID,
+          sessionTitle: status.sessionTitle
+        });
+      }
+      case "status": {
+        const status = await getStatus();
+        return [
+          `Email-bound session: ${status.sessionID || "(none)"}`,
+          `Title: ${status.sessionTitle || "(untitled)"}`,
+          `Directory: ${status.sessionDirectory || "(unknown)"}`,
+          `Project: ${status.sessionProjectID || "(none)"}`,
+          `This thread's session: ${sessionID}`,
+          `Established: ${status.established ? "yes" : "no"}`,
+          `Verified: ${status.verified ? "yes" : "no"}`,
+          `Permission decisions: ${cfg.remote.decisions ? "on" : "off"}`,
+          `Multiple-choice answers: ${cfg.remote.questions ? "on" : "off"}`,
+          `High-risk email approval: ${cfg.remote.highRiskDecisions ? "on" : "off"}`,
+          `Session watch: ${cfg.remote.watch ? "on" : "off"}`
+        ].join("\n");
+      }
+      case "peek": {
+        if (!cfg.remote.peek) return "Session output by email is disabled in the GUI.";
+        let target = sessionID;
+        let limit = 5;
+        for (const token of [command.argument, command.rest].filter(Boolean)) {
+          if (/^\d+$/.test(token)) limit = Number(token);
+          else {
+            const match8 = resolveSessionRef(catalog.sessions, token);
+            if (!match8) throw new Error(`Unknown session "${token}"; use !sessions to list sessions`);
+            target = match8.id;
+          }
+        }
+        return formatPeek(await ctx.session.context({ sessionID: target }), limit);
+      }
+      case "tail": {
+        if (!cfg.remote.tail) return "Terminal tail by email is disabled in the GUI.";
+        if (!ctx.experimental?.terminal?.read) return "This OpenCode version does not expose a terminal tail to plugins.";
+        const tokens = [command.argument, command.rest].filter(Boolean);
+        const lineToken = tokens.find((token) => /^\d+$/.test(token));
+        const lines = Math.max(1, Math.min(Number(lineToken) || 80, 500));
+        const result3 = await ctx.experimental.terminal.read({ sessionID, lines });
+        const text = typeof result3 === "string" ? result3 : String(result3?.text || result3?.output || JSON.stringify(result3 || ""));
+        return text.trim().slice(-12e3) || `No terminal output for session ${sessionID}.`;
+      }
+      case "send": {
+        if (!cfg.remote.sendFiles) return "Sending project files by email is disabled in the GUI.";
+        const filePath = [command.argument, command.rest].filter(Boolean).join(" ").trim();
+        if (!filePath) return "Usage: !send <project-file>";
+        const result3 = await sendFile({ sessionID, filePath, text: "Attached on request." });
+        return result3.content;
+      }
+      case "watch": {
+        if (!cfg.remote.watch) return "Session watch is disabled in the GUI.";
+        let target = sessionID;
+        if (command.argument) {
+          const match8 = resolveSessionRef(catalog.sessions, command.argument);
+          if (!match8) throw new Error(`Unknown session "${command.argument}"; use !sessions to list sessions`);
+          target = match8.id;
+        }
+        state.data.watches[from] = {
+          sessionID: target,
+          inReplyTo: message.messageId,
+          subject: message.subject,
+          at: Date.now()
+        };
+        await state.save();
+        return `Watching session ${target}. You will get an encrypted mail when it finishes, fails or asks for a decision. Use !unwatch to stop.`;
+      }
+      case "unwatch": {
+        delete state.data.watches[from];
+        await state.save();
+        return "Session watch is off for this contact.";
+      }
+      default:
+        return `${resolution.note || `Using session ${sessionID}`}.
 
 Further replies in this subject stay in this session.`;
+    }
   }
-  const LOCAL_COMMANDS = /* @__PURE__ */ new Set(["sessions", "help", "status", "use", "new", "default"]);
+  const LOCAL_ONLY_COMMANDS = /* @__PURE__ */ new Set([
+    "sessions",
+    "help",
+    "status",
+    "new",
+    "default",
+    "peek",
+    "tail",
+    "send",
+    "watch",
+    "unwatch"
+  ]);
+  const DECISION_COMMANDS = /* @__PURE__ */ new Set(["approve", "deny"]);
   async function handle(raw) {
     let message;
     try {
@@ -126651,6 +127401,14 @@ Further replies in this subject stay in this session.`;
     await markSeen(message.messageId);
     const command = parseSessionCommand(message.text);
     const { establishedNow } = await learnPeer(from, message.autocrypt);
+    if (command && DECISION_COMMANDS.has(command.command)) {
+      await answerDecision(from, message, command);
+      return;
+    }
+    if (command?.command === "answer") {
+      await answerQuestion(from, message, command);
+      return;
+    }
     let resolution;
     try {
       resolution = await resolveInboundSession(from, message, command);
@@ -126665,49 +127423,67 @@ Further replies in this subject stay in this session.`;
     await rememberThread(message.messageId, sessionID, from);
     if (establishedNow) {
       try {
-        await sendKeyConfirmation(from, message, sessionID);
+        await maybeSendWelcome(from, message, sessionID);
       } catch (error) {
-        log2(`Could not send key confirmation: ${error.message}`);
+        log2(`Could not send welcome mail: ${error.message}`);
       }
     }
-    if (command && LOCAL_COMMANDS.has(command.command)) {
+    if (command && LOCAL_ONLY_COMMANDS.has(command.command)) {
       const catalog = await listSessions();
-      const text = await commandReplyText(command, catalog, sessionID, resolution);
-      if (!command.rest) {
-        await sendCommandReply(from, message, sessionID, text);
-        return;
-      }
+      const text = await localCommandReply(from, message, command, catalog, sessionID, resolution);
+      await sendCommandReply(from, message, sessionID, text);
+      return;
+    }
+    if (command?.command === "use" && !command.rest) {
+      await sendCommandReply(from, message, sessionID, `${resolution.note || `Using session ${sessionID}`}.
+
+Further replies in this subject stay in this session.`);
+      return;
+    }
+    if (command?.command === "use") {
       command.rest = `${resolution.note || `Using session ${sessionID}`}
 
 ${command.rest}`;
     }
     await enqueue(sessionID, async () => {
-      const files = message.attachments.map((attachment) => ({
-        uri: attachment.uri,
-        name: attachment.filename,
-        description: attachment.description
-      }));
-      const promptId = hashId(message.messageId);
-      const text = [
-        command?.rest || message.text || "(message contained no plain text)",
-        `[Autocrypt email from ${from}${message.fromName ? ` (${message.fromName})` : ""}]`,
-        `[OpenCode session: ${sessionID}${resolution.note ? ` \u2014 ${resolution.note}` : ""}]`,
-        ...message.attachments.length ? [`[Attachments: ${message.attachments.map((a) => a.filename).join(", ")}]`] : []
-      ].join("\n\n");
-      const promptResult = await ctx.session.prompt({
-        sessionID,
-        id: promptId,
-        text,
-        ...files.length ? { files } : {},
-        metadata: { source: "autocrypt-email", from, messageId: message.messageId, sessionID }
-      });
-      const userMessageID = promptResult?.id || promptId;
-      await ctx.session.wait({ sessionID });
-      const messages = await ctx.session.context({ sessionID });
-      const index3 = messages.findIndex((entry) => entry.id === userMessageID);
-      const replies = (index3 < 0 ? [] : messages.slice(index3 + 1)).filter((entry) => entry.type === "assistant" && !entry.error).flatMap((entry) => entry.content.filter((part) => part.type === "text").map((part) => part.text)).join("\n\n").trim();
-      if (replies) await transmit({ to: from, text: replies, inReplyTo: message.messageId, sessionID });
-      else log2(`No assistant text to send to ${from}`);
+      const current = sessionStatus.get(sessionID);
+      const wasBusy = inFlight.has(sessionID) || current === "busy" || current === "retry";
+      inFlight.add(sessionID);
+      try {
+        const files = message.attachments.map((attachment) => ({
+          uri: attachment.uri,
+          name: attachment.filename,
+          description: attachment.description
+        }));
+        const promptId = hashId(message.messageId);
+        const text = [
+          command?.rest || message.text || "(message contained no plain text)",
+          `[Autocrypt email from ${from}${message.fromName ? ` (${message.fromName})` : ""}]`,
+          `[OpenCode session: ${sessionID}${resolution.note ? ` \u2014 ${resolution.note}` : ""}]`,
+          ...message.attachments.length ? [`[Attachments: ${message.attachments.map((a) => a.filename).join(", ")}]`] : []
+        ].join("\n\n");
+        const promptResult = await ctx.session.prompt({
+          sessionID,
+          id: promptId,
+          text,
+          ...files.length ? { files } : {},
+          delivery: wasBusy ? "queue" : "steer",
+          metadata: { source: "autocrypt-email", from, messageId: message.messageId, sessionID }
+        });
+        if (wasBusy) {
+          await sendCommandReply(from, message, sessionID, `Session ${sessionID} is busy; your prompt was queued. !watch ${sessionID} emails you when it finishes.`);
+          return;
+        }
+        const userMessageID = promptResult?.id || promptId;
+        await ctx.session.wait({ sessionID });
+        const messages = await ctx.session.context({ sessionID });
+        const index3 = messages.findIndex((entry) => entry.id === userMessageID);
+        const replies = (index3 < 0 ? [] : messages.slice(index3 + 1)).filter((entry) => entry.type === "assistant" && !entry.error).flatMap((entry) => entry.content.filter((part) => part.type === "text").map((part) => part.text)).join("\n\n").trim();
+        if (replies) await transmit({ to: from, text: replies, inReplyTo: message.messageId, sessionID });
+        else log2(`No assistant text to send to ${from}`);
+      } finally {
+        inFlight.delete(sessionID);
+      }
     });
   }
   async function rescanInbox() {
@@ -126728,6 +127504,7 @@ ${command.rest}`;
       if (started) return;
       started = true;
       log2(`Listening for Autocrypt mail at ${cfg.address} (${cfg.imap.mailbox})`);
+      startEvents();
       void startImap(cfg, store, handle, controller.signal, log2);
       if (cfg.pinned.contact && !state.data.peers[cfg.pinned.contact]?.keydata) {
         const last = Number(state.data.meta.autocryptBootstrapAt || 0);
@@ -126748,6 +127525,8 @@ ${command.rest}`;
     },
     // Exposed for tests and for local loopback checks against a real mail server.
     process: handle,
+    processEvent: handleEvent,
+    confirmQuestionReply,
     getStatus,
     async startHandshake() {
       return startAutocryptHandshake(true);
@@ -126764,7 +127543,7 @@ ${command.rest}`;
 
 // src/config.js
 var import_node_fs2 = require("node:fs");
-var import_node_path3 = __toESM(require("node:path"), 1);
+var import_node_path4 = __toESM(require("node:path"), 1);
 var PREFIX = "opencode-autocrypt-bridge:";
 function pick3(...values2) {
   for (const value3 of values2) {
@@ -126873,9 +127652,20 @@ function loadConfig(options2 = {}, env = process.env) {
       defaultID: String(get6("defaultSessionID", "AC_SESSION_ID", "")).trim(),
       defaultDirectory: String(get6("defaultSessionDirectory", "AC_SESSION_DIRECTORY", "")).trim()
     },
+    // Email remote controls. High-risk approvals stay off by default: the
+    // bridge must never become a remote shell.
+    remote: {
+      decisions: boolean2(get6("emailDecisions", "AC_EMAIL_DECISIONS"), true),
+      highRiskDecisions: boolean2(get6("emailHighRiskDecisions", "AC_EMAIL_HIGH_RISK_DECISIONS"), false),
+      questions: boolean2(get6("emailQuestions", "AC_EMAIL_QUESTIONS"), true),
+      peek: boolean2(get6("emailPeek", "AC_EMAIL_PEEK"), true),
+      tail: boolean2(get6("emailTail", "AC_EMAIL_TAIL"), true),
+      sendFiles: boolean2(get6("emailSendFiles", "AC_EMAIL_SEND_FILES"), true),
+      watch: boolean2(get6("emailWatch", "AC_EMAIL_WATCH"), true)
+    },
     maxMessageBytes: integer2(get6("maxMessageBytes", "AC_MAX_MESSAGE_BYTES"), 20 * 1024 * 1024),
     maxAttachmentBytes: integer2(get6("maxAttachmentBytes", "AC_MAX_ATTACHMENT_BYTES"), 10 * 1024 * 1024),
-    attachmentDir: import_node_path3.default.resolve(String(get6("attachmentDir", "AC_ATTACHMENT_DIR", import_node_path3.default.join(".opencode", "autocrypt-attachments")))),
+    attachmentDir: import_node_path4.default.resolve(String(get6("attachmentDir", "AC_ATTACHMENT_DIR", import_node_path4.default.join(".opencode", "autocrypt-attachments")))),
     key: {
       privateKeyArmored: String(get6("privateKeyArmored", "AC_PRIVATE_KEY", "")),
       privateKeyFile: String(get6("privateKeyFile", "AC_PRIVATE_KEY_FILE", "")),
@@ -126929,7 +127719,14 @@ var settingsProperties = {
   generateKey: { type: "boolean" },
   preferEncryptMutual: { type: "boolean" },
   defaultSessionID: { type: "string" },
-  defaultSessionDirectory: { type: "string" }
+  defaultSessionDirectory: { type: "string" },
+  emailDecisions: { type: "boolean" },
+  emailHighRiskDecisions: { type: "boolean" },
+  emailQuestions: { type: "boolean" },
+  emailPeek: { type: "boolean" },
+  emailTail: { type: "boolean" },
+  emailSendFiles: { type: "boolean" },
+  emailWatch: { type: "boolean" }
 };
 var emptyInput = {
   type: "object",
@@ -126999,6 +127796,63 @@ var sessionsOutput = {
     boundSessionID: { type: "string" },
     defaultSessionID: { type: "string" }
   },
+  additionalProperties: false
+};
+var questionFieldSchema = {
+  type: "object",
+  properties: {
+    key: { type: "string" },
+    title: { type: "string" },
+    description: { type: "string" },
+    type: { type: "string" },
+    options: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          value: { type: "string" },
+          label: { type: "string" },
+          description: { type: "string" }
+        },
+        additionalProperties: false
+      }
+    }
+  },
+  additionalProperties: false
+};
+var questionEvent = {
+  type: "object",
+  properties: {
+    formID: { type: "string" },
+    code: { type: "string" },
+    sessionID: { type: "string" },
+    title: { type: "string" },
+    fields: { type: "array", items: questionFieldSchema }
+  },
+  additionalProperties: false
+};
+var questionAnswerEvent = {
+  type: "object",
+  properties: {
+    formID: { type: "string" },
+    sessionID: { type: "string" },
+    answer: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          key: { type: "string" },
+          values: { type: "array", items: { type: "string" } }
+        },
+        additionalProperties: false
+      }
+    }
+  },
+  additionalProperties: false
+};
+var ackOutput = {
+  type: "object",
+  properties: { accepted: { type: "boolean" } },
   additionalProperties: false
 };
 var BridgeRpc = rpc_exports.define({
@@ -127073,11 +127927,30 @@ var BridgeRpc = rpc_exports.define({
         additionalProperties: false
       },
       output: statusOutput
+    },
+    reportQuestionReply: {
+      input: {
+        type: "object",
+        properties: {
+          formID: { type: "string" },
+          ok: { type: "boolean" },
+          error: { type: "string" }
+        },
+        required: ["formID", "ok"],
+        additionalProperties: false
+      },
+      output: ackOutput
     }
   },
   events: {
     status: {
       schema: statusOutput
+    },
+    question: {
+      schema: questionEvent
+    },
+    questionAnswer: {
+      schema: questionAnswerEvent
     }
   }
 });
@@ -127109,11 +127982,29 @@ var SETTING_KEYS = [
   "generateKey",
   "preferEncryptMutual",
   "defaultSessionID",
-  "defaultSessionDirectory"
+  "defaultSessionDirectory",
+  "emailDecisions",
+  "emailHighRiskDecisions",
+  "emailQuestions",
+  "emailPeek",
+  "emailTail",
+  "emailSendFiles",
+  "emailWatch"
 ];
 var SECRET_KEYS = /* @__PURE__ */ new Set(["imapPassword", "smtpPassword", "privateKeyArmored", "keyPassphrase"]);
 var HOST_KEYS = /* @__PURE__ */ new Set(["imapHost", "smtpHost"]);
-var UI_DEFAULTS = { verifyCertificate: true, generateKey: true, preferEncryptMutual: true };
+var UI_DEFAULTS = {
+  verifyCertificate: true,
+  generateKey: true,
+  preferEncryptMutual: true,
+  emailDecisions: true,
+  emailHighRiskDecisions: false,
+  emailQuestions: true,
+  emailPeek: true,
+  emailTail: true,
+  emailSendFiles: true,
+  emailWatch: true
+};
 var STORAGE_KEY = "autocrypt.settings";
 function storedSettings(stored) {
   const result3 = {};
@@ -127175,9 +128066,12 @@ var index_default = plugin_exports.define({
         lastError: runtime.configError || "Finish setup in Settings \u2192 Autocrypt Bridge"
       });
     };
-    const emit = (status) => {
-      if (!runtime.registration || !status) return;
-      void runtime.registration.events.emit("status", statusView(status)).catch(() => {
+    const emit = (name, data) => {
+      if (!runtime.registration) return;
+      const eventName = typeof name === "string" ? name : "status";
+      const payload = typeof name === "string" ? data : statusView(name);
+      if (!payload) return;
+      void runtime.registration.events.emit(eventName, payload).catch(() => {
       });
     };
     const currentStatus = async () => runtime.bridge ? statusView(await runtime.bridge.getStatus()) : unconfiguredStatus();
@@ -127188,7 +128082,11 @@ var index_default = plugin_exports.define({
       try {
         runtime.cfg = configFrom(stored);
         runtime.configError = "";
-        runtime.bridge = await createBridge(ctx, runtime.cfg, { onStatus: emit });
+        runtime.bridge = await createBridge(ctx, runtime.cfg, {
+          onStatus: emit,
+          onQuestion: (question) => emit("question", question),
+          onQuestionAnswer: (answer) => emit("questionAnswer", answer)
+        });
         runtime.bridge.start();
       } catch (error) {
         runtime.cfg = null;
@@ -127248,6 +128146,15 @@ var index_default = plugin_exports.define({
         if (!runtime.bridge) throw new Error("Autocrypt Bridge is not configured");
         const result3 = await runtime.bridge.createAndBindSession(input.title, input.directory);
         return result3.status;
+      },
+      reportQuestionReply: async (input) => {
+        if (!runtime.bridge) throw new Error("Autocrypt Bridge is not configured");
+        await runtime.bridge.confirmQuestionReply({
+          formID: input.formID,
+          ok: Boolean(input.ok),
+          error: String(input.error || "")
+        });
+        return { accepted: true };
       }
     });
     const tool = await ctx.tool.transform((editor) => {

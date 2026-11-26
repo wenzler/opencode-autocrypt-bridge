@@ -96,17 +96,29 @@ test('GUI defaults to key generation and stores hostnames without URL schemes', 
   assert.equal(initial.generateKey, true)
   assert.equal(initial.verifyCertificate, true)
   assert.equal(initial.preferEncryptMutual, true)
+  assert.equal(initial.emailDecisions, true)
+  assert.equal(initial.emailHighRiskDecisions, false)
+  assert.equal(initial.emailQuestions, true)
+  assert.equal(initial.emailPeek, true)
+  assert.equal(initial.emailTail, true)
+  assert.equal(initial.emailSendFiles, true)
+  assert.equal(initial.emailWatch, true)
   assert.equal(typeof handlers.rescanInbox, 'function')
+  assert.equal(typeof handlers.reportQuestionReply, 'function')
 
   await handlers.updateSettings({
     imapHost: 'https://imap.example.org/',
     smtpHost: 'https://smtp.example.org/path',
     generateKey: false,
+    emailHighRiskDecisions: true,
+    emailWatch: false,
   })
   const saved = await handlers.getSettings({})
   assert.equal(saved.imapHost, 'imap.example.org')
   assert.equal(saved.smtpHost, 'smtp.example.org')
   assert.equal(saved.generateKey, false)
+  assert.equal(saved.emailHighRiskDecisions, true)
+  assert.equal(saved.emailWatch, false)
 
   await dispose()
 })

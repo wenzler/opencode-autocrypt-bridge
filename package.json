@@ -1,8 +1,8 @@
 {
   "name": "opencode-autocrypt-bridge",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
-  "description": "OpenCode V2 IMAP/SMTP bridge with Autocrypt key discovery, OpenPGP/MIME, attachments and Desktop settings",
+  "description": "OpenCode V2 IMAP/SMTP bridge with Autocrypt, session routing, encrypted remote controls and Desktop settings",
   "license": "MIT",
   "engines": {
     "node": ">=18"

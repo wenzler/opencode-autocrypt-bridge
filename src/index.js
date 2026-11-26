@@ -11,11 +11,24 @@ const SETTING_KEYS = [
   'pinnedFingerprint', 'pinnedContactKey', 'inviteUrl', 'requireEncrypted',
   'pollIntervalMs', 'verifyCertificate', 'privateKeyArmored', 'keyPassphrase', 'generateKey', 'preferEncryptMutual',
   'defaultSessionID', 'defaultSessionDirectory',
+  'emailDecisions', 'emailHighRiskDecisions', 'emailQuestions',
+  'emailPeek', 'emailTail', 'emailSendFiles', 'emailWatch',
 ]
 
 const SECRET_KEYS = new Set(['imapPassword', 'smtpPassword', 'privateKeyArmored', 'keyPassphrase'])
 const HOST_KEYS = new Set(['imapHost', 'smtpHost'])
-const UI_DEFAULTS = { verifyCertificate: true, generateKey: true, preferEncryptMutual: true }
+const UI_DEFAULTS = {
+  verifyCertificate: true,
+  generateKey: true,
+  preferEncryptMutual: true,
+  emailDecisions: true,
+  emailHighRiskDecisions: false,
+  emailQuestions: true,
+  emailPeek: true,
+  emailTail: true,
+  emailSendFiles: true,
+  emailWatch: true,
+}
 const STORAGE_KEY = 'autocrypt.settings'
 
 function storedSettings(stored) {
@@ -90,9 +103,14 @@ export default Plugin.define({
       })
     }
 
-    const emit = (status) => {
-      if (!runtime.registration || !status) return
-      void runtime.registration.events.emit('status', statusView(status)).catch(() => {})
+    // Bridge status callbacks call emit(status); RPC notifications call
+    // emit(name, payload). Both go through the same registration.
+    const emit = (name, data) => {
+      if (!runtime.registration) return
+      const eventName = typeof name === 'string' ? name : 'status'
+      const payload = typeof name === 'string' ? data : statusView(name)
+      if (!payload) return
+      void runtime.registration.events.emit(eventName, payload).catch(() => {})
     }
 
     const currentStatus = async () => (
@@ -107,7 +125,11 @@ export default Plugin.define({
       try {
         runtime.cfg = configFrom(stored)
         runtime.configError = ''
-        runtime.bridge = await createBridge(ctx, runtime.cfg, { onStatus: emit })
+        runtime.bridge = await createBridge(ctx, runtime.cfg, {
+          onStatus: emit,
+          onQuestion: (question) => emit('question', question),
+          onQuestionAnswer: (answer) => emit('questionAnswer', answer),
+        })
         runtime.bridge.start()
       } catch (error) {
         runtime.cfg = null
@@ -175,6 +197,15 @@ export default Plugin.define({
         if (!runtime.bridge) throw new Error('Autocrypt Bridge is not configured')
         const result = await runtime.bridge.createAndBindSession(input.title, input.directory)
         return result.status
+      },
+      reportQuestionReply: async (input) => {
+        if (!runtime.bridge) throw new Error('Autocrypt Bridge is not configured')
+        await runtime.bridge.confirmQuestionReply({
+          formID: input.formID,
+          ok: Boolean(input.ok),
+          error: String(input.error || ''),
+        })
+        return { accepted: true }
       },
     })
 

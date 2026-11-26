@@ -10,6 +10,7 @@ Design rules:
 - **Invite links are local prefill only:** a contact URI can fill the pinned fingerprint/address/name. `i=`/`s=` tokens are ignored, stripped before storage, and never sent on the wire.
 - **No website calls:** the plugin never fetches the domain in an invite URL. All traffic is IMAP/SMTP to the configured mail host.
 - **Session-aware email:** every outbound subject carries `[session:ses_…]`. Delta Chat keeps that subject on replies, so the bridge returns to the same OpenCode session even across projects. Threading headers and explicit email commands are also supported.
+- **No remote shell:** encrypted email can answer OpenCode permission requests, answer native multiple-choice question forms, read session output, send project files, and subscribe to session notices. It never exposes arbitrary shell execution.
 - **Ported transport:** IMAP IDLE/checkpoint and SMTP sending patterns are adapted from the MIT-licensed [`opencode-email-sync`](https://github.com/Sponn/opencode-email-sync).
 
 ## Install
@@ -59,7 +60,7 @@ OpenCode Desktop loads the plugin and **Settings → Autocrypt Bridge** appears.
 1. On startup, if no key is known for the pinned contact, the bridge sends one plaintext **Connect …** message carrying its own `Autocrypt:` header (at most once per day).
 2. The pinned contact replies with an `Autocrypt:` header containing its public key.
 3. The bridge computes the key's OpenPGP fingerprint and accepts it **only** if it matches `pinnedFingerprint`.
-4. The bridge stores the key, marks the contact established, and immediately sends a signed + encrypted OpenPGP/MIME confirmation.
+4. The bridge stores the key, marks the contact established, and immediately sends a signed + encrypted OpenPGP/MIME confirmation. That first message includes the live `!help` command list.
 5. All subsequent replies from OpenCode are signed and encrypted to that key. The outbound `Autocrypt:` header remains present on every message.
 
 Use **Send Autocrypt request** in the GUI to trigger the hello again. **Reset contact** removes the learned key and returns the bridge to `idle`.
@@ -81,18 +82,36 @@ All outbound replies replace any stale marker with the session actually used, so
 Re: Build the parser [session:ses_de802e102]
 ```
 
-Send these commands from the pinned contact (they are gated and encrypted like any other prompt):
+Send these commands from the pinned contact. They are IRC-style leading `!` lines, are encrypted like any other prompt, and `!help` returns the live list with the current gate state.
 
-| Command | Meaning |
-|---|---|
-| `!sessions` | List open projects and sessions with their ids; aliases: `!list`, `!projects` |
-| `!use <session-id>` | Continue this email thread in another session; remaining text on the same line becomes the prompt. Alias: `!session` |
-| `!new <title> in <project-directory>` | Create a session in a listed project and use it for this thread. Alias: `!create` |
-| `!default` | Return this thread to the email-bound default session. Alias: `!reset` |
-| `!status` | Show the bound session and current bridge state |
-| `!help` | Show the command list |
+| Command | Meaning | Gate |
+|---|---|---|
+| `!sessions` | List open projects and sessions with their ids; aliases: `!list`, `!projects` | always |
+| `!use <session-id> [question]` | Continue this email thread in another session; remaining text becomes the prompt. Alias: `!session` | always |
+| `!new <title> in <project-directory>` | Create a session in a listed project and use it for this thread. Alias: `!create` | always |
+| `!default` | Return this thread to the email-bound default session. Alias: `!reset` | always |
+| `!status` | Show the bound session, encryption state, and remote-control gates | always |
+| `!help` | Show the full command list and gate state; aliases: `!commands`, `!shortcuts` | always |
+| `!approve <code> once\|always` | Answer a stalled OpenCode permission request. Alias: `!decide` | permission decisions |
+| `!deny <code> [reason]` | Reject a permission request, with optional feedback. Alias: `!reject` | permission decisions |
+| `!answer <code> <choice>[,choice][;choice…]` | Answer a native multiple-choice question form | questions |
+| `!peek [session-id] [count]` | Read recent assistant output from a session | session output |
+| `!tail [lines]` | Read the session terminal tail | terminal tail |
+| `!send <project-file>` | Attach a file from the session project directory | file sending |
+| `!watch [session-id]` | Email completion, failure, idle and decision notices for a session | watch |
+| `!unwatch` | Stop notices for this contact | watch |
 
 Session switches affect the email thread, not the global default. Use **Settings → Autocrypt Bridge → Sessions** to bind the default session, create a session in a listed project, or set a startup default. The agent also gets an `autocrypt_sessions` tool so it can answer questions about open projects live.
+
+## Stalled decisions and multiple-choice questions
+
+When OpenCode asks for a permission decision, the bridge emails the pinned contact a short `D-…` code, the action, the resources, and a risk label. Reply with `!approve` or `!deny`. The bridge calls `ctx.permission.reply`, so the desktop session continues instead of waiting forever.
+
+Shell-like actions and access outside the session's project directory are **HIGH RISK**. They are shown in the email but refused from the phone unless **High-risk decisions by email** is explicitly enabled in the GUI. There is no `!exec`, `!sh`, or other arbitrary remote-command path.
+
+OpenCode's native question tool appears as a `form.created` event with `metadata.kind === "question"`. The bridge converts its fields into a numbered menu and emails it with another short code. Reply `!answer CODE 1` (or `1;2,3` for several questions, commas for multi-select). The server plugin cannot complete a native form itself: it emits an encrypted `questionAnswer` RPC event, and the OpenCode Desktop GUI forwards the answer through its main-process IPC to `session.form.reply`. The desktop must be running for the form to be completed. A confirmation or retry notice follows on the same email thread.
+
+If a session is busy, the next prompt is queued with OpenCode's `delivery: "queue"` and the phone gets a short acknowledgement. `!watch` subscribes the thread to completion, failure, idle and decision notices so queued work can be followed without polling.
 
 ### Invite URL prefill (optional)
 
@@ -117,6 +136,7 @@ The GUI button **Fill fingerprint and contact** reads only the public fields (le
 - TLS verification and IMAP poll interval;
 - live status via RPC events: configured/unconfigured state, learned fingerprint, established state, fingerprint verification, bound session, last error;
 - **Sessions**: list open projects/sessions, bind the email default, create a session in a listed project, optional startup default;
+- **Remote controls**: independent gates for permission decisions, high-risk email approval, questions, session output, terminal tail, project file sending, and watch subscriptions;
 - **Send Autocrypt request**, **Rescan inbox**, **Reset contact**, and **Save & restart**.
 
 Saved passwords and private keys are hidden; leaving a password field blank keeps the saved value.
@@ -153,11 +173,18 @@ All fields can be set in the GUI, in the `options` object, or with environment v
 | Key passphrase / `keyPassphrase` | `AC_KEY_PASSPHRASE` | Passphrase for imported key | none |
 | Default session / `defaultSessionID` | `AC_SESSION_ID` | Start with this existing OpenCode session instead of auto-creating one | empty |
 | Default project / `defaultSessionDirectory` | `AC_SESSION_DIRECTORY` | Directory used when auto-creating the email session | plugin location |
+| Permission decisions / `emailDecisions` | `AC_EMAIL_DECISIONS` | Allow `!approve` and `!deny` for low/medium-risk requests | `true` |
+| High-risk email approval / `emailHighRiskDecisions` | `AC_EMAIL_HIGH_RISK_DECISIONS` | DANGER: allow email approval of shell-like actions and out-of-project file access | `false` |
+| Multiple-choice answers / `emailQuestions` | `AC_EMAIL_QUESTIONS` | Allow `!answer` to complete native question forms via Desktop IPC | `true` |
+| Session output / `emailPeek` | `AC_EMAIL_PEEK` | Allow `!peek` | `true` |
+| Terminal tail / `emailTail` | `AC_EMAIL_TAIL` | Allow `!tail` | `true` |
+| Send project files / `emailSendFiles` | `AC_EMAIL_SEND_FILES` | Allow `!send` for files inside the session project | `true` |
+| Watch subscriptions / `emailWatch` | `AC_EMAIL_WATCH` | Allow `!watch` and `!unwatch` notices | `true` |
 
 ## Messages and attachments
 
 - **Inbound:** supported attachments (`jpg`, `png`, `gif`, `webp`, `html`, `txt`, `md`, `pdf`) are decoded from the possibly encrypted MIME part, written under `AC_ATTACHMENT_DIR` (default `.opencode/autocrypt-attachments`), and passed to `ctx.session.prompt` as file attachments. Oversized or unsupported files are skipped with a log line.
-- **Outbound:** the agent can call `autocrypt_send_file({ path, text })` to attach a file from the current project to that session's reply. Paths outside the project are refused.
+- **Outbound:** the agent can call `autocrypt_send_file({ path, text })` to attach a file from the current project to that session's reply. Paths outside the project are refused. The pinned contact can request the same with `!send <project-file>` when file sending is enabled.
 - Each pinned contact gets one default OpenCode session; subjects, threading headers and `!use`/`!new` can route any thread to any open session. Inbound Message-IDs dedupe prompts.
 
 ## Development
@@ -175,4 +202,6 @@ The IMAP/SMTP checkpoint logic is ported from `opencode-email-sync` (MIT); see [
 - This is Autocrypt Level 1: opportunistic encryption gated by a pinned fingerprint, not a verified-chat protocol.
 - OpenPGP/MIME exposes `To`, `Subject`, and `Date` on the outside; there is no header protection.
 - No invite handshake protocol, group chats, reactions, or read receipts.
+- Native multiple-choice answers require OpenCode Desktop: the server plugin emits the answer event and the GUI performs `session.form.reply`.
+- High-risk email approval is an explicit opt-in. It can approve shell-like permission prompts, so leave it off unless the phone is a trusted control surface.
 - Do not run the bot account simultaneously in another mail client, otherwise IMAP checkpoints can race.

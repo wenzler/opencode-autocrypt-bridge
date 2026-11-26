@@ -129,6 +129,17 @@ export function loadConfig(options = {}, env = process.env) {
       defaultID: String(get('defaultSessionID', 'AC_SESSION_ID', '')).trim(),
       defaultDirectory: String(get('defaultSessionDirectory', 'AC_SESSION_DIRECTORY', '')).trim(),
     },
+    // Email remote controls. High-risk approvals stay off by default: the
+    // bridge must never become a remote shell.
+    remote: {
+      decisions: boolean(get('emailDecisions', 'AC_EMAIL_DECISIONS'), true),
+      highRiskDecisions: boolean(get('emailHighRiskDecisions', 'AC_EMAIL_HIGH_RISK_DECISIONS'), false),
+      questions: boolean(get('emailQuestions', 'AC_EMAIL_QUESTIONS'), true),
+      peek: boolean(get('emailPeek', 'AC_EMAIL_PEEK'), true),
+      tail: boolean(get('emailTail', 'AC_EMAIL_TAIL'), true),
+      sendFiles: boolean(get('emailSendFiles', 'AC_EMAIL_SEND_FILES'), true),
+      watch: boolean(get('emailWatch', 'AC_EMAIL_WATCH'), true),
+    },
     maxMessageBytes: integer(get('maxMessageBytes', 'AC_MAX_MESSAGE_BYTES'), 20 * 1024 * 1024),
     maxAttachmentBytes: integer(get('maxAttachmentBytes', 'AC_MAX_ATTACHMENT_BYTES'), 10 * 1024 * 1024),
     attachmentDir: path.resolve(String(get('attachmentDir', 'AC_ATTACHMENT_DIR', path.join('.opencode', 'autocrypt-attachments')))),

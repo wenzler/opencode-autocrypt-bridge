@@ -36,6 +36,8 @@ test('normalizeMessageId strips angle brackets', () => {
 test('session commands are parsed without consuming ordinary prompts', () => {
   assert.deepEqual(parseSessionCommand('!sessions'), { command: 'sessions', argument: '', rest: '' })
   assert.deepEqual(parseSessionCommand('!list'), { command: 'sessions', argument: '', rest: '' })
+  assert.deepEqual(parseSessionCommand('!commands'), { command: 'help', argument: '', rest: '' })
+  assert.deepEqual(parseSessionCommand('!shortcuts'), { command: 'help', argument: '', rest: '' })
   assert.deepEqual(parseSessionCommand('!use ses_main check the build'), {
     command: 'use',
     argument: 'ses_main',
