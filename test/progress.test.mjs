@@ -207,6 +207,47 @@ test('progressive mail is throttled, final mail sends only the remainder and att
   assert.match((await decrypted(h.sent, 1, bot)).toString('utf8'), /name="mockup\.html"/)
 })
 
+test('final mail includes deltas received after the throttled progress mail', async () => {
+  const bot = await keyPair('bot@example.org')
+  const contact = await keyPair('contact@example.net')
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-ac-progress-'))
+
+  const h = harness(contact.fingerprint, root)
+  const bridge = await createBridge(h.ctx, h.cfg, {
+    identity: bot, sender: h.sender, log: () => {},
+  })
+
+  const pending = bridge.process(contactMail(contact))
+  await waitFor(h.waitCalled)
+  h.setMessages([
+    { id: 'user-message', type: 'user', content: [{ type: 'text', text: 'go' }] },
+    { id: 'assistant-1', type: 'assistant', content: [{ type: 'text', text: 'Working done and more' }] },
+  ])
+
+  await bridge.processEvent({
+    type: 'session.text.delta',
+    data: { sessionID: h.session.id, assistantMessageID: 'assistant-1', delta: 'Working ' },
+  })
+  // The rest of the answer streams in inside the throttle window, so it does
+  // not get its own progress mail but must still appear in the final mail.
+  h.cfg.remote.progressIntervalMs = 60_000
+  await bridge.processEvent({
+    type: 'session.text.delta',
+    data: { sessionID: h.session.id, assistantMessageID: 'assistant-1', delta: 'done and more' },
+  })
+  h.release()
+  await pending
+
+  assert.equal(h.sent.length, 2)
+  const progressText = await decryptedText(h.sent, 0, bot)
+  const finalText = await decryptedText(h.sent, 1, bot)
+  assert.match(progressText, /Working/)
+  assert.doesNotMatch(progressText, /done and more/)
+  assert.match(finalText, /done and more/)
+  assert.doesNotMatch(finalText, /Completed in session/)
+  assert.doesNotMatch(finalText, /Working/)
+})
+
 test('a fully mailed progress answer still gets one short completion mail', async () => {
   const bot = await keyPair('bot@example.org')
   const contact = await keyPair('contact@example.net')

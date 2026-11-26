@@ -1588,7 +1588,10 @@ export async function createBridge(ctx, cfg, options = {}) {
             .join('\n\n')
             .trim()
           const sentProgress = Boolean(active?.sentLength)
-          const remaining = active ? unreportedRemainder(replies, active.text) : replies
+          // Only the prefix actually mailed may be dropped. Later deltas that
+          // arrived inside the throttle window are still unsent.
+          const mailedText = active ? active.text.slice(0, active.sentLength) : ''
+          const remaining = active ? unreportedRemainder(replies, mailedText) : replies
           const attachments = await attachmentsFromSession(assistantMessages, sessionID)
           const terminalText = remaining || (sentProgress ? `Completed in session ${sessionID}.` : '')
           if (terminalText || attachments.length) {
