@@ -52,7 +52,11 @@ export function parseSessionCommand(text) {
 }
 
 export function normalizeMessageId(value) {
-  return String(value || '').trim().replace(/^<|>$/g, '')
+  return String(value || '')
+    .replace(/[\r\n\x00-\x1f\x7f]/g, '')
+    .trim()
+    .replace(/[<>]/g, '')
+    .slice(0, 512)
 }
 
 /** Resolve a user-supplied session id, title fragment, project id or directory. */

@@ -264,7 +264,12 @@ export function formatQuestionRequest({ code, title, fields = [], sessionID }) {
  * are coerced to their native types.
  */
 export function parseQuestionAnswers(fields = [], text = '') {
-  const raw = String(text || '').trim()
+  const raw = String(text || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
+    .replace(/\n+/g, ' ')
+    .trim()
+    .slice(0, 4_000)
   if (!raw) return { error: 'No answer supplied. Use !answer <code> <choice>.' }
   const groups = raw.split(/[;|]/).map((part) => part.trim()).filter(Boolean)
   const answer = {}

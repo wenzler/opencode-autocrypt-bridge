@@ -99768,7 +99768,7 @@ function formatQuestionRequest({ code, title, fields = [], sessionID }) {
   return lines.join("\n");
 }
 function parseQuestionAnswers(fields = [], text = "") {
-  const raw = String(text || "").trim();
+  const raw = String(text || "").replace(/\r\n?/g, "\n").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "").replace(/\n+/g, " ").trim().slice(0, 4e3);
   if (!raw) return { error: "No answer supplied. Use !answer <code> <choice>." };
   const groups = raw.split(/[;|]/).map((part) => part.trim()).filter(Boolean);
   const answer = {};
@@ -125735,12 +125735,19 @@ function foldKeydata(prefix, publicB64, lineWidth = 76) {
   const chunks = String(publicB64).match(new RegExp(`.{1,${lineWidth}}`, "g")) || [];
   return `${prefix}${chunks.join("\r\n ")}`;
 }
+function safeAddress(value3) {
+  const address = String(value3 ?? "").trim().toLowerCase();
+  if (!/^[^<>\s@]+@[^<>\s@]+$/.test(address)) {
+    throw new Error(`Invalid email address for Autocrypt header: ${JSON.stringify(address)}`);
+  }
+  return address;
+}
 function autocryptHeader(address, publicB64, preferEncryptMutual, lineWidth = 76) {
-  const prefix = `addr=${address}; ${preferEncryptMutual ? "prefer-encrypt=mutual; " : ""}keydata=`;
+  const prefix = `addr=${safeAddress(address)}; ${preferEncryptMutual ? "prefer-encrypt=mutual; " : ""}keydata=`;
   return foldKeydata(prefix, publicB64, lineWidth);
 }
 function autocryptGossipHeader(address, publicB64, lineWidth = 76) {
-  return foldKeydata(`addr=${address}; keydata=`, publicB64, lineWidth);
+  return foldKeydata(`addr=${safeAddress(address)}; keydata=`, publicB64, lineWidth);
 }
 function unfold(value3) {
   return String(value3 || "").replace(/\r?\n[ \t]+/g, "");
@@ -125994,6 +126001,19 @@ function encodeHeader(value3) {
   if (/^[\x20-\x7e]*$/.test(text)) return text;
   return `=?UTF-8?B?${Buffer.from(text, "utf8").toString("base64")}?=`;
 }
+function safeHeaderValue(value3, maxLength = 512) {
+  return String(value3 ?? "").replace(/[\r\n\x00-\x1f\x7f]/g, " ").replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+function safeHeaderLine(value3) {
+  const text = String(value3 ?? "").replace(/[\r\n\x00-\x1f\x7f]/g, " ");
+  const colon = text.indexOf(":");
+  if (colon <= 0 || !/^[!-9;-~]+$/.test(text.slice(0, colon))) return "";
+  return text;
+}
+function headerMessageId(value3) {
+  const id2 = safeHeaderValue(value3, 512).replace(/[<>]/g, "");
+  return id2 ? `<${id2}>` : "";
+}
 function base64Lines(buffer) {
   const encoded = Buffer.from(buffer).toString("base64");
   return (encoded.match(/.{1,76}/g) || []).join(CRLF);
@@ -126003,7 +126023,10 @@ function safeFilename(name) {
   return (base || "attachment").slice(0, 180);
 }
 function contentTypeOf(filename, declared) {
-  if (declared && !/^application\/octet-stream$/i.test(declared)) return declared.split(";")[0].toLowerCase();
+  const candidate = String(declared || "").split(";")[0].trim();
+  if (candidate && !/^application\/octet-stream$/i.test(candidate) && /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/.test(candidate)) {
+    return candidate.toLowerCase();
+  }
   const ext = String(filename).toLowerCase().split(".").pop();
   const types = {
     jpg: "image/jpeg",
@@ -126046,7 +126069,7 @@ function buildInnerMime({ text, attachments = [], headers: extraHeaders = [] }) 
   const body = parts2.map((part) => `--${boundary}${CRLF}${part}${CRLF}`).join("") + `--${boundary}--${CRLF}`;
   const contentType = `multipart/mixed; boundary="${boundary}"`;
   const headers = [
-    ...extraHeaders.filter(Boolean),
+    ...extraHeaders.map(safeHeaderLine).filter(Boolean),
     `MIME-Version: 1.0`,
     `Content-Type: ${contentType}`,
     "",
@@ -126125,23 +126148,26 @@ function buildMail({
   from,
   autocryptAddress
 }) {
-  const name = String(cfg.displayName || "").replace(/"/g, "");
+  const name = safeHeaderValue(cfg.displayName, 120).replace(/"/g, "");
   const fromName = /^[\x20-\x7e]*$/.test(name) ? `"${name}"` : encodeHeader(name);
+  const fromAddress2 = safeHeaderValue(from || `${fromName} <${safeHeaderValue(cfg.address, 320)}>`, 320);
+  const toAddress = safeHeaderValue(to, 320);
+  const replyId = headerMessageId(inReplyTo);
   const headerLines = [
-    `From: ${from || `${fromName} <${cfg.address}>`}`,
-    `To: <${to}>`,
+    `From: ${fromAddress2}`,
+    `To: <${toAddress}>`,
     `Subject: ${encodeHeader(subject)}`,
     `Date: ${(/* @__PURE__ */ new Date()).toUTCString()}`,
-    `Message-ID: <${messageId}>`,
-    ...inReplyTo ? [`In-Reply-To: ${inReplyTo}`, `References: ${inReplyTo}`] : [],
+    `Message-ID: ${headerMessageId(messageId)}`,
+    ...replyId ? [`In-Reply-To: ${replyId}`, `References: ${replyId}`] : [],
     ...publicB64 ? [`Autocrypt: ${autocryptHeader(autocryptAddress || cfg.address, publicB64, cfg.key.preferEncryptMutual)}`] : [],
     // Display-compatibility marker only. It is not a handshake signal and
     // never enables invite-protocol behavior.
     "Chat-Version: 1.0",
     "X-OpenCode-Autocrypt-Bridge: 1",
-    ...headers,
+    ...headers.map(safeHeaderLine).filter(Boolean),
     "MIME-Version: 1.0",
-    `Content-Type: ${contentType}`,
+    `Content-Type: ${safeHeaderValue(contentType)}`,
     "",
     ""
   ].join(CRLF);
@@ -126266,8 +126292,17 @@ function sleep3(ms, signal) {
   });
 }
 function fromAddress(raw) {
-  const match8 = /(?:^|\n)from:[^\n]*?<([^<>\s@]+@[^<>\s>]+)>/i.exec(raw) || /(?:^|\n)from:\s*([^<>\s@]+@[^<>\s>]+)/i.exec(raw);
+  const value3 = parseRawHeaders(raw).get("from");
+  if (!value3) return void 0;
+  const match8 = /<([^<>\s@]+@[^<>\s>]+)>/.exec(value3) || /([^\s<>,;@]+@[^\s<>,;]+)/.exec(value3);
   return match8 ? match8[1].toLowerCase() : void 0;
+}
+function cleanInboundId(value3) {
+  const id2 = safeHeaderValue(value3, 512).replace(/[<>]/g, "");
+  return id2 ? `<${id2}>` : "";
+}
+function safeDisplayName(value3) {
+  return safeHeaderValue(value3, 120);
 }
 function imapOptions(cfg, password) {
   const imap = cfg.imap;
@@ -126506,8 +126541,24 @@ async function saveAttachments(cfg, parsed, messageId, log2) {
       log2(`Skipping oversized attachment ${filename} (${size6} bytes)`);
       continue;
     }
-    const target = import_node_path2.default.join(cfg.attachmentDir, `${hash2}-${filename}`);
-    await (0, import_promises.writeFile)(target, attachment.content);
+    const base = `${hash2}-${filename}`;
+    let target;
+    let handle;
+    for (let attempt2 = 0; ; attempt2 += 1) {
+      const candidate = import_node_path2.default.join(cfg.attachmentDir, attempt2 ? `${base}-${attempt2 + 1}` : base);
+      try {
+        handle = await (0, import_promises.open)(candidate, "wx", 384);
+        target = candidate;
+        break;
+      } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+      }
+    }
+    try {
+      await handle.writeFile(attachment.content);
+    } finally {
+      await handle.close();
+    }
     saved.push({
       filename,
       contentType,
@@ -126551,7 +126602,7 @@ function secureJoinFrom(outerHeaders, innerHeaders) {
 async function parseIncoming(raw, cfg, identity2, log2, pinned = cfg.pinned || {}, knownKeyB64 = "") {
   const rawHeaders = parseRawHeaders(raw);
   const encrypted = isEncrypted(rawHeaders);
-  const sender = fromAddress(raw.toString("latin1"));
+  const sender = fromAddress(raw);
   if (pinned.contact && sender && sender !== pinned.contact) {
     throw new Error(`message from ${sender} does not match pinned contact ${pinned.contact}`);
   }
@@ -126593,7 +126644,10 @@ async function parseIncoming(raw, cfg, identity2, log2, pinned = cfg.pinned || {
   const autocrypt = outerAutocrypt || innerAutocrypt;
   const from = parsed.from?.value?.[0]?.address?.toLowerCase() || sender;
   const autocryptKey = autocrypt?.keydata || "";
-  if (pinned.contact && from && from !== pinned.contact) {
+  if (!from) {
+    throw new Error("message has no From header");
+  }
+  if (pinned.contact && from !== pinned.contact) {
     throw new Error(`message from ${from} does not match pinned contact ${pinned.contact}`);
   }
   if (pinned.fingerprint) {
@@ -126621,7 +126675,8 @@ async function parseIncoming(raw, cfg, identity2, log2, pinned = cfg.pinned || {
       throw new Error("encrypted message is not signed by the pinned contact key");
     }
   }
-  const messageId = parsed.messageId || rawHeaders.get("message-id") || `<${(0, import_node_crypto4.createHash)("sha256").update(raw).digest("hex")}@local>`;
+  const messageId = cleanInboundId(parsed.messageId || rawHeaders.get("message-id")) || `<${(0, import_node_crypto4.createHash)("sha256").update(raw).digest("hex")}@local>`;
+  const references = (Array.isArray(parsed.references) ? parsed.references : String(parsed.references || "").split(/\s+/)).map(cleanInboundId).filter(Boolean);
   const attachments = await saveAttachments(cfg, parsed, messageId, log2);
   const secureJoin = secureJoinFrom(rawHeaders, innerHeaders);
   const gossip = [
@@ -126630,10 +126685,10 @@ async function parseIncoming(raw, cfg, identity2, log2, pinned = cfg.pinned || {
   ];
   return {
     from,
-    fromName: parsed.from?.value?.[0]?.name || "",
+    fromName: safeDisplayName(parsed.from?.value?.[0]?.name),
     messageId,
-    inReplyTo: parsed.inReplyTo || rawHeaders.get("in-reply-to"),
-    references: parsed.references || [],
+    inReplyTo: cleanInboundId(parsed.inReplyTo || rawHeaders.get("in-reply-to")),
+    references,
     subject: parsed.subject || "",
     text: parsed.text || "",
     html: typeof parsed.html === "string" ? parsed.html : "",
@@ -126691,7 +126746,7 @@ function parseSessionCommand(text) {
   return { command, argument: selector || "", rest: rest.join(" ").trim() };
 }
 function normalizeMessageId(value3) {
-  return String(value3 || "").trim().replace(/^<|>$/g, "");
+  return String(value3 || "").replace(/[\r\n\x00-\x1f\x7f]/g, "").trim().replace(/[<>]/g, "").slice(0, 512);
 }
 function resolveSessionRef(sessions, ref) {
   const needle = String(ref || "").trim().toLowerCase();
@@ -126771,6 +126826,20 @@ function formatSessionDirectory(catalog, boundSessionID = "", emailDisabled = fa
 
 // src/bridge.js
 var hashId = (value3) => `msg_ac_${(0, import_node_crypto5.createHash)("sha256").update(String(value3)).digest("hex").slice(0, 32)}`;
+async function safeProjectPath(root, candidate) {
+  const target = import_node_path3.default.resolve(candidate);
+  if (!root || target !== root && !target.startsWith(`${root}${import_node_path3.default.sep}`)) return "";
+  try {
+    const [realRoot, realTarget] = await Promise.all([(0, import_promises2.realpath)(root), (0, import_promises2.realpath)(target)]);
+    if (realTarget !== realRoot && !realTarget.startsWith(`${realRoot}${import_node_path3.default.sep}`)) return "";
+  } catch {
+    return "";
+  }
+  return target;
+}
+function cleanRemoteNote(value3, maxLength = 2e3) {
+  return String(value3 || "").replace(/\r\n?/g, "\n").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "").replace(/\n+/g, " ").trim().slice(0, maxLength);
+}
 var STATE_KEY = "autocrypt.state";
 var BRIDGE_WATCH_EVENTS = [
   "permission.asked",
@@ -127568,8 +127637,8 @@ ${chunk}`
     const to = contactForSession(sessionID);
     if (!to) return { content: "This session is not linked to an Autocrypt contact" };
     const root = await sessionRoot(sessionID);
-    const target = import_node_path3.default.resolve(root, String(filePath));
-    if (target !== root && !target.startsWith(`${root}${import_node_path3.default.sep}`)) {
+    const target = await safeProjectPath(root, import_node_path3.default.resolve(root, String(filePath)));
+    if (!target) {
       return { content: "Refusing to send a file outside the project directory" };
     }
     const content = await (0, import_promises2.readFile)(target);
@@ -127598,8 +127667,8 @@ ${chunk}`
           candidate = String(part.url).startsWith("file://") ? (0, import_node_url2.fileURLToPath)(part.url) : String(part.url);
         }
         if (!candidate || !import_node_path3.default.isAbsolute(candidate)) continue;
-        const target = import_node_path3.default.resolve(candidate);
-        if (target !== root && !target.startsWith(`${root}${import_node_path3.default.sep}`)) continue;
+        const target = await safeProjectPath(root, candidate);
+        if (!target) continue;
         const filename = safeFilename(part.filename || import_node_path3.default.basename(target));
         const contentType = contentTypeOf(filename, part.mime);
         if (!ALLOWED_ATTACHMENT_TYPES.has(contentType)) continue;
@@ -127980,7 +128049,7 @@ ${chunk}`
     }
     const wantsAlways = /\balways\b/i.test(command.rest);
     const decision = command.command === "deny" ? "reject" : wantsAlways && pending.options.includes("always") ? "always" : "once";
-    const note = decision === "reject" ? command.rest.trim() : "";
+    const note = decision === "reject" ? cleanRemoteNote(command.rest) : "";
     try {
       await ctx.permission.reply({
         sessionID: pending.sessionID,
@@ -128909,7 +128978,7 @@ var BridgeRpc = rpc_exports.define({
 });
 
 // src/index.js
-var PLUGIN_VERSION = "0.5.24";
+var PLUGIN_VERSION = "0.5.25";
 var SETTING_KEYS = [
   "address",
   "displayName",

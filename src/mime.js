@@ -9,6 +9,29 @@ export function encodeHeader(value) {
   return `=?UTF-8?B?${Buffer.from(text, 'utf8').toString('base64')}?=`
 }
 
+/** Flatten a value so it can never introduce a new RFC 5322 header line. */
+export function safeHeaderValue(value, maxLength = 512) {
+  return String(value ?? '')
+    .replace(/[\r\n\x00-\x1f\x7f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLength)
+}
+
+/** Validate an extra header line; return '' for anything malformed. */
+export function safeHeaderLine(value) {
+  const text = String(value ?? '').replace(/[\r\n\x00-\x1f\x7f]/g, ' ')
+  const colon = text.indexOf(':')
+  if (colon <= 0 || !/^[!-9;-~]+$/.test(text.slice(0, colon))) return ''
+  return text
+}
+
+/** Normalize a Message-ID for use inside angle brackets in a header. */
+export function headerMessageId(value) {
+  const id = safeHeaderValue(value, 512).replace(/[<>]/g, '')
+  return id ? `<${id}>` : ''
+}
+
 function base64Lines(buffer) {
   const encoded = Buffer.from(buffer).toString('base64')
   return (encoded.match(/.{1,76}/g) || []).join(CRLF)
@@ -24,7 +47,11 @@ export function safeFilename(name) {
 }
 
 export function contentTypeOf(filename, declared) {
-  if (declared && !/^application\/octet-stream$/i.test(declared)) return declared.split(';')[0].toLowerCase()
+  const candidate = String(declared || '').split(';')[0].trim()
+  if (candidate && !/^application\/octet-stream$/i.test(candidate)
+      && /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/.test(candidate)) {
+    return candidate.toLowerCase()
+  }
   const ext = String(filename).toLowerCase().split('.').pop()
   const types = {
     jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp',
@@ -65,7 +92,7 @@ export function buildInnerMime({ text, attachments = [], headers: extraHeaders =
   const body = parts.map((part) => `--${boundary}${CRLF}${part}${CRLF}`).join('') + `--${boundary}--${CRLF}`
   const contentType = `multipart/mixed; boundary="${boundary}"`
   const headers = [
-    ...extraHeaders.filter(Boolean),
+    ...extraHeaders.map(safeHeaderLine).filter(Boolean),
     `MIME-Version: 1.0`,
     `Content-Type: ${contentType}`,
     '',
@@ -153,15 +180,18 @@ export function buildMail({
   from,
   autocryptAddress,
 }) {
-  const name = String(cfg.displayName || '').replace(/"/g, '')
+  const name = safeHeaderValue(cfg.displayName, 120).replace(/"/g, '')
   const fromName = /^[\x20-\x7e]*$/.test(name) ? `"${name}"` : encodeHeader(name)
+  const fromAddress = safeHeaderValue(from || `${fromName} <${safeHeaderValue(cfg.address, 320)}>`, 320)
+  const toAddress = safeHeaderValue(to, 320)
+  const replyId = headerMessageId(inReplyTo)
   const headerLines = [
-    `From: ${from || `${fromName} <${cfg.address}>`}`,
-    `To: <${to}>`,
+    `From: ${fromAddress}`,
+    `To: <${toAddress}>`,
     `Subject: ${encodeHeader(subject)}`,
     `Date: ${new Date().toUTCString()}`,
-    `Message-ID: <${messageId}>`,
-    ...(inReplyTo ? [`In-Reply-To: ${inReplyTo}`, `References: ${inReplyTo}`] : []),
+    `Message-ID: ${headerMessageId(messageId)}`,
+    ...(replyId ? [`In-Reply-To: ${replyId}`, `References: ${replyId}`] : []),
     ...(publicB64
       ? [`Autocrypt: ${autocryptHeader(autocryptAddress || cfg.address, publicB64, cfg.key.preferEncryptMutual)}`]
       : []),
@@ -169,9 +199,9 @@ export function buildMail({
     // never enables invite-protocol behavior.
     'Chat-Version: 1.0',
     'X-OpenCode-Autocrypt-Bridge: 1',
-    ...headers,
+    ...headers.map(safeHeaderLine).filter(Boolean),
     'MIME-Version: 1.0',
-    `Content-Type: ${contentType}`,
+    `Content-Type: ${safeHeaderValue(contentType)}`,
     '',
     '',
   ].join(CRLF)

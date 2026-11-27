@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, open } from 'node:fs/promises'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { isIP } from 'node:net'
@@ -8,7 +8,7 @@ import { simpleParser } from 'mailparser'
 import nodemailer from 'nodemailer'
 import { decryptMessage, keyFingerprint } from './crypto.js'
 import { parseAutocryptHeader } from './headers.js'
-import { extractArmored, headerValues, isEncrypted, parseDispositionNotification, parseRawHeaders, safeFilename } from './mime.js'
+import { extractArmored, headerValues, isEncrypted, parseDispositionNotification, parseRawHeaders, safeFilename, safeHeaderValue } from './mime.js'
 
 export const ALLOWED_ATTACHMENT_TYPES = new Set([
   'image/jpeg', 'image/png', 'image/gif', 'image/webp',
@@ -24,9 +24,22 @@ export function sleep(ms, signal) {
   })
 }
 
+/** Read the sender from the header block only; never from message body text. */
 export function fromAddress(raw) {
-  const match = /(?:^|\n)from:[^\n]*?<([^<>\s@]+@[^<>\s>]+)>/i.exec(raw) || /(?:^|\n)from:\s*([^<>\s@]+@[^<>\s>]+)/i.exec(raw)
+  const value = parseRawHeaders(raw).get('from')
+  if (!value) return undefined
+  const match = /<([^<>\s@]+@[^<>\s>]+)>/.exec(value) || /([^\s<>,;@]+@[^\s<>,;]+)/.exec(value)
   return match ? match[1].toLowerCase() : undefined
+}
+
+/** Flatten IDs and display names that came from RFC 2047-decoded headers. */
+function cleanInboundId(value) {
+  const id = safeHeaderValue(value, 512).replace(/[<>]/g, '')
+  return id ? `<${id}>` : ''
+}
+
+function safeDisplayName(value) {
+  return safeHeaderValue(value, 120)
 }
 
 /** Adapted from opencode-email-sync src/mail/imap.ts (MIT). */
@@ -276,8 +289,26 @@ async function saveAttachments(cfg, parsed, messageId, log) {
       log(`Skipping oversized attachment ${filename} (${size} bytes)`)
       continue
     }
-    const target = path.join(cfg.attachmentDir, `${hash}-${filename}`)
-    await writeFile(target, attachment.content)
+    const base = `${hash}-${filename}`
+    let target
+    let handle
+    for (let attempt = 0; ; attempt += 1) {
+      const candidate = path.join(cfg.attachmentDir, attempt ? `${base}-${attempt + 1}` : base)
+      try {
+        // O_EXCL refuses existing files and symlinks, so an attacker cannot
+        // redirect the write through a pre-placed link in attachmentDir.
+        handle = await open(candidate, 'wx', 0o600)
+        target = candidate
+        break
+      } catch (error) {
+        if (error.code !== 'EEXIST') throw error
+      }
+    }
+    try {
+      await handle.writeFile(attachment.content)
+    } finally {
+      await handle.close()
+    }
     saved.push({
       filename,
       contentType,
@@ -328,7 +359,7 @@ export function secureJoinFrom(outerHeaders, innerHeaders) {
 export async function parseIncoming(raw, cfg, identity, log, pinned = cfg.pinned || {}, knownKeyB64 = '') {
   const rawHeaders = parseRawHeaders(raw)
   const encrypted = isEncrypted(rawHeaders)
-  const sender = fromAddress(raw.toString('latin1'))
+  const sender = fromAddress(raw)
   if (pinned.contact && sender && sender !== pinned.contact) {
     throw new Error(`message from ${sender} does not match pinned contact ${pinned.contact}`)
   }
@@ -381,7 +412,10 @@ export async function parseIncoming(raw, cfg, identity, log, pinned = cfg.pinned
   const from = parsed.from?.value?.[0]?.address?.toLowerCase() || sender
   const autocryptKey = autocrypt?.keydata || ''
 
-  if (pinned.contact && from && from !== pinned.contact) {
+  if (!from) {
+    throw new Error('message has no From header')
+  }
+  if (pinned.contact && from !== pinned.contact) {
     throw new Error(`message from ${from} does not match pinned contact ${pinned.contact}`)
   }
 
@@ -411,7 +445,11 @@ export async function parseIncoming(raw, cfg, identity, log, pinned = cfg.pinned
     }
   }
 
-  const messageId = parsed.messageId || rawHeaders.get('message-id') || `<${createHash('sha256').update(raw).digest('hex')}@local>`
+  const messageId = cleanInboundId(parsed.messageId || rawHeaders.get('message-id'))
+    || `<${createHash('sha256').update(raw).digest('hex')}@local>`
+  const references = (Array.isArray(parsed.references) ? parsed.references : String(parsed.references || '').split(/\s+/))
+    .map(cleanInboundId)
+    .filter(Boolean)
   const attachments = await saveAttachments(cfg, parsed, messageId, log)
   const secureJoin = secureJoinFrom(rawHeaders, innerHeaders)
   const gossip = [
@@ -420,10 +458,10 @@ export async function parseIncoming(raw, cfg, identity, log, pinned = cfg.pinned
   ]
   return {
     from,
-    fromName: parsed.from?.value?.[0]?.name || '',
+    fromName: safeDisplayName(parsed.from?.value?.[0]?.name),
     messageId,
-    inReplyTo: parsed.inReplyTo || rawHeaders.get('in-reply-to'),
-    references: parsed.references || [],
+    inReplyTo: cleanInboundId(parsed.inReplyTo || rawHeaders.get('in-reply-to')),
+    references,
     subject: parsed.subject || '',
     text: parsed.text || '',
     html: typeof parsed.html === 'string' ? parsed.html : '',

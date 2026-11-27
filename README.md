@@ -242,7 +242,8 @@ The IMAP/SMTP checkpoint logic is ported from `opencode-email-sync` (MIT); see [
 ## Limitations
 
 - The GUI plugin API is experimental and tied to the pinned `@opencode/plugin` version.
-- In Autocrypt mode this is Autocrypt Level 1: opportunistic encryption gated by a pinned fingerprint, not a verified-chat protocol. SecureJoin mode performs a verified handshake for the pinned contact.
+- In Autocrypt mode this is Autocrypt Level 1: opportunistic encryption gated by a pinned fingerprint, not a verified-chat protocol. A plaintext Autocrypt message cannot authenticate the `From:` address, so use `AC_REQUIRE_ENCRYPTED=true` or SecureJoin mode if that matters. SecureJoin mode performs a verified handshake for the pinned contact and rejects plaintext afterwards.
+- Inbound header values are flattened before they reach outbound headers, prompts or the filesystem; attachments are written with exclusive-create so pre-placed symlinks cannot redirect writes.
 - OpenPGP/MIME exposes `To`, `Subject`, and `Date` on the outside; there is no header protection.
 - No group chats or reactions. Encrypted read receipts are supported.
 - Native multiple-choice answers require OpenCode Desktop: the server plugin emits the answer event and the GUI performs `session.form.reply`.

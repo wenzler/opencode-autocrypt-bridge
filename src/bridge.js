@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -50,6 +50,29 @@ import {
 } from './session.js'
 
 const hashId = (value) => `msg_ac_${createHash('sha256').update(String(value)).digest('hex').slice(0, 32)}`
+
+/** Resolve a project path lexically and through symlinks before reading it. */
+async function safeProjectPath(root, candidate) {
+  const target = path.resolve(candidate)
+  if (!root || (target !== root && !target.startsWith(`${root}${path.sep}`))) return ''
+  try {
+    const [realRoot, realTarget] = await Promise.all([realpath(root), realpath(target)])
+    if (realTarget !== realRoot && !realTarget.startsWith(`${realRoot}${path.sep}`)) return ''
+  } catch {
+    return ''
+  }
+  return target
+}
+
+/** Normalize remote-supplied notes so they cannot forge metadata lines. */
+function cleanRemoteNote(value, maxLength = 2_000) {
+  return String(value || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
+    .replace(/\n+/g, ' ')
+    .trim()
+    .slice(0, maxLength)
+}
 
 const STATE_KEY = 'autocrypt.state'
 
@@ -916,8 +939,8 @@ export async function createBridge(ctx, cfg, options = {}) {
     const to = contactForSession(sessionID)
     if (!to) return { content: 'This session is not linked to an Autocrypt contact' }
     const root = await sessionRoot(sessionID)
-    const target = path.resolve(root, String(filePath))
-    if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
+    const target = await safeProjectPath(root, path.resolve(root, String(filePath)))
+    if (!target) {
       return { content: 'Refusing to send a file outside the project directory' }
     }
     const content = await readFile(target)
@@ -952,8 +975,8 @@ export async function createBridge(ctx, cfg, options = {}) {
           candidate = String(part.url).startsWith('file://') ? fileURLToPath(part.url) : String(part.url)
         }
         if (!candidate || !path.isAbsolute(candidate)) continue
-        const target = path.resolve(candidate)
-        if (target !== root && !target.startsWith(`${root}${path.sep}`)) continue
+        const target = await safeProjectPath(root, candidate)
+        if (!target) continue
         const filename = safeFilename(part.filename || path.basename(target))
         const contentType = contentTypeOf(filename, part.mime)
         if (!ALLOWED_ATTACHMENT_TYPES.has(contentType)) continue
@@ -1362,7 +1385,7 @@ export async function createBridge(ctx, cfg, options = {}) {
     const decision = command.command === 'deny'
       ? 'reject'
       : (wantsAlways && pending.options.includes('always') ? 'always' : 'once')
-    const note = decision === 'reject' ? command.rest.trim() : ''
+    const note = decision === 'reject' ? cleanRemoteNote(command.rest) : ''
     try {
       await ctx.permission.reply({
         sessionID: pending.sessionID,

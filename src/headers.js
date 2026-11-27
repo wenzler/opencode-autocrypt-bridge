@@ -3,15 +3,24 @@ function foldKeydata(prefix, publicB64, lineWidth = 76) {
   return `${prefix}${chunks.join('\r\n ')}`
 }
 
+/** Accept only a single, plain addr-spec for header construction. */
+export function safeAddress(value) {
+  const address = String(value ?? '').trim().toLowerCase()
+  if (!/^[^<>\s@]+@[^<>\s@]+$/.test(address)) {
+    throw new Error(`Invalid email address for Autocrypt header: ${JSON.stringify(address)}`)
+  }
+  return address
+}
+
 /** Build an Autocrypt header value. keydata must be the last attribute. */
 export function autocryptHeader(address, publicB64, preferEncryptMutual, lineWidth = 76) {
-  const prefix = `addr=${address}; ${preferEncryptMutual ? 'prefer-encrypt=mutual; ' : ''}keydata=`
+  const prefix = `addr=${safeAddress(address)}; ${preferEncryptMutual ? 'prefer-encrypt=mutual; ' : ''}keydata=`
   return foldKeydata(prefix, publicB64, lineWidth)
 }
 
 /** Build an Autocrypt-Gossip header value (no prefer-encrypt attribute). */
 export function autocryptGossipHeader(address, publicB64, lineWidth = 76) {
-  return foldKeydata(`addr=${address}; keydata=`, publicB64, lineWidth)
+  return foldKeydata(`addr=${safeAddress(address)}; keydata=`, publicB64, lineWidth)
 }
 
 /** Unfold a header value that was continued on lines starting with whitespace. */
