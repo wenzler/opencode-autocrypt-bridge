@@ -370,6 +370,43 @@ test('watch subscriptions email completion notices and !peek reads session conte
   assert.ok(texts.some((text) => text.includes('The report is ready')))
 })
 
+test('binding to None disables email prompts until a session is selected again', async () => {
+  const contact = await keyPair('contact@example.net')
+  const h = harness(await keyFingerprint(contact.publicB64))
+  const bridge = await createBridge(h.ctx, h.cfg, { sender: h.sender, log: () => {} })
+
+  const disabled = await bridge.bindSession('none')
+  assert.equal(disabled.sessionID, '')
+  assert.equal(disabled.emailDisabled, true)
+  assert.equal((await bridge.listSessions()).emailDisabled, true)
+
+  await bridge.process(contactMail(contact, {
+    messageId: '<disabled@example.net>',
+    text: 'this prompt must be ignored',
+  }))
+  assert.equal(h.prompts.length, 0)
+  const disabledTexts = await sentTexts(h.sent, bridge.getIdentity())
+  assert.ok(disabledTexts.some((text) => /disabled/i.test(text)))
+
+  await bridge.bindSession('session-1')
+  await bridge.process(contactMail(contact, {
+    messageId: '<enabled@example.net>',
+    text: 'this prompt is accepted',
+  }))
+  assert.equal(h.prompts.length, 1)
+
+  await bridge.process(contactReply(contact, {
+    messageId: '<use-none@example.net>',
+    text: '!use none',
+  }))
+  assert.equal((await bridge.getStatus()).emailDisabled, true)
+  await bridge.process(contactMail(contact, {
+    messageId: '<disabled-again@example.net>',
+    text: 'ignored again',
+  }))
+  assert.equal(h.prompts.length, 1)
+})
+
 test('the encrypted welcome mail is sent once after establishment', async () => {
   const contact = await keyPair('contact@example.net')
   const h = harness(await keyFingerprint(contact.publicB64), {}, {

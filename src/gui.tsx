@@ -2,6 +2,7 @@ import { createSignal, onCleanup, onMount } from "solid-js"
 import { Command, Plugin, SettingsPage, Slot } from "@opencode/plugin/gui"
 import { QuestionBridge } from "./question-ipc"
 import { BridgeRpc } from "./rpc.js"
+import { setupMarkdown, setupReadiness } from "./setup.js"
 
 export default Plugin.define({
   setup(ctx) {
@@ -14,6 +15,23 @@ export default Plugin.define({
         ctx.toast.show({
           title: "Email bridge session switched",
           description: `A new email thread announces session ${sessionID}.`,
+          variant: "success",
+        })
+      } catch (error) {
+        ctx.toast.show({
+          title: "Email bridge binding failed",
+          description: error?.message || String(error),
+          variant: "error",
+        })
+      }
+    }
+
+    const disableEmailBridge = async () => {
+      try {
+        await rpc().bindSession({ sessionID: "none" })
+        ctx.toast.show({
+          title: "Email bridge disabled",
+          description: "No session is bound. Bind one here or reply !use <session> by email.",
           variant: "success",
         })
       } catch (error) {
@@ -55,6 +73,15 @@ export default Plugin.define({
       ),
     })
 
+    ctx.add(Command, {
+      id: "disable-email-bridge",
+      title: "Disable email bridge",
+      description: "Unbind the email session so incoming prompts are ignored until !use or a new binding.",
+      keywords: "autocrypt email bridge disable off none session",
+      section: "session",
+      run: () => void disableEmailBridge(),
+    })
+
     // Email answers arrive as an RPC event. This window forwards them to the
     // main process, which is the only place with session.form.reply().
     // Duplicate event deliveries must not produce a second form.reply; the
@@ -86,6 +113,7 @@ export default Plugin.define({
       const [message, setMessage] = createSignal("")
       const [sessions, setSessions] = createSignal(null)
       const [sessionID, setSessionID] = createSignal("")
+      const [mailTest, setMailTest] = createSignal(null)
 
       const reload = async () => {
         try {
@@ -97,7 +125,7 @@ export default Plugin.define({
           setSettings(nextSettings)
           setStatus(nextStatus)
           setSessions(nextSessions)
-          if (!sessionID()) setSessionID(nextSessions.boundSessionID || "")
+          if (!sessionID()) setSessionID(nextSessions.emailDisabled ? "none" : (nextSessions.boundSessionID || ""))
           setMessage("")
         } catch (error) {
           setMessage(`Could not load settings: ${error.message || error}`)
@@ -142,6 +170,36 @@ export default Plugin.define({
         return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
       }
 
+      const readiness = () => setupReadiness(settings(), status(), {
+        mailTestAvailable: true,
+        mailTestOk: Boolean(mailTest()?.ok),
+      })
+      const setupText = () => setupMarkdown(readiness())
+
+      const testMail = async () => {
+        setBusy(true)
+        setMessage("")
+        try {
+          const result = await rpc().testMailAccount(settingsPayload())
+          const ok = Boolean(result.imap && result.smtp)
+          setMailTest({ ...result, ok })
+          const detail = result.errors?.length ? ` — ${result.errors.join("; ")}` : ""
+          setMessage(`${ok ? "IMAP and SMTP login succeeded" : "Mail account check failed"}${detail}`)
+          ctx.toast.show({
+            title: ok ? "Mail account OK" : "Mail account problem",
+            description: detail ? result.errors.join("; ") : undefined,
+            variant: ok ? "success" : "error",
+          })
+        } catch (error) {
+          const text = error?.message || String(error)
+          setMailTest(null)
+          setMessage(text)
+          ctx.toast.show({ title: "Mail account check failed", description: text, variant: "error" })
+        } finally {
+          setBusy(false)
+        }
+      }
+
       const run = async (label, action) => {
         setBusy(true)
         setMessage("")
@@ -164,9 +222,11 @@ export default Plugin.define({
         if (!catalog) return "Loading…"
         if (!catalog.sessions?.length) return "No open sessions found."
         const bound = catalog.sessions.find((entry) => entry.id === catalog.boundSessionID)
-        const boundLabel = bound
-          ? `${bound.title} — ${bound.directory || bound.id}`
-          : (catalog.boundSessionID || "(none)")
+        const boundLabel = catalog.emailDisabled
+          ? "DISABLED — no session bound"
+          : bound
+            ? `${bound.title} — ${bound.directory || bound.id}`
+            : (catalog.boundSessionID || "(none)")
         const lines = [
           `Email session: ${boundLabel}`,
           `Projects: ${catalog.projects?.length || 0} · Sessions: ${catalog.sessions.length}`,
@@ -187,10 +247,16 @@ export default Plugin.define({
 
       const sessionOptions = () => {
         const catalog = sessions()
-        const options = (catalog?.sessions || []).map((entry) => ({
-          value: entry.id,
-          label: `${entry.title}${entry.directory ? ` — ${entry.directory}` : ""}${entry.id === catalog?.boundSessionID ? "  (current)" : ""}`,
-        }))
+        const options = [{
+          value: "none",
+          label: "None — disable email bridge",
+        }]
+        for (const entry of catalog?.sessions || []) {
+          options.push({
+            value: entry.id,
+            label: `${entry.title}${entry.directory ? ` — ${entry.directory}` : ""}${entry.id === catalog?.boundSessionID ? "  (current)" : ""}`,
+          })
+        }
         if (catalog?.boundSessionID && !options.some((option) => option.value === catalog.boundSessionID)) {
           options.unshift({ value: catalog.boundSessionID, label: `${catalog.boundSessionID}  (current)` })
         }
@@ -226,8 +292,7 @@ export default Plugin.define({
         }
       }
 
-      const save = () => {
-        const payload = {
+      const settingsPayload = () => ({
           address: value("address"),
           displayName: value("displayName"),
           imapHost: hostValue("imapHost"),
@@ -269,9 +334,9 @@ export default Plugin.define({
           emailReadReceipts: checked("emailReadReceipts"),
           emailProgress: checked("emailProgress"),
           emailProgressIntervalMs: number("emailProgressIntervalMs", 20000),
-        }
-        return run("Settings saved", () => rpc().updateSettings(payload))
-      }
+      })
+
+      const save = () => run("Settings saved", () => rpc().updateSettings(settingsPayload()))
 
       const statusText = () => {
         const current = status()
@@ -288,7 +353,7 @@ export default Plugin.define({
           `SecureJoin version: ${current.secureJoin?.version || "3"}`,
           `Established: ${current.established ? "yes" : "no"}`,
           `Fingerprint verified: ${current.verified ? "yes" : "no"}`,
-          `Session: ${current.sessionTitle || current.sessionID || "(none)"}${current.sessionDirectory ? ` — ${current.sessionDirectory}` : ""}`,
+          `Session: ${current.emailDisabled ? "DISABLED (none bound)" : (current.sessionTitle || current.sessionID || "(none)")}${current.sessionDirectory ? ` — ${current.sessionDirectory}` : ""}`,
           `Session directory: ${current.sessionDirectory || "(unknown)"}`,
           `State: ${current.handshake}`,
           `SecureJoin: ${current.secureJoin?.status || "idle"}`,
@@ -304,6 +369,10 @@ export default Plugin.define({
           description="Drive OpenCode from an OpenPGP-capable email client over IMAP/SMTP, gated by one pinned contact and fingerprint."
           actions={<ui.Button onClick={() => void reload()} disabled={busy()}>Refresh</ui.Button>}
         >
+          <ui.SettingsSection title="Setup guide" description="Do these in order. The checklist is based on the values in this form and the live bridge status.">
+            <ui.SettingsRow title="Readiness" description={<ui.Markdown text={setupText()} />} />
+          </ui.SettingsSection>
+
           <ui.SettingsSection title="Mail account">
             <ui.SettingsRow id="address" title="Bot address" description="The email address this bridge uses.">
               <ui.TextInput label="Bot address" value={value("address")} onInput={(v) => setField("address", v)} placeholder="bot@example.org" />
@@ -354,6 +423,14 @@ export default Plugin.define({
             <ui.SettingsRow title="SMTP password">
               <ui.TextInput label="SMTP password" type="password" value="" onInput={(v) => setField("smtpPassword", v)} placeholder={settings().hasSmtpPassword ? "Saved" : "Required"} />
             </ui.SettingsRow>
+            <ui.SettingsRow
+              title="Test mail account"
+              description={mailTest()
+                ? `${mailTest().imap ? "IMAP login OK" : "IMAP failed"}; ${mailTest().smtp ? "SMTP auth OK" : "SMTP failed"}${mailTest().errors?.length ? ` — ${mailTest().errors.join("; ")}` : ""}`
+                : "Checks IMAP login and SMTP authentication without sending a message. Run this before starting SecureJoin."}
+            >
+              <ui.Button size="small" disabled={busy() || !readiness().mailReady} onClick={() => void testMail()}>Test IMAP + SMTP</ui.Button>
+            </ui.SettingsRow>
           </ui.SettingsSection>
 
           <ui.SettingsSection title="Contact gate">
@@ -372,7 +449,7 @@ export default Plugin.define({
               <ui.TextInput label="Contact invite URL" value={value("inviteUrl")} onInput={(v) => setField("inviteUrl", v)} placeholder="OPENPGP4FPR:FPR#a=you%40example.org&n=Name&s=AUTH&v=3" />
             </ui.SettingsRow>
             <ui.SettingsRow title="Fill fields from invite">
-              <ui.Button size="small" disabled={busy()} onClick={() => void fillFromInvite()}>Fill SecureJoin fields</ui.Button>
+              <ui.Button size="small" disabled={busy() || !value("inviteUrl").trim()} onClick={() => void fillFromInvite()}>Fill SecureJoin fields</ui.Button>
             </ui.SettingsRow>
             <ui.SettingsRow id="pinnedContact" title="Pinned contact" description="Required. Only this address may drive OpenCode.">
               <ui.TextInput label="Pinned contact" value={value("pinnedContact")} onInput={(v) => setField("pinnedContact", v)} placeholder="you@example.org" />
@@ -387,8 +464,10 @@ export default Plugin.define({
 
           {mode() === "securejoin" ? (
             <ui.SettingsSection title="SecureJoin setup">
-              <ui.SettingsRow title="Join the contact's invite" description="This bridge never creates a QR. Scan the QR shown by the pinned contact in Delta Chat (or another SecureJoin client), paste its URL above, or enter every field below. The auth code is the s= value; it stays local and is hidden after saving.">
-                <ui.Button size="small" disabled={busy()} onClick={() => void run("SecureJoin started", () => rpc().startSecureJoin({}))}>Start SecureJoin</ui.Button>
+              <ui.SettingsRow title="Join the contact's invite" description={readiness().canStartSecureJoin
+                ? "Ready. This bridge never creates a QR; it joins the invite supplied by the pinned contact."
+                : `Not ready: ${readiness().next.hint || readiness().next.label}.`}>
+                <ui.Button size="small" disabled={busy() || !readiness().canStartSecureJoin} onClick={() => void run("SecureJoin started", () => rpc().startSecureJoin({}))}>Start SecureJoin</ui.Button>
               </ui.SettingsRow>
               <ui.SettingsRow id="secureJoinAuth" title="SecureJoin auth code (s=)" description={settings().hasSecureJoinAuth ? "An auth code is saved; leave blank to keep it. Paste a new s= value to replace it." : "Required. The s= auth code from the contact's invite URL."}>
                 <ui.TextInput label="SecureJoin auth code" type="password" value="" onInput={(v) => setField("secureJoinAuth", v)} placeholder={settings().hasSecureJoinAuth ? "Saved" : "URL-safe auth code"} />
@@ -408,8 +487,10 @@ export default Plugin.define({
             </ui.SettingsSection>
           ) : (
             <ui.SettingsSection title="Autocrypt setup">
-              <ui.SettingsRow title="Autocrypt request" description="Sends a plaintext hello with this bridge’s Autocrypt header. When the pinned contact replies with a matching fingerprint, the key is learned and confirmed by an encrypted reply.">
-                <ui.Button size="small" disabled={busy()} onClick={() => void run("Autocrypt request sent", () => rpc().startHandshake({}))}>Send Autocrypt request</ui.Button>
+              <ui.SettingsRow title="Autocrypt request" description={readiness().canStartHandshake
+                ? "Ready. Sends a plaintext hello with this bridge’s Autocrypt header."
+                : `Not ready: ${readiness().next.hint || readiness().next.label}.`}>
+                <ui.Button size="small" disabled={busy() || !readiness().canStartHandshake} onClick={() => void run("Autocrypt request sent", () => rpc().startHandshake({}))}>Send Autocrypt request</ui.Button>
               </ui.SettingsRow>
               <ui.SettingsRow id="requireEncrypted" title="Reject plaintext inbound mail" description="When on, only encrypted prompts from the pinned contact are accepted. Replies stay OpenPGP-encrypted whenever the pinned key is known.">
                 <ui.Switch label="Reject plaintext inbound mail" hideLabel checked={checked("requireEncrypted")} onChange={(v) => setField("requireEncrypted", v)} />
@@ -424,8 +505,10 @@ export default Plugin.define({
             <ui.SettingsRow id="deleteAfterRead" title="Delete mail after processing" description="When on, each message is expunged from the IMAP server after the bridge handles it successfully. Failed or oversized messages stay in the mailbox.">
               <ui.Switch label="Delete mail after processing" hideLabel checked={checked("deleteAfterRead")} onChange={(v) => setField("deleteAfterRead", v)} />
             </ui.SettingsRow>
-            <ui.SettingsRow title="Reset learned key">
-              <ui.Button size="small" variant="danger" disabled={busy()} onClick={() => void run("Contact reset", () => rpc().resetContact({}))}>Reset contact</ui.Button>
+            <ui.SettingsRow title="Reset learned key" description={readiness().canResetContact
+              ? "Clears the learned key and handshake state. Required when changing the pinned contact."
+              : "Nothing learned yet. Save & restart first, then reset when changing the pinned contact."}>
+              <ui.Button size="small" variant="danger" disabled={busy() || !readiness().canResetContact} onClick={() => void run("Contact reset", () => rpc().resetContact({}))}>Reset contact</ui.Button>
             </ui.SettingsRow>
           </ui.SettingsSection>
 
@@ -486,7 +569,7 @@ export default Plugin.define({
               description={
                 <>
                   <ui.Markdown text="Reply !help in the encrypted email thread for the live command list and current gate state." />
-                  <ui.Code content={"!sessions · !use <id> · !new <title> in <project>\n!default · !status · !help\n!approve <code> once|always · !deny <code> [reason]\n!answer <code> <choice>[,choice][;choice…]\n!peek [session] [count] · !tail [lines]\n!send <project-file> · !watch [session] · !unwatch"} language="text" />
+                  <ui.Code content={"!sessions · !use <id>|none · !new <title> in <project>\n!default · !status · !help\n!approve <code> once|always · !deny <code> [reason]\n!answer <code> <choice>[,choice][;choice…]\n!peek [session] [count] · !tail [lines]\n!send <project-file> · !watch [session] · !unwatch"} language="text" />
                 </>
               }
             />
@@ -506,16 +589,16 @@ export default Plugin.define({
             <ui.SettingsRow
               id="emailSession"
               title="Email session"
-              description="Pick any open session by title. Switching sends a new email thread whose subject selects that session; replies there continue it. Messages with no session marker use the contact's internal catch-all session."
+              description="Pick any open session by title, or None to disable the bridge. Switching sends a new email thread whose subject selects that session; replies there continue it. While disabled, incoming prompts are ignored until !use or a new binding."
             >
               <div>
                 <ui.Select
                   label="Session"
                   options={sessionOptions()}
-                  value={sessionID() || undefined}
+                  value={sessionID() || (sessions()?.emailDisabled ? "none" : undefined)}
                   onChange={(value) => setSessionID(value)}
-                  placeholder={sessionOptions().length ? "Choose a session" : "No open sessions"}
-                  disabled={busy() || !sessionOptions().length}
+                  placeholder="Choose a session or None"
+                  disabled={busy()}
                 />
                 <ui.Button size="small" disabled={busy() || !sessionID().trim()} onClick={() => void bindSession()}>Switch session</ui.Button>
               </div>
@@ -527,7 +610,7 @@ export default Plugin.define({
               title="Current state"
               description={
                 <>
-                  <ui.Markdown text="Fill the fields above and click Save & restart. Until the required mail and pinned-contact fields are valid, the bridge stays unconfigured and sends nothing." />
+                  <ui.Markdown text="Use the Setup guide above. Until mail, pin, auth and Apply are complete, the bridge stays unconfigured and sends nothing." />
                   <ui.Code content={statusText()} language="text" />
                 </>
               }
@@ -544,6 +627,7 @@ export default Plugin.define({
       id: "autocrypt-bridge",
       title: "Autocrypt Bridge",
       entries: [
+        { id: "setup", title: "Setup guide", keywords: "wizard checklist securejoin invite apply ready" },
         { id: "address", title: "Bot address", keywords: "imap smtp email" },
         { id: "pinnedContact", title: "Pinned contact", keywords: "fingerprint gate openpgp" },
         { id: "remoteMode", title: "Remote type", keywords: "securejoin deltachat autocrypt" },

@@ -198,9 +198,9 @@ export async function rescanMailbox(cfg, store, onMessage, log, signal = new Abo
 }
 
 /** Adapted from opencode-email-sync src/mail/smtp.ts (MIT). */
-export function createSender(cfg) {
+export function smtpOptions(cfg) {
   const smtp = cfg.smtp
-  const options = {
+  return {
     host: smtp.host,
     port: smtp.port,
     secure: smtp.security === 'tls',
@@ -215,6 +215,35 @@ export function createSender(cfg) {
     greetingTimeout: 10_000,
     socketTimeout: 20_000,
   }
+}
+
+/** Check IMAP login/mailbox access and SMTP auth without sending any mail. */
+export async function testMailAccount(cfg) {
+  const result = { imap: false, smtp: false, errors: [] }
+  const imap = new ImapFlow(imapOptions(cfg, cfg.imap.password))
+  try {
+    await imap.connect()
+    await imap.mailboxOpen(cfg.imap.mailbox || 'INBOX')
+    result.imap = true
+  } catch (error) {
+    result.errors.push(`IMAP: ${error.message || error}`)
+  } finally {
+    try { imap.close() } catch {}
+  }
+  const transport = nodemailer.createTransport(smtpOptions(cfg))
+  try {
+    await transport.verify()
+    result.smtp = true
+  } catch (error) {
+    result.errors.push(`SMTP: ${error.message || error}`)
+  } finally {
+    transport.close()
+  }
+  return result
+}
+
+export function createSender(cfg) {
+  const options = smtpOptions(cfg)
   return {
     async send(raw, to, sendOptions = {}) {
       const transport = nodemailer.createTransport(options)

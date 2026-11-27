@@ -2,10 +2,11 @@ import { Plugin } from '@opencode/plugin'
 import { createBridge } from './bridge.js'
 import { loadConfig, normalizeHost } from './config.js'
 import { parseInviteUrl, redactInviteUrl } from './headers.js'
+import { testMailAccount as testMailAccountTransport } from './mail.js'
 import { BridgeRpc } from './rpc.js'
 import { formatSessionDirectory } from './session.js'
 
-const PLUGIN_VERSION = '0.5.22'
+const PLUGIN_VERSION = '0.5.23'
 const SETTING_KEYS = [
   'address', 'displayName', 'imapHost', 'imapPort', 'imapSecurity', 'imapUser', 'imapPassword', 'imapMailbox',
   'smtpHost', 'smtpPort', 'smtpSecurity', 'smtpUser', 'smtpPassword', 'pinnedContact',
@@ -123,6 +124,7 @@ async function setupInstance(ctx, slot) {
     pluginVersion: PLUGIN_VERSION,
     running: false,
     remoteMode: 'securejoin',
+    emailDisabled: false,
     address: '',
     selfFingerprint: '',
     pinnedContact: '',
@@ -266,6 +268,45 @@ async function setupInstance(ctx, slot) {
         relays: invite.relays,
       }
     },
+    testMailAccount: async (input = {}) => {
+      // The GUI blanks secret inputs when a value is already saved. Keep the
+      // stored value in that case, exactly like updateSettings does.
+      const merged = { ...visibleValues() }
+      for (const [key, value] of Object.entries(input || {})) {
+        if (value === undefined || value === null) continue
+        if (SECRET_KEYS.has(key) && value === '') continue
+        merged[key] = value
+      }
+      const number = (value, fallback) => {
+        const parsed = Number(value)
+        return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback
+      }
+      const verifyCertificate = merged.verifyCertificate !== false
+      const imap = {
+        host: normalizeHost(merged.imapHost),
+        port: number(merged.imapPort, 993),
+        security: String(merged.imapSecurity || 'tls').toLowerCase(),
+        user: String(merged.imapUser || merged.address || ''),
+        password: String(merged.imapPassword || ''),
+        mailbox: String(merged.imapMailbox || 'INBOX'),
+        verifyCertificate,
+        pollIntervalMs: number(merged.pollIntervalMs, 30_000),
+      }
+      const smtp = {
+        host: normalizeHost(merged.smtpHost),
+        port: number(merged.smtpPort, 465),
+        security: String(merged.smtpSecurity || 'tls').toLowerCase(),
+        user: String(merged.smtpUser || merged.address || ''),
+        password: String(merged.smtpPassword || ''),
+        verifyCertificate,
+      }
+      return testMailAccountTransport({
+        address: String(merged.address || ''),
+        imap,
+        smtp,
+        maxMessageBytes: 20 * 1024 * 1024,
+      })
+    },
     startSecureJoin: async () => {
       if (!slot.runtime?.bridge) throw new Error('Autocrypt Bridge is not configured')
       return slot.runtime.bridge.startSecureJoin()
@@ -284,7 +325,7 @@ async function setupInstance(ctx, slot) {
     },
     listSessions: async () => (slot.runtime?.bridge
       ? slot.runtime.bridge.listSessions()
-      : { sessions: [], projects: [], boundSessionID: '' }),
+      : { sessions: [], projects: [], boundSessionID: '', emailDisabled: false }),
     bindSession: async (input) => {
       if (!slot.runtime?.bridge) throw new Error('Autocrypt Bridge is not configured')
       return slot.runtime.bridge.bindSession(input.sessionID)
@@ -334,7 +375,7 @@ async function setupInstance(ctx, slot) {
       execute: async () => {
         if (!slot.runtime?.bridge) return { content: 'The Autocrypt bridge is not configured' }
         const catalog = await slot.runtime.bridge.listSessions()
-        return { content: formatSessionDirectory(catalog, catalog.boundSessionID) }
+        return { content: formatSessionDirectory(catalog, catalog.boundSessionID, catalog.emailDisabled) }
       },
     })
   })

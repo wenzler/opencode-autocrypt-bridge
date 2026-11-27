@@ -71,6 +71,7 @@ const statusOutput = {
     running: { type: 'boolean' },
     configured: { type: 'boolean' },
     remoteMode: { type: 'string', enum: ['securejoin', 'autocrypt'] },
+    emailDisabled: { type: 'boolean' },
     address: { type: 'string' },
     selfFingerprint: { type: 'string' },
     pinnedContact: { type: 'string' },
@@ -133,6 +134,7 @@ const sessionsOutput = {
     sessions: { type: 'array', items: sessionInfo },
     projects: { type: 'array', items: projectInfo },
     boundSessionID: { type: 'string' },
+    emailDisabled: { type: 'boolean' },
   },
   additionalProperties: false,
 }
@@ -243,6 +245,22 @@ export const BridgeRpc = Rpc.define({
           auth: { type: 'string' },
           inviteNumber: { type: 'string' },
           relays: { type: 'string' },
+        },
+        additionalProperties: false,
+      },
+    },
+    testMailAccount: {
+      input: {
+        type: 'object',
+        properties: settingsProperties,
+        additionalProperties: false,
+      },
+      output: {
+        type: 'object',
+        properties: {
+          imap: { type: 'boolean' },
+          smtp: { type: 'boolean' },
+          errors: { type: 'array', items: { type: 'string' } },
         },
         additionalProperties: false,
       },

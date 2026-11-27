@@ -126431,9 +126431,9 @@ async function rescanMailbox(cfg, store, onMessage, log2, signal = new AbortCont
     client.close();
   }
 }
-function createSender(cfg) {
+function smtpOptions(cfg) {
   const smtp = cfg.smtp;
-  const options2 = {
+  return {
     host: smtp.host,
     port: smtp.port,
     secure: smtp.security === "tls",
@@ -126448,6 +126448,35 @@ function createSender(cfg) {
     greetingTimeout: 1e4,
     socketTimeout: 2e4
   };
+}
+async function testMailAccount(cfg) {
+  const result3 = { imap: false, smtp: false, errors: [] };
+  const imap = new import_imapflow.ImapFlow(imapOptions(cfg, cfg.imap.password));
+  try {
+    await imap.connect();
+    await imap.mailboxOpen(cfg.imap.mailbox || "INBOX");
+    result3.imap = true;
+  } catch (error) {
+    result3.errors.push(`IMAP: ${error.message || error}`);
+  } finally {
+    try {
+      imap.close();
+    } catch {
+    }
+  }
+  const transport = import_nodemailer.default.createTransport(smtpOptions(cfg));
+  try {
+    await transport.verify();
+    result3.smtp = true;
+  } catch (error) {
+    result3.errors.push(`SMTP: ${error.message || error}`);
+  } finally {
+    transport.close();
+  }
+  return result3;
+}
+function createSender(cfg) {
+  const options2 = smtpOptions(cfg);
   return {
     async send(raw, to, sendOptions = {}) {
       const transport = import_nodemailer.default.createTransport(options2);
@@ -126697,7 +126726,7 @@ function parseNewSessionArgs(catalog, argument, fallbackDirectory) {
   }
   return { title: title || "Autocrypt session", directory };
 }
-function formatSessionDirectory(catalog, boundSessionID = "") {
+function formatSessionDirectory(catalog, boundSessionID = "", emailDisabled = false) {
   const groups = /* @__PURE__ */ new Map();
   for (const session of catalog.sessions || []) {
     const key5 = `${session.projectID || ""}\0${session.directory || ""}`;
@@ -126716,6 +126745,7 @@ function formatSessionDirectory(catalog, boundSessionID = "") {
   const sortedGroups = [...groups.values()].sort((a, b) => b.updated - a.updated).slice(0, 8);
   const total2 = (catalog.sessions || []).length;
   const lines = [`OpenCode sessions (${total2}):`];
+  if (emailDisabled) lines.push("Email bridge: DISABLED (no session bound; use !use <session-id>)");
   for (const group of sortedGroups) {
     lines.push(`Project ${group.directory}${group.id ? ` [${group.id}]` : ""}`);
     for (const session of group.sessions.slice(0, 12)) {
@@ -126922,12 +126952,34 @@ async function createBridge(ctx, cfg, options2 = {}) {
     return {
       sessions,
       projects: [...projects.values()].sort((a, b) => b.updated - a.updated),
-      boundSessionID: cfg.pinned.contact ? String(state.data.sessions[cfg.pinned.contact] || "") : ""
+      boundSessionID: cfg.pinned.contact ? String(state.data.sessions[cfg.pinned.contact] || "") : "",
+      emailDisabled: Boolean(cfg.pinned.contact && state.data.sessions[cfg.pinned.contact] === "")
     };
   }
   async function bindSession(sessionID) {
     const candidate = String(sessionID || "").trim();
     if (!candidate) throw new Error("sessionID is required");
+    if (/^(none|off|disable|disabled)$/i.test(candidate)) {
+      if (cfg.pinned.contact) {
+        state.data.sessions[cfg.pinned.contact] = "";
+        delete state.data.watches[cfg.pinned.contact];
+      }
+      await state.save();
+      if (cfg.pinned.contact && allowed(cfg.pinned.contact)) {
+        await transmit({
+          to: cfg.pinned.contact,
+          subject: "Email bridge disabled",
+          headers: ["X-OpenCode-Notice: session-binding"],
+          text: [
+            "No OpenCode session is bound, so email prompts are ignored.",
+            "Bind a session in the Desktop settings, or reply !use <session> to re-enable."
+          ].join("\n")
+        });
+      }
+      const nextStatus = await getStatus();
+      onStatus(nextStatus);
+      return nextStatus;
+    }
     const catalog = await listSessions();
     let resolved = candidate;
     let title = candidate;
@@ -127004,6 +127056,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
     return {
       running: started,
       remoteMode: cfg.remote.mode,
+      emailDisabled: Boolean(cfg.pinned.contact && state.data.sessions[cfg.pinned.contact] === ""),
       address: cfg.address,
       selfFingerprint,
       pinnedContact: cfg.pinned.contact,
@@ -127030,6 +127083,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
     };
   }
   async function sessionFor(from) {
+    if (state.data.sessions[from] === "") return "";
     const existing = String(state.data.sessions[from] || "").trim();
     if (existing && await sessionExists(existing)) {
       state.data.sessions[from] = existing;
@@ -127824,6 +127878,12 @@ ${chunk}`
   }
   async function resolveInboundSession(from, message, command) {
     if (command?.command === "use") {
+      if (/^(none|off|disable|disabled)$/i.test(String(command.argument || "").trim())) {
+        state.data.sessions[from] = "";
+        delete state.data.watches[from];
+        await state.save();
+        return { sessionID: "", reason: "disabled", note: "Email bridge disabled (no session bound)" };
+      }
       const catalog = await listSessions();
       const match8 = resolveSessionRef(catalog.sessions, command.argument);
       if (!match8) throw new Error(`Unknown session "${command.argument}"; use !sessions to list sessions`);
@@ -127847,8 +127907,15 @@ ${chunk}`
     }
     if (command?.command === "default") {
       const target = await sessionFor(from);
-      await rememberThread(message.messageId, target, from);
-      return { sessionID: target, reason: "default", note: `Returned to default session ${target}` };
+      if (target) await rememberThread(message.messageId, target, from);
+      return {
+        sessionID: target,
+        reason: "default",
+        note: target ? `Returned to default session ${target}` : "Email bridge is disabled; use !use <session> to re-enable it"
+      };
+    }
+    if (state.data.sessions[from] === "") {
+      return { sessionID: "", reason: "disabled", note: "Email bridge is disabled; use !use <session> to re-enable it" };
     }
     const subjectSessionID = sessionFromSubject(message.subject);
     if (subjectSessionID && await sessionExists(subjectSessionID)) {
@@ -127969,7 +128036,7 @@ Use: !answer ${pending.code} 1`, "error");
   async function localCommandReply(from, message, command, catalog, sessionID, resolution) {
     switch (command.command) {
       case "sessions":
-        return `${formatSessionDirectory(catalog, catalog.boundSessionID)}
+        return `${formatSessionDirectory(catalog, catalog.boundSessionID, catalog.emailDisabled)}
 
 Use !help for the full remote-control list.`;
       case "help": {
@@ -127999,6 +128066,7 @@ Use !help for the full remote-control list.`;
       }
       case "peek": {
         if (!cfg.remote.peek) return "Session output by email is disabled in the GUI.";
+        if (!sessionID) return "No session is bound. Use !peek <session> or !use <session> first.";
         let target = sessionID;
         let limit = 5;
         for (const token of [command.argument, command.rest].filter(Boolean)) {
@@ -128013,6 +128081,7 @@ Use !help for the full remote-control list.`;
       }
       case "tail": {
         if (!cfg.remote.tail) return "Terminal tail by email is disabled in the GUI.";
+        if (!sessionID) return "No session is bound. Use !use <session> first.";
         if (!ctx.experimental?.terminal?.read) return "This OpenCode version does not expose a terminal tail to plugins.";
         const tokens = [command.argument, command.rest].filter(Boolean);
         const lineToken = tokens.find((token) => /^\d+$/.test(token));
@@ -128023,6 +128092,7 @@ Use !help for the full remote-control list.`;
       }
       case "send": {
         if (!cfg.remote.sendFiles) return "Sending project files by email is disabled in the GUI.";
+        if (!sessionID) return "No session is bound. Use !use <session> first.";
         const filePath = [command.argument, command.rest].filter(Boolean).join(" ").trim();
         if (!filePath) return "Usage: !send <project-file>";
         const result3 = await sendFile({ sessionID, filePath, text: "Attached on request." });
@@ -128036,6 +128106,7 @@ Use !help for the full remote-control list.`;
           if (!match8) throw new Error(`Unknown session "${command.argument}"; use !sessions to list sessions`);
           target = match8.id;
         }
+        if (!target) return "No session is bound. Use !watch <session> or !use <session> first.";
         state.data.watches[from] = {
           sessionID: target,
           inReplyTo: message.messageId,
@@ -128142,7 +128213,7 @@ Further replies in this subject stay in this session.`;
     }
     const sessionID = resolution.sessionID;
     await rememberThread(message.messageId, sessionID, from);
-    if (establishedNow) {
+    if (establishedNow && sessionID) {
       try {
         await maybeSendWelcome(from, message, sessionID);
       } catch (error) {
@@ -128165,6 +128236,10 @@ Further replies in this subject stay in this session.`);
       command.rest = `${resolution.note || `Using session ${sessionID}`}
 
 ${command.rest}`;
+    }
+    if (!sessionID) {
+      await sendCommandReply(from, message, "", resolution.note || "Email bridge is disabled; use !use <session> to re-enable it", "session-disabled");
+      return;
     }
     await enqueue(sessionID, async () => {
       const current = sessionStatus.get(sessionID);
@@ -128543,6 +128618,7 @@ var statusOutput = {
     running: { type: "boolean" },
     configured: { type: "boolean" },
     remoteMode: { type: "string", enum: ["securejoin", "autocrypt"] },
+    emailDisabled: { type: "boolean" },
     address: { type: "string" },
     selfFingerprint: { type: "string" },
     pinnedContact: { type: "string" },
@@ -128601,7 +128677,8 @@ var sessionsOutput = {
   properties: {
     sessions: { type: "array", items: sessionInfo },
     projects: { type: "array", items: projectInfo },
-    boundSessionID: { type: "string" }
+    boundSessionID: { type: "string" },
+    emailDisabled: { type: "boolean" }
   },
   additionalProperties: false
 };
@@ -128710,6 +128787,22 @@ var BridgeRpc = rpc_exports.define({
         additionalProperties: false
       }
     },
+    testMailAccount: {
+      input: {
+        type: "object",
+        properties: settingsProperties,
+        additionalProperties: false
+      },
+      output: {
+        type: "object",
+        properties: {
+          imap: { type: "boolean" },
+          smtp: { type: "boolean" },
+          errors: { type: "array", items: { type: "string" } }
+        },
+        additionalProperties: false
+      }
+    },
     startSecureJoin: {
       input: emptyInput,
       output: statusOutput
@@ -128778,7 +128871,7 @@ var BridgeRpc = rpc_exports.define({
 });
 
 // src/index.js
-var PLUGIN_VERSION = "0.5.22";
+var PLUGIN_VERSION = "0.5.23";
 var SETTING_KEYS = [
   "address",
   "displayName",
@@ -128913,6 +129006,7 @@ async function setupInstance(ctx, slot) {
     pluginVersion: PLUGIN_VERSION,
     running: false,
     remoteMode: "securejoin",
+    emailDisabled: false,
     address: "",
     selfFingerprint: "",
     pinnedContact: "",
@@ -129041,6 +129135,43 @@ async function setupInstance(ctx, slot) {
         relays: invite.relays
       };
     },
+    testMailAccount: async (input = {}) => {
+      const merged = { ...visibleValues() };
+      for (const [key5, value3] of Object.entries(input || {})) {
+        if (value3 === void 0 || value3 === null) continue;
+        if (SECRET_KEYS.has(key5) && value3 === "") continue;
+        merged[key5] = value3;
+      }
+      const number3 = (value3, fallback) => {
+        const parsed = Number(value3);
+        return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+      };
+      const verifyCertificate = merged.verifyCertificate !== false;
+      const imap = {
+        host: normalizeHost(merged.imapHost),
+        port: number3(merged.imapPort, 993),
+        security: String(merged.imapSecurity || "tls").toLowerCase(),
+        user: String(merged.imapUser || merged.address || ""),
+        password: String(merged.imapPassword || ""),
+        mailbox: String(merged.imapMailbox || "INBOX"),
+        verifyCertificate,
+        pollIntervalMs: number3(merged.pollIntervalMs, 3e4)
+      };
+      const smtp = {
+        host: normalizeHost(merged.smtpHost),
+        port: number3(merged.smtpPort, 465),
+        security: String(merged.smtpSecurity || "tls").toLowerCase(),
+        user: String(merged.smtpUser || merged.address || ""),
+        password: String(merged.smtpPassword || ""),
+        verifyCertificate
+      };
+      return testMailAccount({
+        address: String(merged.address || ""),
+        imap,
+        smtp,
+        maxMessageBytes: 20 * 1024 * 1024
+      });
+    },
     startSecureJoin: async () => {
       if (!slot.runtime?.bridge) throw new Error("Autocrypt Bridge is not configured");
       return slot.runtime.bridge.startSecureJoin();
@@ -129057,7 +129188,7 @@ async function setupInstance(ctx, slot) {
       if (!slot.runtime?.bridge) throw new Error("Autocrypt Bridge is not configured");
       return slot.runtime.bridge.resetContact();
     },
-    listSessions: async () => slot.runtime?.bridge ? slot.runtime.bridge.listSessions() : { sessions: [], projects: [], boundSessionID: "" },
+    listSessions: async () => slot.runtime?.bridge ? slot.runtime.bridge.listSessions() : { sessions: [], projects: [], boundSessionID: "", emailDisabled: false },
     bindSession: async (input) => {
       if (!slot.runtime?.bridge) throw new Error("Autocrypt Bridge is not configured");
       return slot.runtime.bridge.bindSession(input.sessionID);
@@ -129106,7 +129237,7 @@ async function setupInstance(ctx, slot) {
       execute: async () => {
         if (!slot.runtime?.bridge) return { content: "The Autocrypt bridge is not configured" };
         const catalog = await slot.runtime.bridge.listSessions();
-        return { content: formatSessionDirectory(catalog, catalog.boundSessionID) };
+        return { content: formatSessionDirectory(catalog, catalog.boundSessionID, catalog.emailDisabled) };
       }
     });
   });

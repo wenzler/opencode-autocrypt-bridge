@@ -250,12 +250,34 @@ export async function createBridge(ctx, cfg, options = {}) {
       sessions,
       projects: [...projects.values()].sort((a, b) => b.updated - a.updated),
       boundSessionID: cfg.pinned.contact ? String(state.data.sessions[cfg.pinned.contact] || '') : '',
+      emailDisabled: Boolean(cfg.pinned.contact && state.data.sessions[cfg.pinned.contact] === ''),
     }
   }
 
   async function bindSession(sessionID) {
     const candidate = String(sessionID || '').trim()
     if (!candidate) throw new Error('sessionID is required')
+    if (/^(none|off|disable|disabled)$/i.test(candidate)) {
+      if (cfg.pinned.contact) {
+        state.data.sessions[cfg.pinned.contact] = ''
+        delete state.data.watches[cfg.pinned.contact]
+      }
+      await state.save()
+      if (cfg.pinned.contact && allowed(cfg.pinned.contact)) {
+        await transmit({
+          to: cfg.pinned.contact,
+          subject: 'Email bridge disabled',
+          headers: ['X-OpenCode-Notice: session-binding'],
+          text: [
+            'No OpenCode session is bound, so email prompts are ignored.',
+            'Bind a session in the Desktop settings, or reply !use <session> to re-enable.',
+          ].join('\n'),
+        })
+      }
+      const nextStatus = await getStatus()
+      onStatus(nextStatus)
+      return nextStatus
+    }
     const catalog = await listSessions()
     let resolved = candidate
     let title = candidate
@@ -338,6 +360,7 @@ export async function createBridge(ctx, cfg, options = {}) {
     return {
       running: started,
       remoteMode: cfg.remote.mode,
+      emailDisabled: Boolean(cfg.pinned.contact && state.data.sessions[cfg.pinned.contact] === ''),
       address: cfg.address,
       selfFingerprint,
       pinnedContact: cfg.pinned.contact,
@@ -365,6 +388,8 @@ export async function createBridge(ctx, cfg, options = {}) {
   }
 
   async function sessionFor(from) {
+    // An explicit empty binding means "disabled": do not create a session.
+    if (state.data.sessions[from] === '') return ''
     const existing = String(state.data.sessions[from] || '').trim()
     if (existing && await sessionExists(existing)) {
       state.data.sessions[from] = existing
@@ -1227,6 +1252,12 @@ export async function createBridge(ctx, cfg, options = {}) {
   /** Choose the OpenCode session for one inbound email. */
   async function resolveInboundSession(from, message, command) {
     if (command?.command === 'use') {
+      if (/^(none|off|disable|disabled)$/i.test(String(command.argument || '').trim())) {
+        state.data.sessions[from] = ''
+        delete state.data.watches[from]
+        await state.save()
+        return { sessionID: '', reason: 'disabled', note: 'Email bridge disabled (no session bound)' }
+      }
       const catalog = await listSessions()
       const match = resolveSessionRef(catalog.sessions, command.argument)
       if (!match) throw new Error(`Unknown session "${command.argument}"; use !sessions to list sessions`)
@@ -1249,8 +1280,18 @@ export async function createBridge(ctx, cfg, options = {}) {
     }
     if (command?.command === 'default') {
       const target = await sessionFor(from)
-      await rememberThread(message.messageId, target, from)
-      return { sessionID: target, reason: 'default', note: `Returned to default session ${target}` }
+      if (target) await rememberThread(message.messageId, target, from)
+      return {
+        sessionID: target,
+        reason: 'default',
+        note: target ? `Returned to default session ${target}` : 'Email bridge is disabled; use !use <session> to re-enable it',
+      }
+    }
+
+    // An explicit empty binding disables email control. Local commands and
+    // explicit !use / !new above still work so the contact can re-enable it.
+    if (state.data.sessions[from] === '') {
+      return { sessionID: '', reason: 'disabled', note: 'Email bridge is disabled; use !use <session> to re-enable it' }
     }
 
     // Delta Chat keeps the subject on replies, so the marker is the strongest
@@ -1378,7 +1419,7 @@ export async function createBridge(ctx, cfg, options = {}) {
   async function localCommandReply(from, message, command, catalog, sessionID, resolution) {
     switch (command.command) {
       case 'sessions':
-        return `${formatSessionDirectory(catalog, catalog.boundSessionID)}\n\nUse !help for the full remote-control list.`
+        return `${formatSessionDirectory(catalog, catalog.boundSessionID, catalog.emailDisabled)}\n\nUse !help for the full remote-control list.`
       case 'help': {
         const status = await getStatus()
         return formatRemoteHelp(cfg.remote, {
@@ -1406,6 +1447,7 @@ export async function createBridge(ctx, cfg, options = {}) {
       }
       case 'peek': {
         if (!cfg.remote.peek) return 'Session output by email is disabled in the GUI.'
+        if (!sessionID) return 'No session is bound. Use !peek <session> or !use <session> first.'
         let target = sessionID
         let limit = 5
         for (const token of [command.argument, command.rest].filter(Boolean)) {
@@ -1420,6 +1462,7 @@ export async function createBridge(ctx, cfg, options = {}) {
       }
       case 'tail': {
         if (!cfg.remote.tail) return 'Terminal tail by email is disabled in the GUI.'
+        if (!sessionID) return 'No session is bound. Use !use <session> first.'
         if (!ctx.experimental?.terminal?.read) return 'This OpenCode version does not expose a terminal tail to plugins.'
         const tokens = [command.argument, command.rest].filter(Boolean)
         const lineToken = tokens.find((token) => /^\d+$/.test(token))
@@ -1432,6 +1475,7 @@ export async function createBridge(ctx, cfg, options = {}) {
       }
       case 'send': {
         if (!cfg.remote.sendFiles) return 'Sending project files by email is disabled in the GUI.'
+        if (!sessionID) return 'No session is bound. Use !use <session> first.'
         const filePath = [command.argument, command.rest].filter(Boolean).join(' ').trim()
         if (!filePath) return 'Usage: !send <project-file>'
         const result = await sendFile({ sessionID, filePath, text: 'Attached on request.' })
@@ -1445,6 +1489,7 @@ export async function createBridge(ctx, cfg, options = {}) {
           if (!match) throw new Error(`Unknown session "${command.argument}"; use !sessions to list sessions`)
           target = match.id
         }
+        if (!target) return 'No session is bound. Use !watch <session> or !use <session> first.'
         state.data.watches[from] = {
           sessionID: target,
           inReplyTo: message.messageId,
@@ -1547,7 +1592,7 @@ export async function createBridge(ctx, cfg, options = {}) {
     const sessionID = resolution.sessionID
     await rememberThread(message.messageId, sessionID, from)
 
-    if (establishedNow) {
+    if (establishedNow && sessionID) {
       try {
         await maybeSendWelcome(from, message, sessionID)
       } catch (error) {
@@ -1568,6 +1613,10 @@ export async function createBridge(ctx, cfg, options = {}) {
     if (command?.command === 'use') {
       // `!use <id> question` switches the thread and asks in one email.
       command.rest = `${resolution.note || `Using session ${sessionID}`}\n\n${command.rest}`
+    }
+    if (!sessionID) {
+      await sendCommandReply(from, message, '', resolution.note || 'Email bridge is disabled; use !use <session> to re-enable it', 'session-disabled')
+      return
     }
 
     await enqueue(sessionID, async () => {

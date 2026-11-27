@@ -110,6 +110,8 @@ test('GUI defaults to key generation and stores hostnames without URL schemes', 
   assert.equal(initial.emailProgress, true)
   assert.equal(initial.emailProgressIntervalMs, 20000)
   assert.equal(typeof handlers.rescanInbox, 'function')
+  assert.equal(typeof handlers.testMailAccount, 'function')
+  assert.equal(typeof handlers.resetContact, 'function')
   assert.equal(typeof handlers.reportQuestionReply, 'function')
 
   await handlers.updateSettings({

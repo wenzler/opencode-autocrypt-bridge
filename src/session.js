@@ -101,7 +101,7 @@ export function parseNewSessionArgs(catalog, argument, fallbackDirectory) {
 }
 
 /** Compact, encrypted-readable inventory of open sessions grouped by project. */
-export function formatSessionDirectory(catalog, boundSessionID = '') {
+export function formatSessionDirectory(catalog, boundSessionID = '', emailDisabled = false) {
   const groups = new Map()
   for (const session of catalog.sessions || []) {
     const key = `${session.projectID || ''}\u0000${session.directory || ''}`
@@ -120,6 +120,7 @@ export function formatSessionDirectory(catalog, boundSessionID = '') {
   const sortedGroups = [...groups.values()].sort((a, b) => b.updated - a.updated).slice(0, 8)
   const total = (catalog.sessions || []).length
   const lines = [`OpenCode sessions (${total}):`]
+  if (emailDisabled) lines.push('Email bridge: DISABLED (no session bound; use !use <session-id>)')
   for (const group of sortedGroups) {
     lines.push(`Project ${group.directory}${group.id ? ` [${group.id}]` : ''}`)
     for (const session of group.sessions.slice(0, 12)) {

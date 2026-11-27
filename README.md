@@ -10,6 +10,7 @@ Design rules:
 - **Invites come from the contact:** the bridge never generates a QR. A pasted invite URL (or manually entered fields) supplies the inviter's fingerprint/address/name and the `s=` auth code. The auth code is kept only in local settings and used solely for the IMAP/SMTP handshake; no URL is fetched.
 - **No website calls:** the plugin never fetches the domain in an invite URL. All traffic is IMAP/SMTP to the configured mail host.
 - **Session-aware email:** every outbound subject carries `[session:ses_…]`. Delta Chat keeps that subject on replies, so the bridge returns to the same OpenCode session even across projects. Threading headers and explicit email commands are also supported.
+- **Guided setup:** the GUI shows a readiness checklist, verifies IMAP/SMTP login separately, and disables SecureJoin actions until the prerequisites are applied.
 - **Optional mailbox cleanup:** with **Delete mail after processing** enabled, the bridge expunges each message from IMAP only after handling it successfully. Failures and oversized messages stay in the mailbox.
 - **No remote shell:** encrypted email can answer OpenCode permission requests, answer native multiple-choice question forms, read session output, send project files, and subscribe to session notices. It never exposes arbitrary shell execution.
 - **Ported transport:** IMAP IDLE/checkpoint and SMTP sending patterns are adapted from the MIT-licensed [`opencode-email-sync`](https://github.com/Sponn/opencode-email-sync).
@@ -60,6 +61,14 @@ OpenCode Desktop loads the plugin and **Settings → Autocrypt Bridge** appears.
 
 Choose **Remote type** in the GUI first. Pinning is common to both modes. In SecureJoin the invite's leading fingerprint and `a=` address are the pinned contact (the invite issuer); the bridge offers its own fingerprint only inside the encrypted handshake as the joiner. The bridge never creates an invite, so it cannot make itself the pinned contact.
 
+The **Setup guide** section is the intended path, especially when changing the pinned contact:
+
+1. Fill the mail account fields and click **Test IMAP + SMTP**. This checks login only; it sends nothing.
+2. Paste the invite URL and click **Fill SecureJoin fields**, or enter the pinned address, fingerprint and auth code manually.
+3. Click **Save & restart**. SecureJoin/handshake actions stay disabled until the live bridge uses these exact pinned values.
+4. If a different contact was pinned before, click **Reset contact** to clear the old learned key and handshake state.
+5. Click **Start SecureJoin** (or **Send Autocrypt request** in legacy mode). Then wait for the contact's reply. **Rescan inbox** picks up replies delayed by greylisting.
+
 ### SecureJoin (contact invite, default)
 
 1. In Delta Chat (or another SecureJoin client), show the invite QR for the contact that is allowed to drive OpenCode. Paste its URL into **Contact invite URL** and choose **Fill SecureJoin fields**, or enter every field manually: pinned fingerprint, pinned address, `s=` auth code, `n=` name, `v=` version and optional relay/legacy fields.
@@ -103,6 +112,7 @@ Send these commands from the pinned contact. They are IRC-style leading `!` line
 |---|---|---|
 | `!sessions` | List open projects and sessions with their ids; aliases: `!list`, `!projects` | always |
 | `!use <session-id> [question]` | Continue this email thread in another session; remaining text becomes the prompt. Alias: `!session` | always |
+| `!use none [question]` | Disable email control: no session is bound and prompts are ignored until `!use <session>` or a GUI binding. Aliases: `off`, `disable` | always |
 | `!new <title> in <project-directory>` | Create a session in a listed project and use it for this thread. Alias: `!create` | always |
 | `!default` | Return this thread to the contact's catch-all session. Alias: `!reset` | always |
 | `!status` | Show the bound session, encryption state, and remote-control gates | always |
@@ -116,7 +126,9 @@ Send these commands from the pinned contact. They are IRC-style leading `!` line
 | `!watch [session-id]` | Email completion, failure, idle and decision notices for a session | watch |
 | `!unwatch` | Stop notices for this contact | watch |
 
-Session switches affect the email thread, not any global default. Use **Settings → Autocrypt Bridge → Email session** to pick an open session by title; switching sends a new email thread with a fresh subject so Delta Chat continues in that session. While working in a session you can also run **Switch email bridge to this session** from the command palette, or use the project/location menu’s **Switch email to this session** item. A message with no session marker falls back to the contact's internal `Autocrypt: <contact>` catch-all. New sessions are created from the Desktop UI or with `!new <title> in <project>` from email. The agent also gets an `autocrypt_sessions` tool so it can answer questions about open projects live.
+A bound `None` session disables the bridge: `!help`, `!sessions`, `!status`, `!unwatch`, `!use` and `!new` still work, but normal prompts are acknowledged and ignored. Watches are cleared when the bridge is disabled.
+
+Session switches affect the email thread, not any global default. Use **Settings → Autocrypt Bridge → Email session** to pick an open session by title or **None** to disable; switching sends a new email thread with a fresh subject so Delta Chat continues in that session. While working in a session you can also run **Switch email bridge to this session** from the command palette, or use the project/location menu’s **Switch email to this session** item. A message with no session marker falls back to the contact's internal `Autocrypt: <contact>` catch-all. New sessions are created from the Desktop UI or with `!new <title> in <project>` from email. The agent also gets an `autocrypt_sessions` tool so it can answer questions about open projects live.
 
 ## Stalled decisions and multiple-choice questions
 
@@ -147,8 +159,9 @@ OPENPGP4FPR:FPR#v=3&s=AUTHCODE&a=you%40example.org&n=Bot+contact
 
 **Settings → Autocrypt Bridge** provides:
 
+- **Setup guide**: live checklist, with the next missing step first and action buttons disabled until prerequisites are met;
 - bot address, display name;
-- IMAP/SMTP hostname (no `https://` or path), port, security, login, and passwords;
+- IMAP/SMTP hostname (no `https://` or path), port, security, login, and passwords, plus **Test IMAP + SMTP**;
 - **Remote type**: SecureJoin (Delta Chat) or Autocrypt; setup controls are grouped by mode;
 - pinned contact, pinned fingerprint, optional pinned public key;
 - optional invite URL and **Fill SecureJoin fields**;
@@ -156,7 +169,7 @@ OPENPGP4FPR:FPR#v=3&s=AUTHCODE&a=you%40example.org&n=Bot+contact
 - generated/imported OpenPGP identity and mutual-encryption preference;
 - TLS verification and IMAP poll interval;
 - live status via RPC events: configured/unconfigured state, remote mode, learned fingerprint, established state, fingerprint verification, SecureJoin status, bound session, last error;
-- **Email session**: list open projects/sessions and switch the email thread to a session by title; the switch is announced as a new email thread. Session-screen command and location-menu item switch to the current session;
+- **Email session**: list open projects/sessions and switch the email thread to a session by title, or choose **None** to disable the bridge; the switch is announced as a new email thread. Session-screen command and location-menu item switch to the current session, and a command-palette action disables it;
 - **Remote controls**: independent gates for permission decisions, high-risk email approval, questions, session output, terminal tail, project file sending, watch subscriptions, read receipts, and progressive replies with an adjustable interval;
 - **Delete mail after processing** (off by default), **Rescan inbox**, **Reset contact**, and **Save & restart**.
 
