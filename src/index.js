@@ -7,7 +7,7 @@ import { BridgeRpc } from './rpc.js'
 import { formatSessionDirectory } from './session.js'
 import { applySettingValues, settingsView, storedSettings } from './settings.js'
 
-const PLUGIN_VERSION = '0.5.30'
+const PLUGIN_VERSION = '0.5.31'
 const STORAGE_KEY = 'autocrypt.settings'
 const RUNTIME_KEY = Symbol.for('opencode-autocrypt-bridge.runtime')
 

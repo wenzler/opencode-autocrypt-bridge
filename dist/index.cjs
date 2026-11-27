@@ -129463,7 +129463,7 @@ var BridgeRpc = rpc_exports.define({
 });
 
 // src/index.js
-var PLUGIN_VERSION = "0.5.30";
+var PLUGIN_VERSION = "0.5.31";
 var STORAGE_KEY = "autocrypt.settings";
 var RUNTIME_KEY = Symbol.for("opencode-autocrypt-bridge.runtime");
 function runtimeSlot() {
