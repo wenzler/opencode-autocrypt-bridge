@@ -628,7 +628,7 @@ export default Plugin.define({
               description={
                 <>
                   <ui.Markdown text="Reply !help in the encrypted email thread for the live command list and current gate state." />
-                  <ui.Code content={"!sessions · !use <id>|none · !new <title> in <project>\n!default · !status · !help\n!approve <code> once|always · !deny <code> [reason]\n!answer <code> <choice>[,choice][;choice…]\n!peek [session] [count] · !tail [lines]\n!send <project-file> · !watch [session] · !unwatch"} language="text" />
+                  <ui.Code content={"!sessions · !use <#n|id>|none · !new <title> in <project>\n!default · !status · !help\n!approve <code> once|always · !deny <code> [reason]\n!answer <code> <choice>[,choice][;choice…]\n!peek [session|#n] [count] · !tail [lines]\n!send <project-file> · !watch [session|#n] · !unwatch"} language="text" />
                 </>
               }
             />
@@ -640,7 +640,7 @@ export default Plugin.define({
               title="Open projects and sessions"
               description={
                 <>
-                  <ui.Markdown text="Every outbound email carries the session marker in its subject, so Delta Chat replies stay in that OpenCode session. Email commands: !sessions, !use <id>, !new <title> in <project>, !default, !status." />
+                  <ui.Markdown text="Every outbound email carries the session marker in its subject, so Delta Chat replies stay in that OpenCode session. Email commands: !sessions, !session <#n>, !use <#n|id>, !new <title> in <project>, !default, !status." />
                   <ui.Code content={sessionText()} language="text" />
                 </>
               }

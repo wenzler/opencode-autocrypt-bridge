@@ -59,10 +59,42 @@ export function normalizeMessageId(value) {
     .slice(0, 512)
 }
 
-/** Resolve a user-supplied session id, title fragment, project id or directory. */
-export function resolveSessionRef(sessions, ref) {
+/** Project groups in the exact order shown by !sessions. */
+function displayGroups(catalog) {
+  const groups = new Map()
+  for (const session of catalog?.sessions || []) {
+    const key = `${session.projectID || ''}\u0000${session.directory || ''}`
+    if (!groups.has(key)) {
+      groups.set(key, {
+        id: session.projectID || '',
+        directory: session.directory || '(unknown directory)',
+        updated: 0,
+        sessions: [],
+      })
+    }
+    const group = groups.get(key)
+    group.updated = Math.max(group.updated, Number(session.updated) || 0)
+    group.sessions.push(session)
+  }
+  return [...groups.values()]
+    .sort((a, b) => b.updated - a.updated)
+    .slice(0, 8)
+}
+
+/**
+ * Sessions in the exact order shown by !sessions. Only numbered sessions can
+ * be selected with `!use #n`, so formatting and resolution share this list.
+ */
+export function orderedSessions(catalog) {
+  return displayGroups(catalog).flatMap((group) => group.sessions.slice(0, 12))
+}
+
+/** Resolve a session id, `#n` from !sessions, title fragment, project or directory. */
+export function resolveSessionRef(sessions, ref, displayed = sessions) {
   const needle = String(ref || '').trim().toLowerCase()
   if (!needle) return undefined
+  const numbered = /^#(\d+)$/.exec(needle)
+  if (numbered) return (displayed || [])[Number(numbered[1]) - 1] || undefined
   const exact = sessions.find((session) => String(session.id).toLowerCase() === needle)
   if (exact) return exact
   const matches = sessions.filter((session) => (
@@ -106,43 +138,29 @@ export function parseNewSessionArgs(catalog, argument, fallbackDirectory) {
 
 /** Compact, encrypted-readable inventory of open sessions grouped by project. */
 export function formatSessionDirectory(catalog, boundSessionID = '', emailDisabled = false) {
-  const groups = new Map()
-  for (const session of catalog.sessions || []) {
-    const key = `${session.projectID || ''}\u0000${session.directory || ''}`
-    if (!groups.has(key)) {
-      groups.set(key, {
-        id: session.projectID || '',
-        directory: session.directory || '(unknown directory)',
-        updated: 0,
-        sessions: [],
-      })
-    }
-    const group = groups.get(key)
-    group.updated = Math.max(group.updated, Number(session.updated) || 0)
-    group.sessions.push(session)
-  }
-  const sortedGroups = [...groups.values()].sort((a, b) => b.updated - a.updated).slice(0, 8)
-  const total = (catalog.sessions || []).length
+  const groups = displayGroups(catalog)
+  const total = (catalog?.sessions || []).length
   const lines = [`OpenCode sessions (${total}):`]
-  if (emailDisabled) lines.push('Email bridge: DISABLED (no session bound; use !use <session-id>)')
-  for (const group of sortedGroups) {
+  if (emailDisabled) lines.push('Email bridge: DISABLED (no session bound; use !use <session-id|#n>)')
+  let number = 0
+  for (const group of groups) {
     lines.push(`Project ${group.directory}${group.id ? ` [${group.id}]` : ''}`)
     for (const session of group.sessions.slice(0, 12)) {
+      number += 1
       const marker = session.id === boundSessionID ? '  [email-bound]' : ''
-      lines.push(`  ${session.id}  ${session.title || '(untitled)'}${marker}`)
+      lines.push(`  #${number}  ${session.id}  ${session.title || '(untitled)'}${marker}`)
     }
   }
-  if (total > sortedGroups.reduce((sum, group) => sum + group.sessions.length, 0)) {
-    lines.push(`...and ${total - sortedGroups.reduce((sum, group) => sum + group.sessions.length, 0)} more sessions`)
-  }
+  if (total > number) lines.push(`...and ${total - number} more sessions (not numbered)`)
   lines.push('')
   lines.push('Commands:')
-  lines.push('  !sessions                 list projects and sessions')
-  lines.push('  !use <session-id>         continue this email thread in that session')
+  lines.push('  !sessions                 list projects and numbered sessions')
+  lines.push('  !use <#n|session-id>      continue this email thread in that session')
+  lines.push('  !session <#n|session-id>  alias for !use')
   lines.push('  !new <title> in <project> create a session in a listed project')
   lines.push('  !default                  return this thread to the email-bound session')
   lines.push('  !status                   show the current bridge binding')
-  lines.push('  !watch [session-id]       email result, failure and decision notices')
+  lines.push('  !watch [session-id|#n]    email result, failure and decision notices')
   lines.push('  !unwatch                  stop those notices')
   lines.push('  !help                     full remote-control command list')
   return lines.join('\n')

@@ -110,9 +110,9 @@ Send these commands from the pinned contact. They are IRC-style leading `!` line
 
 | Command | Meaning | Gate |
 |---|---|---|
-| `!sessions` | List open projects and sessions with their ids; aliases: `!list`, `!projects` | always |
-| `!use <session-id> [question]` | Continue this email thread in another session; remaining text becomes the prompt. Alias: `!session` | always |
-| `!use none [question]` | Disable email control: no session is bound and prompts are ignored until `!use <session>` or a GUI binding. Aliases: `off`, `disable` | always |
+| `!sessions` | List open projects and numbered sessions (`#1`, `#2`, …); aliases: `!list`, `!projects` | always |
+| `!use <#n\|session-id> [question]` | Continue this email thread in another session; remaining text becomes the prompt. Alias: `!session` | always |
+| `!use none [question]` | Disable email control: no session is bound and prompts are ignored until `!use <#n\|session>` or a GUI binding. Aliases: `off`, `disable` | always |
 | `!new <title> in <project-directory>` | Create a session in a listed project and use it for this thread. Alias: `!create` | always |
 | `!default` | Return this thread to the contact's catch-all session. Alias: `!reset` | always |
 | `!status` | Show the bound session, encryption state, and remote-control gates | always |
@@ -120,11 +120,13 @@ Send these commands from the pinned contact. They are IRC-style leading `!` line
 | `!approve <code> once\|always` | Answer a stalled OpenCode permission request. Alias: `!decide` | permission decisions |
 | `!deny <code> [reason]` | Reject a permission request, with optional feedback. Alias: `!reject` | permission decisions |
 | `!answer <code> <choice>[,choice][;choice…]` | Answer a native multiple-choice question form | questions |
-| `!peek [session-id] [count]` | Read recent assistant output from a session | session output |
+| `!peek [session-id\|#n] [count]` | Read recent assistant output from a session | session output |
 | `!tail [lines]` | Read the session terminal tail | terminal tail |
 | `!send <project-file>` | Attach a file from the session project directory | file sending |
-| `!watch [session-id]` | Email completion, failure, idle and decision notices for a session | watch |
+| `!watch [session-id\|#n]` | Email completion, failure, idle and decision notices for a session | watch |
 | `!unwatch` | Stop notices for this contact | watch |
+
+The `#n` numbers follow the order printed by `!sessions` (most recently updated project first). Run `!sessions` again if sessions were created or reordered; old numbers can point somewhere else.
 
 A bound `None` session disables the bridge: `!help`, `!sessions`, `!status`, `!unwatch`, `!use` and `!new` still work, but normal prompts are acknowledged and ignored. Watches are cleared when the bridge is disabled.
 

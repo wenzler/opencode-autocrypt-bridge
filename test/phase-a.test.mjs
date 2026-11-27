@@ -217,7 +217,7 @@ test('dynamic help shows the live gate state', () => {
   assert.match(text, /Permission decisions by email: on/)
   assert.match(text, /Multiple-choice answers by email: on/)
   assert.match(text, /High-risk decisions by email: off/)
-  assert.match(text, /!peek \[session-id\] \[count\].*off:/)
+  assert.match(text, /!peek \[session-id\|#n\] \[count\].*off:/)
   assert.match(text, /!commands, !shortcuts/)
 })
 

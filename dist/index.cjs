@@ -99541,7 +99541,7 @@ var COMMAND_SPECS = [
   },
   {
     names: ["use", "session"],
-    usage: "!use <session-id> [question]",
+    usage: "!use <#n|session-id> [question]",
     description: "switch this email thread and optionally prompt in one mail",
     gate: "always"
   },
@@ -99589,7 +99589,7 @@ var COMMAND_SPECS = [
   },
   {
     names: ["peek", "output"],
-    usage: "!peek [session-id] [count]",
+    usage: "!peek [session-id|#n] [count]",
     description: "read the latest assistant output from a session",
     gate: "peek"
   },
@@ -99607,7 +99607,7 @@ var COMMAND_SPECS = [
   },
   {
     names: ["watch"],
-    usage: "!watch [session-id]",
+    usage: "!watch [session-id|#n]",
     description: "email this thread when the session finishes or fails",
     gate: "watch"
   },
@@ -126748,9 +126748,32 @@ function parseSessionCommand(text) {
 function normalizeMessageId(value3) {
   return String(value3 || "").replace(/[\r\n\x00-\x1f\x7f]/g, "").trim().replace(/[<>]/g, "").slice(0, 512);
 }
-function resolveSessionRef(sessions, ref) {
+function displayGroups(catalog) {
+  const groups = /* @__PURE__ */ new Map();
+  for (const session of catalog?.sessions || []) {
+    const key5 = `${session.projectID || ""}\0${session.directory || ""}`;
+    if (!groups.has(key5)) {
+      groups.set(key5, {
+        id: session.projectID || "",
+        directory: session.directory || "(unknown directory)",
+        updated: 0,
+        sessions: []
+      });
+    }
+    const group = groups.get(key5);
+    group.updated = Math.max(group.updated, Number(session.updated) || 0);
+    group.sessions.push(session);
+  }
+  return [...groups.values()].sort((a, b) => b.updated - a.updated).slice(0, 8);
+}
+function orderedSessions(catalog) {
+  return displayGroups(catalog).flatMap((group) => group.sessions.slice(0, 12));
+}
+function resolveSessionRef(sessions, ref, displayed = sessions) {
   const needle = String(ref || "").trim().toLowerCase();
   if (!needle) return void 0;
+  const numbered = /^#(\d+)$/.exec(needle);
+  if (numbered) return (displayed || [])[Number(numbered[1]) - 1] || void 0;
   const exact = sessions.find((session) => String(session.id).toLowerCase() === needle);
   if (exact) return exact;
   const matches = sessions.filter((session) => String(session.title || "").toLowerCase().includes(needle) || String(session.directory || "").toLowerCase() === needle || String(session.projectID || "").toLowerCase() === needle);
@@ -126782,43 +126805,29 @@ function parseNewSessionArgs(catalog, argument, fallbackDirectory) {
   return { title: title || "Autocrypt session", directory };
 }
 function formatSessionDirectory(catalog, boundSessionID = "", emailDisabled = false) {
-  const groups = /* @__PURE__ */ new Map();
-  for (const session of catalog.sessions || []) {
-    const key5 = `${session.projectID || ""}\0${session.directory || ""}`;
-    if (!groups.has(key5)) {
-      groups.set(key5, {
-        id: session.projectID || "",
-        directory: session.directory || "(unknown directory)",
-        updated: 0,
-        sessions: []
-      });
-    }
-    const group = groups.get(key5);
-    group.updated = Math.max(group.updated, Number(session.updated) || 0);
-    group.sessions.push(session);
-  }
-  const sortedGroups = [...groups.values()].sort((a, b) => b.updated - a.updated).slice(0, 8);
-  const total2 = (catalog.sessions || []).length;
+  const groups = displayGroups(catalog);
+  const total2 = (catalog?.sessions || []).length;
   const lines = [`OpenCode sessions (${total2}):`];
-  if (emailDisabled) lines.push("Email bridge: DISABLED (no session bound; use !use <session-id>)");
-  for (const group of sortedGroups) {
+  if (emailDisabled) lines.push("Email bridge: DISABLED (no session bound; use !use <session-id|#n>)");
+  let number3 = 0;
+  for (const group of groups) {
     lines.push(`Project ${group.directory}${group.id ? ` [${group.id}]` : ""}`);
     for (const session of group.sessions.slice(0, 12)) {
+      number3 += 1;
       const marker = session.id === boundSessionID ? "  [email-bound]" : "";
-      lines.push(`  ${session.id}  ${session.title || "(untitled)"}${marker}`);
+      lines.push(`  #${number3}  ${session.id}  ${session.title || "(untitled)"}${marker}`);
     }
   }
-  if (total2 > sortedGroups.reduce((sum3, group) => sum3 + group.sessions.length, 0)) {
-    lines.push(`...and ${total2 - sortedGroups.reduce((sum3, group) => sum3 + group.sessions.length, 0)} more sessions`);
-  }
+  if (total2 > number3) lines.push(`...and ${total2 - number3} more sessions (not numbered)`);
   lines.push("");
   lines.push("Commands:");
-  lines.push("  !sessions                 list projects and sessions");
-  lines.push("  !use <session-id>         continue this email thread in that session");
+  lines.push("  !sessions                 list projects and numbered sessions");
+  lines.push("  !use <#n|session-id>      continue this email thread in that session");
+  lines.push("  !session <#n|session-id>  alias for !use");
   lines.push("  !new <title> in <project> create a session in a listed project");
   lines.push("  !default                  return this thread to the email-bound session");
   lines.push("  !status                   show the current bridge binding");
-  lines.push("  !watch [session-id]       email result, failure and decision notices");
+  lines.push("  !watch [session-id|#n]    email result, failure and decision notices");
   lines.push("  !unwatch                  stop those notices");
   lines.push("  !help                     full remote-control command list");
   return lines.join("\n");
@@ -127057,7 +127066,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
     if (await sessionExists(candidate)) {
       title = catalog.sessions.find((entry) => entry.id === candidate)?.title || candidate;
     } else {
-      const match8 = resolveSessionRef(catalog.sessions, candidate);
+      const match8 = resolveSessionRef(catalog.sessions, candidate, orderedSessions(catalog));
       if (!match8) throw new Error(`Unknown session "${candidate}"; use !sessions to list sessions`);
       resolved = match8.id;
       title = match8.title;
@@ -127987,7 +127996,7 @@ ${chunk}`
         return { sessionID: "", reason: "disabled", note: "Email bridge disabled (no session bound)" };
       }
       const catalog = await listSessions();
-      const match8 = resolveSessionRef(catalog.sessions, command.argument);
+      const match8 = resolveSessionRef(catalog.sessions, command.argument, orderedSessions(catalog));
       if (!match8) throw new Error(`Unknown session "${command.argument}"; use !sessions to list sessions`);
       await rememberThread(message.messageId, match8.id, from);
       return { sessionID: match8.id, reason: "use", note: `Using session ${match8.id} (${match8.title})` };
@@ -128174,7 +128183,7 @@ Use !help for the full remote-control list.`;
         for (const token of [command.argument, command.rest].filter(Boolean)) {
           if (/^\d+$/.test(token)) limit = Number(token);
           else {
-            const match8 = resolveSessionRef(catalog.sessions, token);
+            const match8 = resolveSessionRef(catalog.sessions, token, orderedSessions(catalog));
             if (!match8) throw new Error(`Unknown session "${token}"; use !sessions to list sessions`);
             target = match8.id;
           }
@@ -128204,7 +128213,7 @@ Use !help for the full remote-control list.`;
         if (!cfg.remote.watch) return "Session watch is disabled in the GUI.";
         let target = sessionID;
         if (command.argument) {
-          const match8 = resolveSessionRef(catalog.sessions, command.argument);
+          const match8 = resolveSessionRef(catalog.sessions, command.argument, orderedSessions(catalog));
           if (!match8) throw new Error(`Unknown session "${command.argument}"; use !sessions to list sessions`);
           target = match8.id;
         }
@@ -128980,7 +128989,7 @@ var BridgeRpc = rpc_exports.define({
 });
 
 // src/index.js
-var PLUGIN_VERSION = "0.5.26";
+var PLUGIN_VERSION = "0.5.27";
 var SETTING_KEYS = [
   "address",
   "displayName",

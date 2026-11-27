@@ -7,6 +7,7 @@ import { decryptMessage, keyFingerprint } from '../src/crypto.js'
 import { loadConfig } from '../src/config.js'
 import { armorToBase64, autocryptHeader } from '../src/headers.js'
 import { extractArmored, parseRawHeaders } from '../src/mime.js'
+import { orderedSessions } from '../src/session.js'
 
 async function keyPair(email) {
   const pair = await openpgp.generateKey({
@@ -297,6 +298,34 @@ test('!use switches the email thread and prompts the remaining text there', asyn
   assert.match(parseRawHeaders(h.sent.at(-1).raw).get('subject'), /\[session:ses_main\]/)
 })
 
+test('!session #n switches using the number printed by !sessions', async () => {
+  const bot = await keyPair('bot7a@example.org')
+  const contact = await keyPair('contact7a@example.net')
+  const existing = {
+    id: 'ses_main',
+    title: 'Main project',
+    projectID: 'p1',
+    location: { directory: '/work/alpha' },
+    time: { updated: 10 },
+  }
+  const h = harness(contact.fingerprint, { assistantText: 'numbered answer', sessions: [existing] })
+  const bridge = await createBridge(h.ctx, h.cfg, { identity: bot, sender: h.sender, log: () => {} })
+
+  await bridge.process(firstContactMail(contact))
+  const displayed = orderedSessions(await bridge.listSessions())
+  const number = displayed.findIndex((session) => session.id === 'ses_main') + 1
+  assert.ok(number > 0)
+  await bridge.process(contactReply(contact, {
+    subject: 'Re: first contact [session:session-1]',
+    text: `!session #${number} please inspect`,
+    messageId: '<numbered-switch@example.net>',
+  }))
+
+  assert.deepEqual(h.prompted, ['session-1', 'ses_main'])
+  assert.match(h.promptInputs[1].text, /please inspect/)
+  assert.match(parseRawHeaders(h.sent.at(-1).raw).get('subject'), /\[session:ses_main\]/)
+})
+
 test('!sessions lists projects and sessions without prompting the agent', async () => {
   const bot = await keyPair('bot8@example.org')
   const contact = await keyPair('contact8@example.net')
@@ -323,5 +352,5 @@ test('!sessions lists projects and sessions without prompting the agent', async 
   const text = await sentText(h.sent, bot)
   assert.match(text, /OpenCode sessions/)
   assert.match(text, /ses_main/)
-  assert.match(text, /!use <session-id>/)
+  assert.match(text, /!use <#n\|session-id>/)
 })

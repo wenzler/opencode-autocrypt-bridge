@@ -42,6 +42,7 @@ import { autocryptGossipHeader, autocryptHeader, parseAutocryptHeader } from './
 import {
   formatSessionDirectory,
   normalizeMessageId,
+  orderedSessions,
   parseNewSessionArgs,
   parseSessionCommand,
   resolveSessionRef,
@@ -307,7 +308,7 @@ export async function createBridge(ctx, cfg, options = {}) {
     if (await sessionExists(candidate)) {
       title = catalog.sessions.find((entry) => entry.id === candidate)?.title || candidate
     } else {
-      const match = resolveSessionRef(catalog.sessions, candidate)
+      const match = resolveSessionRef(catalog.sessions, candidate, orderedSessions(catalog))
       if (!match) throw new Error(`Unknown session "${candidate}"; use !sessions to list sessions`)
       resolved = match.id
       title = match.title
@@ -1315,7 +1316,7 @@ export async function createBridge(ctx, cfg, options = {}) {
         return { sessionID: '', reason: 'disabled', note: 'Email bridge disabled (no session bound)' }
       }
       const catalog = await listSessions()
-      const match = resolveSessionRef(catalog.sessions, command.argument)
+      const match = resolveSessionRef(catalog.sessions, command.argument, orderedSessions(catalog))
       if (!match) throw new Error(`Unknown session "${command.argument}"; use !sessions to list sessions`)
       await rememberThread(message.messageId, match.id, from)
       return { sessionID: match.id, reason: 'use', note: `Using session ${match.id} (${match.title})` }
@@ -1509,7 +1510,7 @@ export async function createBridge(ctx, cfg, options = {}) {
         for (const token of [command.argument, command.rest].filter(Boolean)) {
           if (/^\d+$/.test(token)) limit = Number(token)
           else {
-            const match = resolveSessionRef(catalog.sessions, token)
+            const match = resolveSessionRef(catalog.sessions, token, orderedSessions(catalog))
             if (!match) throw new Error(`Unknown session "${token}"; use !sessions to list sessions`)
             target = match.id
           }
@@ -1541,7 +1542,7 @@ export async function createBridge(ctx, cfg, options = {}) {
         if (!cfg.remote.watch) return 'Session watch is disabled in the GUI.'
         let target = sessionID
         if (command.argument) {
-          const match = resolveSessionRef(catalog.sessions, command.argument)
+          const match = resolveSessionRef(catalog.sessions, command.argument, orderedSessions(catalog))
           if (!match) throw new Error(`Unknown session "${command.argument}"; use !sessions to list sessions`)
           target = match.id
         }

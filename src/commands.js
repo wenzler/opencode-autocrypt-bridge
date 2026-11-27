@@ -17,7 +17,7 @@ export const COMMAND_SPECS = [
   },
   {
     names: ['use', 'session'],
-    usage: '!use <session-id> [question]',
+    usage: '!use <#n|session-id> [question]',
     description: 'switch this email thread and optionally prompt in one mail',
     gate: 'always',
   },
@@ -65,7 +65,7 @@ export const COMMAND_SPECS = [
   },
   {
     names: ['peek', 'output'],
-    usage: '!peek [session-id] [count]',
+    usage: '!peek [session-id|#n] [count]',
     description: 'read the latest assistant output from a session',
     gate: 'peek',
   },
@@ -83,7 +83,7 @@ export const COMMAND_SPECS = [
   },
   {
     names: ['watch'],
-    usage: '!watch [session-id]',
+    usage: '!watch [session-id|#n]',
     description: 'email this thread when the session finishes or fails',
     gate: 'watch',
   },

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   formatSessionDirectory,
   normalizeMessageId,
+  orderedSessions,
   parseNewSessionArgs,
   parseSessionCommand,
   resolveSessionRef,
@@ -43,6 +44,11 @@ test('session commands are parsed without consuming ordinary prompts', () => {
     argument: 'ses_main',
     rest: 'check the build',
   })
+  assert.deepEqual(parseSessionCommand('!session #3'), {
+    command: 'use',
+    argument: '#3',
+    rest: '',
+  })
   assert.deepEqual(parseSessionCommand('!new Fix parser in /work/alpha'), {
     command: 'new',
     argument: 'Fix parser in /work/alpha',
@@ -62,6 +68,18 @@ test('session refs resolve by id, title and project, and reject ambiguity', () =
   )
 })
 
+test('displayed sessions are numbered and resolve through #n', () => {
+  const displayed = orderedSessions(catalog)
+  assert.deepEqual(displayed.map((session) => session.id), ['ses_other', 'ses_bridge', 'ses_main'])
+  assert.equal(resolveSessionRef(catalog.sessions, '#1', displayed).id, 'ses_other')
+  assert.equal(resolveSessionRef(catalog.sessions, '#3', displayed).id, 'ses_main')
+  assert.equal(resolveSessionRef(catalog.sessions, '#99', displayed), undefined)
+  const text = formatSessionDirectory(catalog, 'ses_main')
+  assert.match(text, /#1\s+ses_other\s+Other project/)
+  assert.match(text, /#2\s+ses_bridge/)
+  assert.match(text, /#3\s+ses_main\s+Main project\s+\[email-bound\]/)
+})
+
 test('new session arguments split title from a known project', () => {
   assert.deepEqual(parseNewSessionArgs(catalog, 'Fix parser in /work/alpha', '/work/alpha'), {
     title: 'Fix parser',
@@ -77,9 +95,9 @@ test('new session arguments split title from a known project', () => {
 test('session directory is readable from an encrypted mail client', () => {
   const text = formatSessionDirectory(catalog, 'ses_main')
   assert.match(text, /OpenCode sessions \(3\)/)
-  assert.match(text, /ses_main.*Main project.*\[email-bound\]/)
-  assert.match(text, /!use <session-id>/)
+  assert.match(text, /#3\s+ses_main\s+Main project\s+\[email-bound\]/)
+  assert.match(text, /!use <#n\|session-id>/)
   assert.match(text, /!new <title> in <project>/)
-  assert.match(text, /!watch \[session-id\]/)
+  assert.match(text, /!watch \[session-id\|#n\]/)
   assert.match(text, /!unwatch/)
 })
