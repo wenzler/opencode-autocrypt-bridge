@@ -95,6 +95,11 @@ export const COMMAND_SPECS = [
   },
 ]
 
+/** Every alias advertised in help is accepted by the command parser. */
+export const COMMAND_ALIASES = Object.fromEntries(
+  COMMAND_SPECS.flatMap((spec) => spec.names.slice(1).map((alias) => [alias, spec.names[0]])),
+)
+
 const GATE_LABELS = {
   decisions: 'Allow permission decisions by email',
   questions: 'Allow multiple-choice answers by email',
@@ -102,6 +107,8 @@ const GATE_LABELS = {
   tail: 'Allow terminal tail by email',
   sendFiles: 'Allow sending project files',
   watch: 'Allow session watch subscriptions',
+  readReceipts: 'Send read receipts by email',
+  progress: 'Send progressive replies by email',
 }
 
 function enabled(remote, gate) {
@@ -219,6 +226,7 @@ export function formatDecisionRequest({ code, action, resources = [], risk, enab
     lines.push(`  !approve ${code} once`)
     if (options.includes('always')) lines.push(`  !approve ${code} always`)
     lines.push(`  !deny ${code} [reason]`)
+    lines.push(`  !reject ${code} [reason]`)
     if (risk.level === 'high') lines.push('')
     if (risk.level === 'high') lines.push('This is HIGH RISK: out-of-project access or a shell-like action.')
     if (highRiskAllowed) lines.push('High-risk email approval is enabled in the GUI.')

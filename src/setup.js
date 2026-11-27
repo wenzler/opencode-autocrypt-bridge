@@ -65,8 +65,12 @@ export function setupReadiness(settings = {}, status = {}, extra = {}) {
   const applied = Boolean(current.configured && current.running)
     && liveContact === pinnedContact
     && liveFingerprint === fingerprint
-  const verified = Boolean(current.verified)
+  const secureJoinVerified = Boolean(current.verified)
   const learned = Boolean(current.learnedFingerprint && current.learnedFingerprint === fingerprint)
+  const established = Boolean(current.established || learned)
+  // SecureJoin has a verified handshake. Autocrypt only establishes that the
+  // learned key matches the pin; it must not be described as verified chat.
+  const verified = mode === 'autocrypt' ? established && learned : secureJoinVerified
 
   const steps = [
     {
@@ -124,6 +128,8 @@ export function setupReadiness(settings = {}, status = {}, extra = {}) {
     mailReady,
     applied,
     verified,
+    established,
+    secureJoinVerified,
     learned,
     canStartSecureJoin: mode === 'securejoin' && prerequisites && !verified,
     canStartHandshake: mode === 'autocrypt' && prerequisites && !verified,

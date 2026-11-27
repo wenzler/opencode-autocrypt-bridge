@@ -160,6 +160,28 @@ test('start and stop emit resolved status objects, not promises', async () => {
   assert.equal(stopStatus.running, false)
 })
 
+test('a malformed message is consumed instead of blocking the mailbox', async () => {
+  const identity = await keyPair('bot@example.org')
+  const cfg = mailConfig({ generateKey: false })
+  const values = new Map()
+  const ctx = {
+    storage: {
+      async get(key) { return values.get(key) },
+      async set(key, value) { values.set(key, value) },
+    },
+    session: {},
+    event: { subscribe() { return (async function* () {})() } },
+    location: { directory: '/tmp' },
+  }
+  const bridge = await createBridge(ctx, cfg, {
+    identity,
+    log: () => {},
+    sender: { async send() {} },
+    startImap: async () => {},
+  })
+  assert.equal(await bridge.process(Buffer.from('not a mail at all')), true)
+})
+
 test('an encryption failure never falls back to cleartext', async () => {
   const bot = await keyPair('bot@example.org')
   const contact = await keyPair('contact@example.net')

@@ -81988,21 +81988,21 @@ var concat = (prefix, bytes2) => {
   out.set(bytes2, prefix.length);
   return out;
 };
-var importPrivate = (subtle, bytes2, spec, extractable) => subtle.importKey("pkcs8", spec.seedPrefix === void 0 ? bytes2 : concat(spec.seedPrefix, bytes2), spec.importParams, extractable, spec.privateUsages);
-var importPublic = (subtle, bytes2, spec) => subtle.importKey(spec.publicFormat, bytes2, spec.importParams, true, spec.publicUsages);
-var exportPrivate = async (subtle, cryptoKey, spec) => {
+var importPrivate = (subtle, bytes2, spec2, extractable) => subtle.importKey("pkcs8", spec2.seedPrefix === void 0 ? bytes2 : concat(spec2.seedPrefix, bytes2), spec2.importParams, extractable, spec2.privateUsages);
+var importPublic = (subtle, bytes2, spec2) => subtle.importKey(spec2.publicFormat, bytes2, spec2.importParams, true, spec2.publicUsages);
+var exportPrivate = async (subtle, cryptoKey, spec2) => {
   const pkcs8 = new Uint8Array(await subtle.exportKey("pkcs8", cryptoKey));
-  const prefix = spec.seedPrefix;
+  const prefix = spec2.seedPrefix;
   if (prefix === void 0) return pkcs8;
   if (pkcs8.length !== prefix.length + seedLength || !prefix.every((byte, i) => pkcs8[i] === byte)) {
     throw new Failure(new Unsupported({
-      description: `${spec.name} private key was exported in an unexpected PKCS#8 form`
+      description: `${spec2.name} private key was exported in an unexpected PKCS#8 form`
     }));
   }
   return pkcs8.slice(prefix.length);
 };
-var exportPublic = async (subtle, cryptoKey, spec) => new Uint8Array(await subtle.exportKey(spec.publicFormat, cryptoKey));
-var exportKey = (subtle, cryptoKey, spec, role) => role === "private" ? exportPrivate(subtle, cryptoKey, spec) : exportPublic(subtle, cryptoKey, spec);
+var exportPublic = async (subtle, cryptoKey, spec2) => new Uint8Array(await subtle.exportKey(spec2.publicFormat, cryptoKey));
+var exportKey = (subtle, cryptoKey, spec2, role) => role === "private" ? exportPrivate(subtle, cryptoKey, spec2) : exportPublic(subtle, cryptoKey, spec2);
 var toBytes4 = (family4, key5) => toBytes(family4.module, key5, (subtle, cryptoKey) => exportKey(subtle, cryptoKey, family4.specOf(key5.algorithm), family4.isPrivateKey(key5) ? "private" : "public"));
 
 // node_modules/effect/dist/crypto/KeyAgreement.js
@@ -82684,7 +82684,7 @@ var checkJwk = (data, algorithm, role) => {
 var decodeAsymmetric = (method, role, format10, algorithm, data) => suspend2(() => {
   const family4 = familyOf(algorithm);
   if (family4 === void 0) return invalidKey2(method, "Expected an asymmetric algorithm");
-  const spec = family4.specOf(algorithm);
+  const spec2 = family4.specOf(algorithm);
   let input;
   if (format10._tag === "jwk") {
     const checked = checkJwk(data, algorithm, role);
@@ -82706,7 +82706,7 @@ var decodeAsymmetric = (method, role, format10, algorithm, data) => suspend2(() 
     }
     let converted = der;
     if (format10._tag === "pkcs1") {
-      converted = spec.publicFormat === "spki" ? pkcs1ToPkcs8(der) : {
+      converted = spec2.publicFormat === "spki" ? pkcs1ToPkcs8(der) : {
         reason: "InvalidKey",
         description: "PKCS#1 holds RSA private keys only"
       };
@@ -82727,9 +82727,9 @@ var decodeAsymmetric = (method, role, format10, algorithm, data) => suspend2(() 
     };
   }
   return runWithReference("KeyFormat", method, algorithm.name, async (subtle) => {
-    const usages = role === "private" ? spec.privateUsages : spec.publicUsages;
-    const cryptoKey = input.format === "jwk" ? await subtle.importKey("jwk", input.data, spec.importParams, true, [...usages]) : await subtle.importKey(input.format, input.data, spec.importParams, true, [...usages]);
-    return makeBytes(role === "private" ? family4.privateKeyProto : family4.publicKeyProto, importedAlgorithm(algorithm, cryptoKey), await exportKey(subtle, cryptoKey, spec, role));
+    const usages = role === "private" ? spec2.privateUsages : spec2.publicUsages;
+    const cryptoKey = input.format === "jwk" ? await subtle.importKey("jwk", input.data, spec2.importParams, true, [...usages]) : await subtle.importKey(input.format, input.data, spec2.importParams, true, [...usages]);
+    return makeBytes(role === "private" ? family4.privateKeyProto : family4.publicKeyProto, importedAlgorithm(algorithm, cryptoKey), await exportKey(subtle, cryptoKey, spec2, role));
   });
 });
 var decodePublic = (format10, algorithm, data) => decodeAsymmetric("decodePublic", "public", format10, algorithm, data);
@@ -82743,7 +82743,7 @@ var decodeSecret = (format10, algorithm, data) => suspend2(() => {
   return secretFamily(algorithm).key(algorithm, bytes2.success).pipe(catch_2(rehome("KeyFormat", "decodeSecret")));
 });
 var encodeAsymmetric = (format10, key5, family4) => suspend2(() => {
-  const spec = family4.specOf(key5.algorithm);
+  const spec2 = family4.specOf(key5.algorithm);
   const role = family4.isPrivateKey(key5) ? "private" : "public";
   const stored = material(key5);
   if (stored._tag === "CryptoKey" && !stored.cryptoKey.extractable) {
@@ -82751,15 +82751,15 @@ var encodeAsymmetric = (format10, key5, family4) => suspend2(() => {
   }
   const target = format10._tag === "jwk" ? "jwk" : format10._tag === "spki" ? "spki" : "pkcs8";
   if (stored._tag === "Bytes") {
-    if (target === "pkcs8" && role === "private" && spec.seedPrefix === void 0) {
+    if (target === "pkcs8" && role === "private" && spec2.seedPrefix === void 0) {
       return succeed6(copyBytes2(stored.bytes));
     }
-    if (target === "spki" && role === "public" && spec.publicFormat === "spki") {
+    if (target === "spki" && role === "public" && spec2.publicFormat === "spki") {
       return succeed6(copyBytes2(stored.bytes));
     }
   }
   return runWithReference("KeyFormat", "encode", key5.algorithm.name, async (subtle) => {
-    const cryptoKey = stored._tag === "CryptoKey" ? stored.cryptoKey : role === "private" ? await importPrivate(subtle, stored.bytes, spec, true) : await importPublic(subtle, stored.bytes, spec);
+    const cryptoKey = stored._tag === "CryptoKey" ? stored.cryptoKey : role === "private" ? await importPrivate(subtle, stored.bytes, spec2, true) : await importPublic(subtle, stored.bytes, spec2);
     if (target === "jwk") {
       return pick(await subtle.exportKey("jwk", cryptoKey), role === "private" ? privateMembers : publicMembers);
     }
@@ -99618,13 +99618,18 @@ var COMMAND_SPECS = [
     gate: "watch"
   }
 ];
+var COMMAND_ALIASES = Object.fromEntries(
+  COMMAND_SPECS.flatMap((spec2) => spec2.names.slice(1).map((alias) => [alias, spec2.names[0]]))
+);
 var GATE_LABELS = {
   decisions: "Allow permission decisions by email",
   questions: "Allow multiple-choice answers by email",
   peek: "Allow session output by email",
   tail: "Allow terminal tail by email",
   sendFiles: "Allow sending project files",
-  watch: "Allow session watch subscriptions"
+  watch: "Allow session watch subscriptions",
+  readReceipts: "Send read receipts by email",
+  progress: "Send progressive replies by email"
 };
 function enabled(remote, gate) {
   if (gate === "always") return true;
@@ -99682,10 +99687,10 @@ function formatRemoteHelp(remote = {}, details = {}) {
   const lines = ["Autocrypt remote commands (reply in this encrypted thread):", ""];
   const active = [];
   const inactive = [];
-  for (const spec of COMMAND_SPECS) {
-    const line = `  ${spec.usage.padEnd(34)} ${spec.description}`;
-    if (enabled(remote, spec.gate)) active.push(line);
-    else inactive.push(`  ${spec.usage.padEnd(34)} ${spec.description} [off: ${GATE_LABELS[spec.gate] || spec.gate}]`);
+  for (const spec2 of COMMAND_SPECS) {
+    const line = `  ${spec2.usage.padEnd(34)} ${spec2.description}`;
+    if (enabled(remote, spec2.gate)) active.push(line);
+    else inactive.push(`  ${spec2.usage.padEnd(34)} ${spec2.description} [off: ${GATE_LABELS[spec2.gate] || spec2.gate}]`);
   }
   lines.push(...active);
   if (inactive.length) {
@@ -99734,6 +99739,7 @@ function formatDecisionRequest({ code, action, resources = [], risk, enabled: en
     lines.push(`  !approve ${code} once`);
     if (options2.includes("always")) lines.push(`  !approve ${code} always`);
     lines.push(`  !deny ${code} [reason]`);
+    lines.push(`  !reject ${code} [reason]`);
     if (risk.level === "high") lines.push("");
     if (risk.level === "high") lines.push("This is HIGH RISK: out-of-project access or a shell-like action.");
     if (highRiskAllowed) lines.push("High-risk email approval is enabled in the GUI.");
@@ -126251,8 +126257,10 @@ function parseDispositionNotification(raw) {
     ));
     const disposition = String(fields.get("disposition") || "");
     if (!disposition) continue;
+    const action = String(fields.get("action") || disposition.split(";").slice(1).join(";") || "").trim().toLowerCase();
     return {
       disposition,
+      action,
       originalMessageID: String(fields.get("original-message-id") || headers.get("in-reply-to") || "")
     };
   }
@@ -126713,17 +126721,6 @@ async function parseIncoming(raw, cfg, identity2, log2, pinned = cfg.pinned || {
 }
 
 // src/session.js
-var ALIASES = {
-  list: "sessions",
-  projects: "sessions",
-  commands: "help",
-  shortcuts: "help",
-  session: "use",
-  create: "new",
-  reset: "default",
-  reject: "deny",
-  decide: "approve"
-};
 var SIMPLE_COMMANDS = /* @__PURE__ */ new Set(["sessions", "help", "status", "default", "unwatch"]);
 var SUBJECT_MARKER = /\[session:([^\]]+)\]/i;
 function withSessionSubject(subject, sessionID) {
@@ -126742,7 +126739,7 @@ function parseSessionCommand(text) {
   if (first < 0) return null;
   const match8 = /^!([a-z]+)(?:\s+([\s\S]*))?$/i.exec(lines[first].trim());
   if (!match8) return null;
-  const command = ALIASES[match8[1].toLowerCase()] || match8[1].toLowerCase();
+  const command = COMMAND_ALIASES[match8[1].toLowerCase()] || match8[1].toLowerCase();
   const argument = String(match8[2] || "").trim();
   if (SIMPLE_COMMANDS.has(command)) return { command, argument: "", rest: "" };
   if (command === "use") {
@@ -126862,6 +126859,27 @@ var OUTBOX_LIMIT = 200;
 var OUTBOX_INTERVAL_MS = 1e4;
 var OUTBOX_BASE_DELAY_MS = 15e3;
 var OUTBOX_MAX_DELAY_MS = 15 * 6e4;
+var STATE_RECORD_LIMIT = 200;
+var STATE_RECORD_TTL_MS = 24 * 60 * 60 * 1e3;
+function pruneRecords(collection, limit = STATE_RECORD_LIMIT, ttlMs = STATE_RECORD_TTL_MS) {
+  const now3 = Date.now();
+  for (const [key5, value3] of Object.entries(collection)) {
+    const at = Number(value3?.createdAt || value3?.repliedAt || 0);
+    if (!at || now3 - at > ttlMs) delete collection[key5];
+  }
+  const keep = Object.entries(collection).sort((a, b) => Number(b[1]?.createdAt || 0) - Number(a[1]?.createdAt || 0)).slice(0, limit).map(([key5]) => key5);
+  for (const key5 of Object.keys(collection)) {
+    if (!keep.includes(key5)) delete collection[key5];
+  }
+}
+function pruneMap(map12, limit = 500) {
+  if (map12.size <= limit) return;
+  for (const key5 of [...map12.keys()].slice(0, map12.size - limit)) map12.delete(key5);
+}
+function pruneSet(set4, limit = 1e3) {
+  if (set4.size <= limit) return;
+  for (const value3 of [...set4].slice(0, set4.size - limit)) set4.delete(value3);
+}
 var BRIDGE_WATCH_EVENTS = [
   "permission.asked",
   "permission.replied",
@@ -126935,6 +126953,8 @@ async function createBridge(ctx, cfg, options2 = {}) {
     if (cfg.pinned.requireEncrypted) log2("Pinned mode: plaintext messages are rejected");
   }
   const state = await loadState(ctx);
+  pruneRecords(state.data.pending);
+  pruneRecords(state.data.questions);
   const store = {
     get(key5) {
       return state.data.meta[key5];
@@ -126957,7 +126977,6 @@ async function createBridge(ctx, cfg, options2 = {}) {
   const announcedDecisions = /* @__PURE__ */ new Set();
   const announcingQuestions = /* @__PURE__ */ new Set();
   let started = false;
-  const WATCH_EVENTS = BRIDGE_WATCH_EVENTS;
   const allowed = (from) => {
     if (cfg.pinned.contact) return from === cfg.pinned.contact;
     if (from === cfg.address) return false;
@@ -127241,7 +127260,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
   function findPending(collection, from, code) {
     const needle = normalizeCode(code);
     if (!needle) return void 0;
-    return Object.values(collection).find((entry) => entry && !entry.answered && entry.from === from && (normalizeCode(entry.code) === needle || String(entry.requestID || entry.formID || "").toLowerCase().startsWith(needle.toLowerCase())));
+    return Object.values(collection).find((entry) => entry && entry.from === from && (normalizeCode(entry.code) === needle || String(entry.requestID || entry.formID || "").toLowerCase().startsWith(needle.toLowerCase())));
   }
   function watchersFor(sessionID) {
     const contacts = /* @__PURE__ */ new Set();
@@ -127278,6 +127297,8 @@ async function createBridge(ctx, cfg, options2 = {}) {
   function markWatchResult(sessionID, ids) {
     const announced = watchAnnounced.get(sessionID) || /* @__PURE__ */ new Set();
     for (const id2 of ids) if (id2) announced.add(id2);
+    pruneSet(announced);
+    pruneMap(watchAnnounced);
     watchAnnounced.set(sessionID, announced);
   }
   async function handlePermissionAsked(data = {}) {
@@ -127287,10 +127308,12 @@ async function createBridge(ctx, cfg, options2 = {}) {
     const to = contactForSession(sessionID) || cfg.pinned.contact;
     if (!to || !allowed(to)) return;
     announcedDecisions.add(requestID);
+    pruneSet(announcedDecisions);
     const resources = Array.isArray(data.resources) ? data.resources.map(String) : [];
     const risk = classifyPermission(data.action, resources, await sessionRoot(sessionID));
     const code = decisionCode(requestID);
     const options3 = Array.isArray(data.save) && data.save.length ? ["once", "always", "reject"] : ["once", "reject"];
+    pruneRecords(state.data.pending);
     state.data.pending[requestID] = {
       requestID,
       code,
@@ -127347,6 +127370,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
     try {
       const fields = formFieldView(form.fields);
       const code = decisionCode(formID);
+      pruneRecords(state.data.questions);
       state.data.questions[formID] = {
         formID,
         code,
@@ -127397,8 +127421,10 @@ async function createBridge(ctx, cfg, options2 = {}) {
     const sessionID = String(data.sessionID || "");
     if (!sessionID) return;
     if (event.type === "session.status") {
+      pruneMap(sessionStatus);
       sessionStatus.set(sessionID, String(data.status?.type || "idle"));
     } else if (event.type === "session.idle") {
+      pruneMap(sessionStatus);
       sessionStatus.set(sessionID, "idle");
     }
     if (!cfg.remote.watch || inFlight.has(sessionID)) return;
@@ -127438,6 +127464,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
     }
     if (!watchersFor(sessionID).length) return;
     if (resultIDs.length) markWatchResult(sessionID, resultIDs);
+    pruneMap(lastWatchNotify);
     lastWatchNotify.set(sessionID, Date.now());
     await sendSessionNotice(sessionID, subject, text, kind);
   }
@@ -127507,7 +127534,7 @@ ${chunk}`
   function startEvents() {
     if (!ctx.event?.subscribe || typeof ctx.event.subscribe !== "function") return;
     void (async () => {
-      for await (const event of ctx.event.subscribe({ types: WATCH_EVENTS, signal: controller.signal })) {
+      for await (const event of ctx.event.subscribe({ types: BRIDGE_WATCH_EVENTS, signal: controller.signal })) {
         void handleEvent(event).catch((error) => log2(`Event ${event.type} failed: ${error.message}`));
       }
     })().catch((error) => {
@@ -127541,7 +127568,7 @@ ${chunk}`
       await setHandshake({
         phase: "established",
         established: true,
-        verified: true,
+        verified: false,
         lastError: ""
       });
     } else if (learned) {
@@ -127709,6 +127736,11 @@ ${chunk}`
     log2(`Sent read receipt to ${to} for ${id2}`);
   }
   async function handleReadReceipt(from, receipt) {
+    const action = String(receipt?.action || "").trim().toLowerCase().split(";")[0].trim();
+    if (action && action !== "displayed") {
+      log2(`Ignoring ${action} disposition notification from ${from}`);
+      return;
+    }
     const id2 = normalizeMessageId(receipt?.originalMessageID);
     if (!id2) return;
     const entry = state.data.sent[id2];
@@ -127721,7 +127753,7 @@ ${chunk}`
     const flag = `welcome:${from}:${cfg.pinned.fingerprint}`;
     if (state.data.meta[flag]) return;
     const status = await getStatus();
-    if (!status.established || !status.verified) return;
+    if (!status.established) return;
     await transmit({
       to: from,
       sessionID,
@@ -128149,6 +128181,7 @@ ${chunk}`
       await sendCommandReply(from, message, "", `Unknown decision code "${command.argument || ""}". Use the code in the decision email.`, "error");
       return;
     }
+    if (pending.answered) return;
     if (pending.risk.level === "high" && !cfg.remote.highRiskDecisions) {
       await sendCommandReply(from, message, pending.sessionID, [
         `Decision ${pending.code} is HIGH RISK: ${pending.risk.reasons.join("; ") || pending.action}.`,
@@ -128373,7 +128406,7 @@ Further replies in this subject stay in this session.`;
         );
       } catch (error) {
         log2(`Rejected message: ${error.message}`);
-        return done3(false);
+        return done3();
       }
       const from = String(message.from || "").toLowerCase();
       if (!from || !allowed(from)) {
@@ -128504,17 +128537,17 @@ ${command.rest}`;
             text: "",
             sentLength: 0
           };
-          if (active) progress.set(sessionID, active);
+          progress.set(sessionID, active);
           try {
             await ctx.session.wait({ sessionID });
             const messages = await ctx.session.context({ sessionID });
             const index3 = messages.findIndex((entry) => entry.id === userMessageID);
             const assistantMessages = (index3 < 0 ? [] : messages.slice(index3 + 1)).filter((entry) => entry.type === "assistant" && !entry.error);
             const replies = assistantMessages.flatMap((entry) => entry.content.filter((part) => part.type === "text").map((part) => part.text)).join("\n\n").trim();
-            const sentProgress = Boolean(active?.sentLength);
-            const mailedText = active ? active.text.slice(0, active.sentLength) : "";
-            const finalSource = active && active.text.length > replies.length ? active.text : replies;
-            const remaining = active ? unreportedRemainder(finalSource, mailedText) : replies;
+            const sentProgress = Boolean(active.sentLength);
+            const mailedText = active.text.slice(0, active.sentLength);
+            const finalSource = active.text.length > replies.length ? active.text : replies;
+            const remaining = unreportedRemainder(finalSource, mailedText);
             const attachments = await attachmentsFromSession(assistantMessages, sessionID);
             const terminalText = remaining || (sentProgress ? `Completed in session ${sessionID}.` : "");
             if (terminalText || attachments.length) {
@@ -128523,7 +128556,7 @@ ${command.rest}`;
                 text: terminalText,
                 attachments,
                 inReplyTo: message.messageId,
-                subject: active ? active.subject : finalSubject,
+                subject: active.subject,
                 sessionID
               });
             } else {
@@ -128540,7 +128573,7 @@ ${command.rest}`;
     } catch (error) {
       if (message?.messageId && !promptAccepted) await unmarkSeen(message.messageId);
       log2(`Inbound mail failed: ${error.message}`);
-      return false;
+      return done3(!message || promptAccepted);
     }
   }
   async function rescanInbox() {
@@ -128609,22 +128642,8 @@ ${command.rest}`;
 // src/config.js
 var import_node_fs2 = require("node:fs");
 var import_node_path4 = __toESM(require("node:path"), 1);
-var PREFIX = "opencode-autocrypt-bridge:";
-function pick3(...values2) {
-  for (const value3 of values2) {
-    if (value3 !== void 0 && value3 !== null && value3 !== "") return value3;
-  }
-  return values2.length ? values2[values2.length - 1] : void 0;
-}
-function integer2(value3, fallback) {
-  const parsed = Number(value3);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
-}
-function boolean2(value3, fallback) {
-  if (value3 === void 0 || value3 === null || value3 === "") return fallback;
-  if (typeof value3 === "boolean") return value3;
-  return /^(1|true|yes|on)$/i.test(String(value3));
-}
+
+// src/values.js
 function normalizeHost(value3) {
   let host = String(value3 ?? "").trim();
   host = host.replace(/^[a-z][a-z\d+.-]*:\/\//i, "");
@@ -128632,12 +128651,60 @@ function normalizeHost(value3) {
   host = host.split(/[/?#]/, 1)[0];
   return host.toLowerCase();
 }
-function loadConfig(options2 = {}, env = process.env) {
+function positiveInteger(value3, fallback) {
+  const parsed = Number(value3);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+// src/config.js
+var PREFIX = "opencode-autocrypt-bridge:";
+function pick3(...values2) {
+  for (const value3 of values2) {
+    if (value3 !== void 0 && value3 !== null && value3 !== "") return value3;
+  }
+  return values2.length ? values2[values2.length - 1] : void 0;
+}
+var integer2 = positiveInteger;
+function boolean2(value3, fallback) {
+  if (value3 === void 0 || value3 === null || value3 === "") return fallback;
+  if (typeof value3 === "boolean") return value3;
+  return /^(1|true|yes|on)$/i.test(String(value3));
+}
+function loadMailConfig(options2 = {}, env = process.env) {
   const get6 = (key5, envKey, fallback) => pick3(options2[key5], env[envKey], fallback);
   const address = String(get6("address", "AC_ADDRESS", "")).trim().toLowerCase();
   const displayName = String(get6("displayName", "AC_DISPLAY_NAME", address.split("@")[0] || "opencode"));
-  const imapUser = String(get6("imapUser", "AC_IMAP_USER", address));
-  const smtpUser = String(get6("smtpUser", "AC_SMTP_USER", address));
+  const verifyCertificate = boolean2(get6("verifyCertificate", "AC_VERIFY_CERTIFICATE"), true);
+  return {
+    address,
+    displayName,
+    imap: {
+      host: normalizeHost(get6("imapHost", "AC_IMAP_HOST", "")),
+      port: integer2(get6("imapPort", "AC_IMAP_PORT"), 993),
+      security: String(get6("imapSecurity", "AC_IMAP_SECURITY", "tls")).toLowerCase(),
+      user: String(get6("imapUser", "AC_IMAP_USER", address)),
+      password: String(get6("imapPassword", "AC_IMAP_PASSWORD", "")),
+      mailbox: String(get6("imapMailbox", "AC_IMAP_MAILBOX", "INBOX")),
+      pollIntervalMs: integer2(get6("pollIntervalMs", "AC_POLL_INTERVAL_MS"), 3e4),
+      verifyCertificate,
+      deleteAfterRead: boolean2(get6("deleteAfterRead", "AC_DELETE_AFTER_READ"), false)
+    },
+    smtp: {
+      host: normalizeHost(get6("smtpHost", "AC_SMTP_HOST", "")),
+      port: integer2(get6("smtpPort", "AC_SMTP_PORT"), 465),
+      security: String(get6("smtpSecurity", "AC_SMTP_SECURITY", "tls")).toLowerCase(),
+      user: String(get6("smtpUser", "AC_SMTP_USER", address)),
+      password: String(get6("smtpPassword", "AC_SMTP_PASSWORD", "")),
+      verifyCertificate
+    },
+    maxMessageBytes: integer2(get6("maxMessageBytes", "AC_MAX_MESSAGE_BYTES"), 20 * 1024 * 1024),
+    maxAttachmentBytes: integer2(get6("maxAttachmentBytes", "AC_MAX_ATTACHMENT_BYTES"), 10 * 1024 * 1024)
+  };
+}
+function loadConfig(options2 = {}, env = process.env) {
+  const get6 = (key5, envKey, fallback) => pick3(options2[key5], env[envKey], fallback);
+  const base = loadMailConfig(options2, env);
+  const { address } = base;
   const inviteUrl = String(pick3(options2.inviteUrl, env.AC_INVITE_URL, ""));
   let invite;
   if (inviteUrl) {
@@ -128692,27 +128759,7 @@ function loadConfig(options2 = {}, env = process.env) {
     relays: String(get6("secureJoinRelays", "AC_SECURE_JOIN_RELAYS", invite?.relays || "")).trim()
   };
   const cfg = {
-    address,
-    displayName,
-    imap: {
-      host: normalizeHost(get6("imapHost", "AC_IMAP_HOST", "")),
-      port: integer2(get6("imapPort", "AC_IMAP_PORT"), 993),
-      security: String(get6("imapSecurity", "AC_IMAP_SECURITY", "tls")).toLowerCase(),
-      user: imapUser,
-      password: String(get6("imapPassword", "AC_IMAP_PASSWORD", "")),
-      mailbox: String(get6("imapMailbox", "AC_IMAP_MAILBOX", "INBOX")),
-      pollIntervalMs: integer2(get6("pollIntervalMs", "AC_POLL_INTERVAL_MS"), 3e4),
-      verifyCertificate: boolean2(get6("verifyCertificate", "AC_VERIFY_CERTIFICATE"), true),
-      deleteAfterRead: boolean2(get6("deleteAfterRead", "AC_DELETE_AFTER_READ"), false)
-    },
-    smtp: {
-      host: normalizeHost(get6("smtpHost", "AC_SMTP_HOST", "")),
-      port: integer2(get6("smtpPort", "AC_SMTP_PORT"), 465),
-      security: String(get6("smtpSecurity", "AC_SMTP_SECURITY", "tls")).toLowerCase(),
-      user: smtpUser,
-      password: String(get6("smtpPassword", "AC_SMTP_PASSWORD", "")),
-      verifyCertificate: boolean2(get6("verifyCertificate", "AC_VERIFY_CERTIFICATE"), true)
-    },
+    ...base,
     allowedContacts: [pinnedContact],
     pinned: {
       contact: pinnedContact,
@@ -128747,8 +128794,6 @@ function loadConfig(options2 = {}, env = process.env) {
         2e4
       ))
     },
-    maxMessageBytes: integer2(get6("maxMessageBytes", "AC_MAX_MESSAGE_BYTES"), 20 * 1024 * 1024),
-    maxAttachmentBytes: integer2(get6("maxAttachmentBytes", "AC_MAX_ATTACHMENT_BYTES"), 10 * 1024 * 1024),
     attachmentDir: import_node_path4.default.resolve(String(get6("attachmentDir", "AC_ATTACHMENT_DIR", import_node_path4.default.join(".opencode", "autocrypt-attachments")))),
     key: {
       privateKeyArmored: String(get6("privateKeyArmored", "AC_PRIVATE_KEY", "")),
@@ -128779,50 +128824,135 @@ function loadConfig(options2 = {}, env = process.env) {
   return cfg;
 }
 
-// src/rpc.js
-var settingsProperties = {
-  address: { type: "string" },
-  displayName: { type: "string" },
-  imapHost: { type: "string" },
-  imapPort: { type: "number" },
-  imapSecurity: { type: "string", enum: ["tls", "starttls", "plain"] },
-  imapUser: { type: "string" },
-  imapPassword: { type: "string" },
-  imapMailbox: { type: "string" },
-  smtpHost: { type: "string" },
-  smtpPort: { type: "number" },
-  smtpSecurity: { type: "string", enum: ["tls", "starttls", "plain"] },
-  smtpUser: { type: "string" },
-  smtpPassword: { type: "string" },
-  pinnedContact: { type: "string" },
-  pinnedFingerprint: { type: "string" },
-  pinnedContactKey: { type: "string" },
-  inviteUrl: { type: "string" },
-  remoteMode: { type: "string", enum: ["securejoin", "autocrypt"] },
-  secureJoinAuth: { type: "string" },
-  secureJoinName: { type: "string" },
-  secureJoinVersion: { type: "string" },
-  secureJoinRelays: { type: "string" },
-  secureJoinInviteNumber: { type: "string" },
-  requireEncrypted: { type: "boolean" },
-  pollIntervalMs: { type: "number" },
-  verifyCertificate: { type: "boolean" },
-  deleteAfterRead: { type: "boolean" },
-  privateKeyArmored: { type: "string" },
-  keyPassphrase: { type: "string" },
-  generateKey: { type: "boolean" },
-  preferEncryptMutual: { type: "boolean" },
-  emailDecisions: { type: "boolean" },
-  emailHighRiskDecisions: { type: "boolean" },
-  emailQuestions: { type: "boolean" },
-  emailPeek: { type: "boolean" },
-  emailTail: { type: "boolean" },
-  emailSendFiles: { type: "boolean" },
-  emailWatch: { type: "boolean" },
-  emailReadReceipts: { type: "boolean" },
-  emailProgress: { type: "boolean" },
-  emailProgressIntervalMs: { type: "number" }
+// src/settings.js
+var spec = (type, fallback = "", extra = {}) => ({ type, fallback, ...extra });
+var SETTING_SPECS = {
+  address: spec("string"),
+  displayName: spec("string"),
+  imapHost: spec("string"),
+  imapPort: spec("number", 993),
+  imapSecurity: spec("string", "tls", { enum: ["tls", "starttls", "plain"] }),
+  imapUser: spec("string"),
+  imapPassword: spec("string"),
+  imapMailbox: spec("string", "INBOX"),
+  smtpHost: spec("string"),
+  smtpPort: spec("number", 465),
+  smtpSecurity: spec("string", "tls", { enum: ["tls", "starttls", "plain"] }),
+  smtpUser: spec("string"),
+  smtpPassword: spec("string"),
+  pinnedContact: spec("string"),
+  pinnedFingerprint: spec("string"),
+  pinnedContactKey: spec("string"),
+  inviteUrl: spec("string"),
+  remoteMode: spec("string", "securejoin", { enum: ["securejoin", "autocrypt"] }),
+  secureJoinAuth: spec("string"),
+  secureJoinName: spec("string"),
+  secureJoinVersion: spec("string", "3"),
+  secureJoinRelays: spec("string"),
+  secureJoinInviteNumber: spec("string"),
+  requireEncrypted: spec("boolean", false),
+  pollIntervalMs: spec("number", 3e4),
+  verifyCertificate: spec("boolean", true),
+  deleteAfterRead: spec("boolean", false),
+  privateKeyArmored: spec("string"),
+  keyPassphrase: spec("string"),
+  generateKey: spec("boolean", true),
+  preferEncryptMutual: spec("boolean", true),
+  emailDecisions: spec("boolean", true),
+  emailHighRiskDecisions: spec("boolean", false),
+  emailQuestions: spec("boolean", true),
+  emailPeek: spec("boolean", true),
+  emailTail: spec("boolean", true),
+  emailSendFiles: spec("boolean", true),
+  emailWatch: spec("boolean", true),
+  emailReadReceipts: spec("boolean", true),
+  emailProgress: spec("boolean", true),
+  emailProgressIntervalMs: spec("number", 2e4)
 };
+var SETTING_KEYS = Object.keys(SETTING_SPECS);
+var SECRET_KEYS = /* @__PURE__ */ new Set([
+  "imapPassword",
+  "smtpPassword",
+  "privateKeyArmored",
+  "keyPassphrase",
+  "secureJoinAuth"
+]);
+var HOST_KEYS = /* @__PURE__ */ new Set(["imapHost", "smtpHost"]);
+var UI_DEFAULTS = Object.fromEntries(
+  Object.entries(SETTING_SPECS).filter(([, value3]) => value3.fallback !== "").map(([key5, value3]) => [key5, value3.fallback])
+);
+var SETTINGS_INPUT_PROPERTIES = Object.fromEntries(
+  Object.entries(SETTING_SPECS).map(([key5, value3]) => [
+    key5,
+    { type: value3.type, ...value3.enum ? { enum: value3.enum } : {} }
+  ])
+);
+var SETTINGS_OUTPUT_PROPERTIES = {
+  ...SETTINGS_INPUT_PROPERTIES,
+  hasImapPassword: { type: "boolean" },
+  hasSmtpPassword: { type: "boolean" },
+  hasPinnedContactKey: { type: "boolean" },
+  hasSecureJoinAuth: { type: "boolean" },
+  hasPrivateKey: { type: "boolean" },
+  hasKeyPassphrase: { type: "boolean" }
+};
+function storedSettings(stored) {
+  const result3 = {};
+  if (!stored || typeof stored !== "object") return result3;
+  for (const key5 of SETTING_KEYS) {
+    if (stored[key5] === void 0 || stored[key5] === null || stored[key5] === "") continue;
+    result3[key5] = stored[key5];
+  }
+  return result3;
+}
+function settingsView(values2 = {}) {
+  const view = {};
+  for (const key5 of SETTING_KEYS) view[key5] = values2[key5] ?? "";
+  for (const [key5, fallback] of Object.entries(UI_DEFAULTS)) {
+    if (values2[key5] === void 0 || values2[key5] === null || values2[key5] === "") view[key5] = fallback;
+  }
+  view.hasImapPassword = Boolean(values2.imapPassword);
+  view.hasSmtpPassword = Boolean(values2.smtpPassword);
+  view.hasPinnedContactKey = Boolean(values2.pinnedContactKey);
+  view.hasPrivateKey = Boolean(values2.privateKeyArmored);
+  view.hasKeyPassphrase = Boolean(values2.keyPassphrase);
+  let inviteAuth = "";
+  try {
+    inviteAuth = parseInviteUrl(values2.inviteUrl)?.auth || "";
+  } catch {
+  }
+  view.hasSecureJoinAuth = Boolean(values2.secureJoinAuth || inviteAuth);
+  for (const key5 of SECRET_KEYS) view[key5] = "";
+  view.inviteUrl = redactInviteUrl(view.inviteUrl);
+  return view;
+}
+function hasInviteSecret(url) {
+  const text = String(url || "");
+  const fragment = text.includes("#") ? text.slice(text.indexOf("#") + 1) : text;
+  return /(?:^|&)(?:s|i|j)=/i.test(fragment);
+}
+function applySettingValues(stored = {}, input = {}) {
+  const values2 = { ...stored };
+  const previousInvite = String(stored.inviteUrl || "");
+  const previousRedacted = redactInviteUrl(previousInvite);
+  for (const key5 of SETTING_KEYS) {
+    const value3 = input[key5];
+    if (value3 === void 0 || value3 === null) continue;
+    if (SECRET_KEYS.has(key5) && value3 === "") continue;
+    if (key5 === "inviteUrl") {
+      const incoming = String(value3).trim();
+      if (previousInvite && incoming === previousRedacted && !hasInviteSecret(incoming)) continue;
+    }
+    let storedValue = value3;
+    if (HOST_KEYS.has(key5)) storedValue = normalizeHost(value3);
+    if (storedValue === "") delete values2[key5];
+    else values2[key5] = storedValue;
+  }
+  return values2;
+}
+
+// src/rpc.js
+var settingsProperties = SETTINGS_INPUT_PROPERTIES;
 var emptyInput = {
   type: "object",
   properties: {},
@@ -129108,75 +129238,6 @@ var BridgeRpc = rpc_exports.define({
 
 // src/index.js
 var PLUGIN_VERSION = "0.5.30";
-var SETTING_KEYS = [
-  "address",
-  "displayName",
-  "imapHost",
-  "imapPort",
-  "imapSecurity",
-  "imapUser",
-  "imapPassword",
-  "imapMailbox",
-  "smtpHost",
-  "smtpPort",
-  "smtpSecurity",
-  "smtpUser",
-  "smtpPassword",
-  "pinnedContact",
-  "pinnedFingerprint",
-  "pinnedContactKey",
-  "inviteUrl",
-  "remoteMode",
-  "secureJoinAuth",
-  "secureJoinName",
-  "secureJoinVersion",
-  "secureJoinRelays",
-  "secureJoinInviteNumber",
-  "requireEncrypted",
-  "pollIntervalMs",
-  "verifyCertificate",
-  "deleteAfterRead",
-  "privateKeyArmored",
-  "keyPassphrase",
-  "generateKey",
-  "preferEncryptMutual",
-  "emailDecisions",
-  "emailHighRiskDecisions",
-  "emailQuestions",
-  "emailPeek",
-  "emailTail",
-  "emailSendFiles",
-  "emailWatch",
-  "emailReadReceipts",
-  "emailProgress",
-  "emailProgressIntervalMs"
-];
-var SECRET_KEYS = /* @__PURE__ */ new Set([
-  "imapPassword",
-  "smtpPassword",
-  "privateKeyArmored",
-  "keyPassphrase",
-  "secureJoinAuth"
-]);
-var HOST_KEYS = /* @__PURE__ */ new Set(["imapHost", "smtpHost"]);
-var UI_DEFAULTS = {
-  remoteMode: "securejoin",
-  secureJoinVersion: "3",
-  verifyCertificate: true,
-  deleteAfterRead: false,
-  generateKey: true,
-  preferEncryptMutual: true,
-  emailDecisions: true,
-  emailHighRiskDecisions: false,
-  emailQuestions: true,
-  emailPeek: true,
-  emailTail: true,
-  emailSendFiles: true,
-  emailWatch: true,
-  emailReadReceipts: true,
-  emailProgress: true,
-  emailProgressIntervalMs: 2e4
-};
 var STORAGE_KEY = "autocrypt.settings";
 var RUNTIME_KEY = Symbol.for("opencode-autocrypt-bridge.runtime");
 function runtimeSlot() {
@@ -129184,36 +129245,6 @@ function runtimeSlot() {
     globalThis[RUNTIME_KEY] = { token: null, stop: null, runtime: null };
   }
   return globalThis[RUNTIME_KEY];
-}
-function storedSettings(stored) {
-  const result3 = {};
-  if (!stored || typeof stored !== "object") return result3;
-  for (const key5 of SETTING_KEYS) {
-    if (stored[key5] === void 0 || stored[key5] === null || stored[key5] === "") continue;
-    result3[key5] = stored[key5];
-  }
-  return result3;
-}
-function settingsView(values2) {
-  const view = {};
-  for (const key5 of SETTING_KEYS) view[key5] = values2[key5] ?? "";
-  for (const [key5, fallback] of Object.entries(UI_DEFAULTS)) {
-    if (values2[key5] === void 0 || values2[key5] === null || values2[key5] === "") view[key5] = fallback;
-  }
-  view.hasImapPassword = Boolean(values2.imapPassword);
-  view.hasSmtpPassword = Boolean(values2.smtpPassword);
-  view.hasPinnedContactKey = Boolean(values2.pinnedContactKey);
-  view.hasPrivateKey = Boolean(values2.privateKeyArmored);
-  view.hasKeyPassphrase = Boolean(values2.keyPassphrase);
-  let inviteAuth = "";
-  try {
-    inviteAuth = parseInviteUrl(values2.inviteUrl)?.auth || "";
-  } catch {
-  }
-  view.hasSecureJoinAuth = Boolean(values2.secureJoinAuth || inviteAuth);
-  for (const key5 of SECRET_KEYS) view[key5] = "";
-  view.inviteUrl = redactInviteUrl(view.inviteUrl);
-  return view;
 }
 var index_default = plugin_exports.define({
   id: "autocrypt-bridge",
@@ -129340,19 +129371,7 @@ async function setupInstance(ctx, slot) {
     getSettings: async () => settingsView(visibleValues()),
     updateSettings: async (input) => {
       const current = slot.runtime;
-      const values2 = { ...current.stored };
-      const previousInvite = String(current.stored.inviteUrl || "");
-      const previousRedacted = redactInviteUrl(previousInvite);
-      for (const key5 of SETTING_KEYS) {
-        const value3 = input[key5];
-        if (value3 === void 0 || value3 === null) continue;
-        if (SECRET_KEYS.has(key5) && value3 === "") continue;
-        if (key5 === "inviteUrl" && previousInvite && value3 === previousRedacted) continue;
-        let storedValue = value3;
-        if (HOST_KEYS.has(key5)) storedValue = normalizeHost(value3);
-        if (storedValue === "") delete values2[key5];
-        else values2[key5] = storedValue;
-      }
+      const values2 = applySettingValues(current.stored, input);
       await current.ctx.storage.set(STORAGE_KEY, values2);
       current.stored = values2;
       return restart();
@@ -129372,41 +129391,9 @@ async function setupInstance(ctx, slot) {
       };
     },
     testMailAccount: async (input = {}) => {
-      const merged = { ...visibleValues() };
-      for (const [key5, value3] of Object.entries(input || {})) {
-        if (value3 === void 0 || value3 === null) continue;
-        if (SECRET_KEYS.has(key5) && value3 === "") continue;
-        merged[key5] = value3;
-      }
-      const number3 = (value3, fallback) => {
-        const parsed = Number(value3);
-        return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
-      };
-      const verifyCertificate = merged.verifyCertificate !== false;
-      const imap = {
-        host: normalizeHost(merged.imapHost),
-        port: number3(merged.imapPort, 993),
-        security: String(merged.imapSecurity || "tls").toLowerCase(),
-        user: String(merged.imapUser || merged.address || ""),
-        password: String(merged.imapPassword || ""),
-        mailbox: String(merged.imapMailbox || "INBOX"),
-        verifyCertificate,
-        pollIntervalMs: number3(merged.pollIntervalMs, 3e4)
-      };
-      const smtp = {
-        host: normalizeHost(merged.smtpHost),
-        port: number3(merged.smtpPort, 465),
-        security: String(merged.smtpSecurity || "tls").toLowerCase(),
-        user: String(merged.smtpUser || merged.address || ""),
-        password: String(merged.smtpPassword || ""),
-        verifyCertificate
-      };
-      return testMailAccount({
-        address: String(merged.address || ""),
-        imap,
-        smtp,
-        maxMessageBytes: 20 * 1024 * 1024
-      });
+      const current = slot.runtime;
+      const merged = applySettingValues(visibleValues(current), input || {});
+      return testMailAccount(loadMailConfig(merged, process.env));
     },
     startSecureJoin: async () => {
       if (!slot.runtime?.bridge) throw new Error("Autocrypt Bridge is not configured");

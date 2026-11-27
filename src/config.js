@@ -1,6 +1,9 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { normalizeFingerprint, parseInviteUrl, publicKeyToBase64, redactInviteUrl } from './headers.js'
+import { normalizeHost, positiveInteger } from './values.js'
+
+export { normalizeHost, positiveInteger }
 
 const PREFIX = 'opencode-autocrypt-bridge:'
 
@@ -11,10 +14,7 @@ function pick(...values) {
   return values.length ? values[values.length - 1] : undefined
 }
 
-function integer(value, fallback) {
-  const parsed = Number(value)
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback
-}
+const integer = positiveInteger
 
 function boolean(value, fallback) {
   if (value === undefined || value === null || value === '') return fallback
@@ -22,26 +22,50 @@ function boolean(value, fallback) {
   return /^(1|true|yes|on)$/i.test(String(value))
 }
 
-/** Keep IMAP/SMTP fields as hostnames even if a form adds a URL scheme. */
-export function normalizeHost(value) {
-  let host = String(value ?? '').trim()
-  host = host.replace(/^[a-z][a-z\d+.-]*:\/\//i, '')
-  host = host.replace(/^.*@/, '')
-  host = host.split(/[/?#]/, 1)[0]
-  return host.toLowerCase()
+/**
+ * Transport-only configuration. The mail-test RPC uses this directly so it
+ * can verify IMAP/SMTP before the pinned contact has been entered.
+ */
+export function loadMailConfig(options = {}, env = process.env) {
+  const get = (key, envKey, fallback) => pick(options[key], env[envKey], fallback)
+  const address = String(get('address', 'AC_ADDRESS', '')).trim().toLowerCase()
+  const displayName = String(get('displayName', 'AC_DISPLAY_NAME', address.split('@')[0] || 'opencode'))
+  const verifyCertificate = boolean(get('verifyCertificate', 'AC_VERIFY_CERTIFICATE'), true)
+  return {
+    address,
+    displayName,
+    imap: {
+      host: normalizeHost(get('imapHost', 'AC_IMAP_HOST', '')),
+      port: integer(get('imapPort', 'AC_IMAP_PORT'), 993),
+      security: String(get('imapSecurity', 'AC_IMAP_SECURITY', 'tls')).toLowerCase(),
+      user: String(get('imapUser', 'AC_IMAP_USER', address)),
+      password: String(get('imapPassword', 'AC_IMAP_PASSWORD', '')),
+      mailbox: String(get('imapMailbox', 'AC_IMAP_MAILBOX', 'INBOX')),
+      pollIntervalMs: integer(get('pollIntervalMs', 'AC_POLL_INTERVAL_MS'), 30_000),
+      verifyCertificate,
+      deleteAfterRead: boolean(get('deleteAfterRead', 'AC_DELETE_AFTER_READ'), false),
+    },
+    smtp: {
+      host: normalizeHost(get('smtpHost', 'AC_SMTP_HOST', '')),
+      port: integer(get('smtpPort', 'AC_SMTP_PORT'), 465),
+      security: String(get('smtpSecurity', 'AC_SMTP_SECURITY', 'tls')).toLowerCase(),
+      user: String(get('smtpUser', 'AC_SMTP_USER', address)),
+      password: String(get('smtpPassword', 'AC_SMTP_PASSWORD', '')),
+      verifyCertificate,
+    },
+    maxMessageBytes: integer(get('maxMessageBytes', 'AC_MAX_MESSAGE_BYTES'), 20 * 1024 * 1024),
+    maxAttachmentBytes: integer(get('maxAttachmentBytes', 'AC_MAX_ATTACHMENT_BYTES'), 10 * 1024 * 1024),
+  }
 }
 
 /**
- * Configuration comes from plugin options first, then environment variables.
+ * Full bridge configuration. Options come first, then environment variables.
  * This mirrors the pattern used by opencode-email-notify / opencode-email-sync.
  */
 export function loadConfig(options = {}, env = process.env) {
   const get = (key, envKey, fallback) => pick(options[key], env[envKey], fallback)
-
-  const address = String(get('address', 'AC_ADDRESS', '')).trim().toLowerCase()
-  const displayName = String(get('displayName', 'AC_DISPLAY_NAME', address.split('@')[0] || 'opencode'))
-  const imapUser = String(get('imapUser', 'AC_IMAP_USER', address))
-  const smtpUser = String(get('smtpUser', 'AC_SMTP_USER', address))
+  const base = loadMailConfig(options, env)
+  const { address } = base
 
   // A SecureJoin invite URL comes from the pinned contact. It is stored locally
   // with its auth code so the bridge can join; no network request is made.
@@ -107,27 +131,7 @@ export function loadConfig(options = {}, env = process.env) {
   }
 
   const cfg = {
-    address,
-    displayName,
-    imap: {
-      host: normalizeHost(get('imapHost', 'AC_IMAP_HOST', '')),
-      port: integer(get('imapPort', 'AC_IMAP_PORT'), 993),
-      security: String(get('imapSecurity', 'AC_IMAP_SECURITY', 'tls')).toLowerCase(),
-      user: imapUser,
-      password: String(get('imapPassword', 'AC_IMAP_PASSWORD', '')),
-      mailbox: String(get('imapMailbox', 'AC_IMAP_MAILBOX', 'INBOX')),
-      pollIntervalMs: integer(get('pollIntervalMs', 'AC_POLL_INTERVAL_MS'), 30_000),
-      verifyCertificate: boolean(get('verifyCertificate', 'AC_VERIFY_CERTIFICATE'), true),
-      deleteAfterRead: boolean(get('deleteAfterRead', 'AC_DELETE_AFTER_READ'), false),
-    },
-    smtp: {
-      host: normalizeHost(get('smtpHost', 'AC_SMTP_HOST', '')),
-      port: integer(get('smtpPort', 'AC_SMTP_PORT'), 465),
-      security: String(get('smtpSecurity', 'AC_SMTP_SECURITY', 'tls')).toLowerCase(),
-      user: smtpUser,
-      password: String(get('smtpPassword', 'AC_SMTP_PASSWORD', '')),
-      verifyCertificate: boolean(get('verifyCertificate', 'AC_VERIFY_CERTIFICATE'), true),
-    },
+    ...base,
     allowedContacts: [pinnedContact],
     pinned: {
       contact: pinnedContact,
@@ -162,8 +166,6 @@ export function loadConfig(options = {}, env = process.env) {
         20_000,
       )),
     },
-    maxMessageBytes: integer(get('maxMessageBytes', 'AC_MAX_MESSAGE_BYTES'), 20 * 1024 * 1024),
-    maxAttachmentBytes: integer(get('maxAttachmentBytes', 'AC_MAX_ATTACHMENT_BYTES'), 10 * 1024 * 1024),
     attachmentDir: path.resolve(String(get('attachmentDir', 'AC_ATTACHMENT_DIR', path.join('.opencode', 'autocrypt-attachments')))),
     key: {
       privateKeyArmored: String(get('privateKeyArmored', 'AC_PRIVATE_KEY', '')),

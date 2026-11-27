@@ -82,6 +82,34 @@ const OUTBOX_INTERVAL_MS = 10_000
 const OUTBOX_BASE_DELAY_MS = 15_000
 const OUTBOX_MAX_DELAY_MS = 15 * 60_000
 
+const STATE_RECORD_LIMIT = 200
+const STATE_RECORD_TTL_MS = 24 * 60 * 60 * 1000
+
+function pruneRecords(collection, limit = STATE_RECORD_LIMIT, ttlMs = STATE_RECORD_TTL_MS) {
+  const now = Date.now()
+  for (const [key, value] of Object.entries(collection)) {
+    const at = Number(value?.createdAt || value?.repliedAt || 0)
+    if (!at || now - at > ttlMs) delete collection[key]
+  }
+  const keep = Object.entries(collection)
+    .sort((a, b) => Number(b[1]?.createdAt || 0) - Number(a[1]?.createdAt || 0))
+    .slice(0, limit)
+    .map(([key]) => key)
+  for (const key of Object.keys(collection)) {
+    if (!keep.includes(key)) delete collection[key]
+  }
+}
+
+function pruneMap(map, limit = 500) {
+  if (map.size <= limit) return
+  for (const key of [...map.keys()].slice(0, map.size - limit)) map.delete(key)
+}
+
+function pruneSet(set, limit = 1_000) {
+  if (set.size <= limit) return
+  for (const value of [...set].slice(0, set.size - limit)) set.delete(value)
+}
+
 /**
  * Native events exposed to server plugins. OpenCode V2 streams assistant text
  * as `session.text.delta`; `message.part.delta` is TUI-only and is rejected by
@@ -155,6 +183,8 @@ export async function createBridge(ctx, cfg, options = {}) {
   }
 
   const state = await loadState(ctx)
+  pruneRecords(state.data.pending)
+  pruneRecords(state.data.questions)
   const store = {
     get(key) {
       return state.data.meta[key]
@@ -177,8 +207,6 @@ export async function createBridge(ctx, cfg, options = {}) {
   const announcedDecisions = new Set()
   const announcingQuestions = new Set()
   let started = false
-
-  const WATCH_EVENTS = BRIDGE_WATCH_EVENTS
 
   const allowed = (from) => {
     // The pin is the hard gate and takes precedence over the self-address guard.
@@ -497,7 +525,6 @@ export async function createBridge(ctx, cfg, options = {}) {
     if (!needle) return undefined
     return Object.values(collection).find((entry) => (
       entry
-      && !entry.answered
       && entry.from === from
       && (normalizeCode(entry.code) === needle
         || String(entry.requestID || entry.formID || '').toLowerCase().startsWith(needle.toLowerCase()))
@@ -548,6 +575,8 @@ export async function createBridge(ctx, cfg, options = {}) {
   function markWatchResult(sessionID, ids) {
     const announced = watchAnnounced.get(sessionID) || new Set()
     for (const id of ids) if (id) announced.add(id)
+    pruneSet(announced)
+    pruneMap(watchAnnounced)
     watchAnnounced.set(sessionID, announced)
   }
 
@@ -558,12 +587,14 @@ export async function createBridge(ctx, cfg, options = {}) {
     const to = contactForSession(sessionID) || cfg.pinned.contact
     if (!to || !allowed(to)) return
     announcedDecisions.add(requestID)
+    pruneSet(announcedDecisions)
     const resources = Array.isArray(data.resources) ? data.resources.map(String) : []
     const risk = classifyPermission(data.action, resources, await sessionRoot(sessionID))
     const code = decisionCode(requestID)
     const options = Array.isArray(data.save) && data.save.length
       ? ['once', 'always', 'reject']
       : ['once', 'reject']
+    pruneRecords(state.data.pending)
     state.data.pending[requestID] = {
       requestID,
       code,
@@ -622,6 +653,7 @@ export async function createBridge(ctx, cfg, options = {}) {
     try {
       const fields = formFieldView(form.fields)
       const code = decisionCode(formID)
+      pruneRecords(state.data.questions)
       state.data.questions[formID] = {
         formID,
         code,
@@ -674,8 +706,10 @@ export async function createBridge(ctx, cfg, options = {}) {
     const sessionID = String(data.sessionID || '')
     if (!sessionID) return
     if (event.type === 'session.status') {
+      pruneMap(sessionStatus)
       sessionStatus.set(sessionID, String(data.status?.type || 'idle'))
     } else if (event.type === 'session.idle') {
+      pruneMap(sessionStatus)
       sessionStatus.set(sessionID, 'idle')
     }
     if (!cfg.remote.watch || inFlight.has(sessionID)) return
@@ -716,6 +750,7 @@ export async function createBridge(ctx, cfg, options = {}) {
     }
     if (!watchersFor(sessionID).length) return
     if (resultIDs.length) markWatchResult(sessionID, resultIDs)
+    pruneMap(lastWatchNotify)
     lastWatchNotify.set(sessionID, Date.now())
     await sendSessionNotice(sessionID, subject, text, kind)
   }
@@ -786,7 +821,7 @@ export async function createBridge(ctx, cfg, options = {}) {
   function startEvents() {
     if (!ctx.event?.subscribe || typeof ctx.event.subscribe !== 'function') return
     void (async () => {
-      for await (const event of ctx.event.subscribe({ types: WATCH_EVENTS, signal: controller.signal })) {
+      for await (const event of ctx.event.subscribe({ types: BRIDGE_WATCH_EVENTS, signal: controller.signal })) {
         void handleEvent(event).catch((error) => log(`Event ${event.type} failed: ${error.message}`))
       }
     })().catch((error) => {
@@ -818,10 +853,13 @@ export async function createBridge(ctx, cfg, options = {}) {
     }
     const establishedNow = !state.data.handshake.established
     if (establishedNow) {
+      // Learning a key that matches the pin establishes encrypted contact, but
+      // it is not SecureJoin verification. `verified` stays reserved for the
+      // Signed, encrypted vc-contact-confirm step.
       await setHandshake({
         phase: 'established',
         established: true,
-        verified: true,
+        verified: false,
         lastError: '',
       })
     } else if (learned) {
@@ -1007,6 +1045,13 @@ export async function createBridge(ctx, cfg, options = {}) {
   }
 
   async function handleReadReceipt(from, receipt) {
+    const action = String(receipt?.action || '').trim().toLowerCase().split(';')[0].trim()
+    // Only a displayed notification confirms reading. Failed, denied, delayed,
+    // deleted and error MDNs are delivery information, not read receipts.
+    if (action && action !== 'displayed') {
+      log(`Ignoring ${action} disposition notification from ${from}`)
+      return
+    }
     const id = normalizeMessageId(receipt?.originalMessageID)
     if (!id) return
     const entry = state.data.sent[id]
@@ -1021,7 +1066,10 @@ export async function createBridge(ctx, cfg, options = {}) {
     const flag = `welcome:${from}:${cfg.pinned.fingerprint}`
     if (state.data.meta[flag]) return
     const status = await getStatus()
-    if (!status.established || !status.verified) return
+    // Autocrypt confirms that the learned key matches the pin; SecureJoin also
+    // has a verified handshake. Both establish trusted encrypted contact and
+    // both get exactly one welcome mail.
+    if (!status.established) return
     await transmit({
       to: from,
       sessionID,
@@ -1482,6 +1530,7 @@ export async function createBridge(ctx, cfg, options = {}) {
       await sendCommandReply(from, message, '', `Unknown decision code "${command.argument || ''}". Use the code in the decision email.`, 'error')
       return
     }
+    if (pending.answered) return
     if (pending.risk.level === 'high' && !cfg.remote.highRiskDecisions) {
       await sendCommandReply(from, message, pending.sessionID, [
         `Decision ${pending.code} is HIGH RISK: ${pending.risk.reasons.join('; ') || pending.action}.`,
@@ -1700,8 +1749,10 @@ export async function createBridge(ctx, cfg, options = {}) {
           state.data.peers[cfg.pinned.contact]?.keydata,
         )
       } catch (error) {
+        // Permanent rejections cannot be fixed by retrying; consuming them
+        // keeps one malformed message from blocking the whole mailbox.
         log(`Rejected message: ${error.message}`)
-        return done(false)
+        return done()
       }
       const from = String(message.from || '').toLowerCase()
       if (!from || !allowed(from)) {
@@ -1843,7 +1894,7 @@ export async function createBridge(ctx, cfg, options = {}) {
             text: '',
             sentLength: 0,
           }
-          if (active) progress.set(sessionID, active)
+          progress.set(sessionID, active)
           try {
             await ctx.session.wait({ sessionID })
             const messages = await ctx.session.context({ sessionID })
@@ -1854,16 +1905,16 @@ export async function createBridge(ctx, cfg, options = {}) {
               .flatMap((entry) => entry.content.filter((part) => part.type === 'text').map((part) => part.text))
               .join('\n\n')
               .trim()
-            const sentProgress = Boolean(active?.sentLength)
+            const sentProgress = Boolean(active.sentLength)
             // Only the prefix actually mailed may be dropped. Later deltas that
             // arrived inside the throttle window are still unsent.
-            const mailedText = active ? active.text.slice(0, active.sentLength) : ''
+            const mailedText = active.text.slice(0, active.sentLength)
             // A run can stop for a question/permission before the assistant
             // message is committed to the session context. In that case the
             // streamed deltas are the only copy of the leading output, so prefer
             // them over the (possibly empty) context replies.
-            const finalSource = active && active.text.length > replies.length ? active.text : replies
-            const remaining = active ? unreportedRemainder(finalSource, mailedText) : replies
+            const finalSource = active.text.length > replies.length ? active.text : replies
+            const remaining = unreportedRemainder(finalSource, mailedText)
             const attachments = await attachmentsFromSession(assistantMessages, sessionID)
             const terminalText = remaining || (sentProgress ? `Completed in session ${sessionID}.` : '')
             if (terminalText || attachments.length) {
@@ -1872,7 +1923,7 @@ export async function createBridge(ctx, cfg, options = {}) {
                 text: terminalText,
                 attachments,
                 inReplyTo: message.messageId,
-                subject: active ? active.subject : finalSubject,
+                subject: active.subject,
                 sessionID,
               })
             } else {
@@ -1889,7 +1940,10 @@ export async function createBridge(ctx, cfg, options = {}) {
     } catch (error) {
       if (message?.messageId && !promptAccepted) await unmarkSeen(message.messageId)
       log(`Inbound mail failed: ${error.message}`)
-      return false
+      // Malformed mail can never succeed on retry and would block the mailbox.
+      // A prompt that was already accepted must not be submitted twice either.
+      // Only a failure before prompt acceptance is worth retrying.
+      return done(!message || promptAccepted)
     }
   }
   async function rescanInbox() {

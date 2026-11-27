@@ -1,14 +1,4 @@
-const ALIASES = {
-  list: 'sessions',
-  projects: 'sessions',
-  commands: 'help',
-  shortcuts: 'help',
-  session: 'use',
-  create: 'new',
-  reset: 'default',
-  reject: 'deny',
-  decide: 'approve',
-}
+import { COMMAND_ALIASES } from './commands.js'
 
 const SIMPLE_COMMANDS = new Set(['sessions', 'help', 'status', 'default', 'unwatch'])
 const SUBJECT_MARKER = /\[session:([^\]]+)\]/i
@@ -37,7 +27,7 @@ export function parseSessionCommand(text) {
   if (first < 0) return null
   const match = /^!([a-z]+)(?:\s+([\s\S]*))?$/i.exec(lines[first].trim())
   if (!match) return null
-  const command = ALIASES[match[1].toLowerCase()] || match[1].toLowerCase()
+  const command = COMMAND_ALIASES[match[1].toLowerCase()] || match[1].toLowerCase()
   const argument = String(match[2] || '').trim()
   if (SIMPLE_COMMANDS.has(command)) return { command, argument: '', rest: '' }
   if (command === 'use') {

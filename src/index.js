@@ -1,46 +1,13 @@
 import { Plugin } from '@opencode/plugin'
 import { createBridge } from './bridge.js'
-import { loadConfig, normalizeHost } from './config.js'
-import { parseInviteUrl, redactInviteUrl } from './headers.js'
+import { loadConfig, loadMailConfig } from './config.js'
+import { parseInviteUrl } from './headers.js'
 import { testMailAccount as testMailAccountTransport } from './mail.js'
 import { BridgeRpc } from './rpc.js'
 import { formatSessionDirectory } from './session.js'
+import { applySettingValues, settingsView, storedSettings } from './settings.js'
 
 const PLUGIN_VERSION = '0.5.30'
-const SETTING_KEYS = [
-  'address', 'displayName', 'imapHost', 'imapPort', 'imapSecurity', 'imapUser', 'imapPassword', 'imapMailbox',
-  'smtpHost', 'smtpPort', 'smtpSecurity', 'smtpUser', 'smtpPassword', 'pinnedContact',
-  'pinnedFingerprint', 'pinnedContactKey', 'inviteUrl', 'remoteMode',
-  'secureJoinAuth', 'secureJoinName', 'secureJoinVersion', 'secureJoinRelays', 'secureJoinInviteNumber',
-  'requireEncrypted',
-  'pollIntervalMs', 'verifyCertificate', 'deleteAfterRead', 'privateKeyArmored', 'keyPassphrase', 'generateKey', 'preferEncryptMutual',
-  'emailDecisions', 'emailHighRiskDecisions', 'emailQuestions',
-  'emailPeek', 'emailTail', 'emailSendFiles', 'emailWatch', 'emailReadReceipts',
-  'emailProgress', 'emailProgressIntervalMs',
-]
-
-const SECRET_KEYS = new Set([
-  'imapPassword', 'smtpPassword', 'privateKeyArmored', 'keyPassphrase', 'secureJoinAuth',
-])
-const HOST_KEYS = new Set(['imapHost', 'smtpHost'])
-const UI_DEFAULTS = {
-  remoteMode: 'securejoin',
-  secureJoinVersion: '3',
-  verifyCertificate: true,
-  deleteAfterRead: false,
-  generateKey: true,
-  preferEncryptMutual: true,
-  emailDecisions: true,
-  emailHighRiskDecisions: false,
-  emailQuestions: true,
-  emailPeek: true,
-  emailTail: true,
-  emailSendFiles: true,
-  emailWatch: true,
-  emailReadReceipts: true,
-  emailProgress: true,
-  emailProgressIntervalMs: 20000,
-}
 const STORAGE_KEY = 'autocrypt.settings'
 const RUNTIME_KEY = Symbol.for('opencode-autocrypt-bridge.runtime')
 
@@ -55,43 +22,6 @@ function runtimeSlot() {
     globalThis[RUNTIME_KEY] = { token: null, stop: null, runtime: null }
   }
   return globalThis[RUNTIME_KEY]
-}
-
-function storedSettings(stored) {
-  const result = {}
-  if (!stored || typeof stored !== 'object') return result
-  for (const key of SETTING_KEYS) {
-    if (stored[key] === undefined || stored[key] === null || stored[key] === '') continue
-    result[key] = stored[key]
-  }
-  return result
-}
-
-/**
- * Build the GUI/RPC view from raw flat settings. This must work before the
- * bridge is configured, so it does not go through loadConfig().
- */
-function settingsView(values) {
-  const view = {}
-  for (const key of SETTING_KEYS) view[key] = values[key] ?? ''
-  for (const [key, fallback] of Object.entries(UI_DEFAULTS)) {
-    if (values[key] === undefined || values[key] === null || values[key] === '') view[key] = fallback
-  }
-  view.hasImapPassword = Boolean(values.imapPassword)
-  view.hasSmtpPassword = Boolean(values.smtpPassword)
-  view.hasPinnedContactKey = Boolean(values.pinnedContactKey)
-  view.hasPrivateKey = Boolean(values.privateKeyArmored)
-  view.hasKeyPassphrase = Boolean(values.keyPassphrase)
-  let inviteAuth = ''
-  try {
-    inviteAuth = parseInviteUrl(values.inviteUrl)?.auth || ''
-  } catch {}
-  view.hasSecureJoinAuth = Boolean(values.secureJoinAuth || inviteAuth)
-  for (const key of SECRET_KEYS) view[key] = ''
-  // The full invite URL is kept locally because s= is the handshake auth code.
-  // Only this displayed copy is redacted.
-  view.inviteUrl = redactInviteUrl(view.inviteUrl)
-  return view
 }
 
 export default Plugin.define({
@@ -232,21 +162,7 @@ async function setupInstance(ctx, slot) {
     getSettings: async () => settingsView(visibleValues()),
     updateSettings: async (input) => {
       const current = slot.runtime
-      const values = { ...current.stored }
-      const previousInvite = String(current.stored.inviteUrl || '')
-      const previousRedacted = redactInviteUrl(previousInvite)
-      for (const key of SETTING_KEYS) {
-        const value = input[key]
-        if (value === undefined || value === null) continue
-        // Blank secret fields keep the stored value. The redacted invite URL
-        // shown in the GUI also keeps the stored auth code on a plain save.
-        if (SECRET_KEYS.has(key) && value === '') continue
-        if (key === 'inviteUrl' && previousInvite && value === previousRedacted) continue
-        let storedValue = value
-        if (HOST_KEYS.has(key)) storedValue = normalizeHost(value)
-        if (storedValue === '') delete values[key]
-        else values[key] = storedValue
-      }
+      const values = applySettingValues(current.stored, input)
       // Incomplete settings are allowed to persist so the GUI can be filled
       // in stages. loadConfig() in restart() is the hard gate: no bridge is
       // created until the pinned contact and transport are valid.
@@ -269,43 +185,11 @@ async function setupInstance(ctx, slot) {
       }
     },
     testMailAccount: async (input = {}) => {
-      // The GUI blanks secret inputs when a value is already saved. Keep the
-      // stored value in that case, exactly like updateSettings does.
-      const merged = { ...visibleValues() }
-      for (const [key, value] of Object.entries(input || {})) {
-        if (value === undefined || value === null) continue
-        if (SECRET_KEYS.has(key) && value === '') continue
-        merged[key] = value
-      }
-      const number = (value, fallback) => {
-        const parsed = Number(value)
-        return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback
-      }
-      const verifyCertificate = merged.verifyCertificate !== false
-      const imap = {
-        host: normalizeHost(merged.imapHost),
-        port: number(merged.imapPort, 993),
-        security: String(merged.imapSecurity || 'tls').toLowerCase(),
-        user: String(merged.imapUser || merged.address || ''),
-        password: String(merged.imapPassword || ''),
-        mailbox: String(merged.imapMailbox || 'INBOX'),
-        verifyCertificate,
-        pollIntervalMs: number(merged.pollIntervalMs, 30_000),
-      }
-      const smtp = {
-        host: normalizeHost(merged.smtpHost),
-        port: number(merged.smtpPort, 465),
-        security: String(merged.smtpSecurity || 'tls').toLowerCase(),
-        user: String(merged.smtpUser || merged.address || ''),
-        password: String(merged.smtpPassword || ''),
-        verifyCertificate,
-      }
-      return testMailAccountTransport({
-        address: String(merged.address || ''),
-        imap,
-        smtp,
-        maxMessageBytes: 20 * 1024 * 1024,
-      })
+      const current = slot.runtime
+      // Reuse the same merge rules as a settings save: blank secret inputs and
+      // the redacted invite URL keep their effective values.
+      const merged = applySettingValues(visibleValues(current), input || {})
+      return testMailAccountTransport(loadMailConfig(merged, process.env))
     },
     startSecureJoin: async () => {
       if (!slot.runtime?.bridge) throw new Error('Autocrypt Bridge is not configured')

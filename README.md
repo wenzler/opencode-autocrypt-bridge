@@ -172,7 +172,7 @@ OPENPGP4FPR:FPR#v=3&s=AUTHCODE&a=you%40example.org&n=Bot+contact
 - manual SecureJoin parameters: `s=` auth code, `n=` name, `v=` version, `r=` relays and legacy `i=`/`j=`, plus **Start SecureJoin**; **Send Autocrypt request** and reject plaintext inbound mail in Autocrypt mode (outbound replies stay encrypted when the pinned key is known);
 - generated/imported OpenPGP identity and mutual-encryption preference;
 - TLS verification and IMAP poll interval;
-- live status via RPC events: configured/unconfigured state, remote mode, learned fingerprint, established state, fingerprint verification, SecureJoin status, bound session, last error;
+- live status via RPC events: configured/unconfigured state, remote mode, learned fingerprint, established state (key known), SecureJoin verification, SecureJoin status, queued reply count, bound session, last error;
 - **Email session**: list open projects/sessions and switch the email thread to a session by title, or choose **None** to disable the bridge; the switch is announced as a new email thread. Session-screen command and location-menu item switch to the current session, and a command-palette action disables it;
 - **Remote controls**: independent gates for permission decisions, high-risk email approval, questions, session output, terminal tail, project file sending, watch subscriptions, read receipts, and progressive replies with an adjustable interval;
 - **Delete mail after processing** (off by default), **Rescan inbox**, **Reset contact**, and **Save & restart**.

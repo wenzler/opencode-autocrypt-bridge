@@ -132,7 +132,7 @@ async function encryptedContactMail(contact, bot, { text = 'hello', messageId = 
   ].join('\r\n'))
 }
 
-function mdnMail(contact, originalMessageID) {
+function mdnMail(contact, originalMessageID, action = 'displayed') {
   return contactMail(contact, {
     text: 'This message is only a receipt.',
     messageId: '<mdn-1@example.net>',
@@ -150,7 +150,7 @@ function mdnMail(contact, originalMessageID) {
       'Content-Type: message/disposition-notification',
       '',
       `Original-Message-ID: ${originalMessageID}`,
-      'Disposition: manual-action/MDN-sent-automatically; displayed',
+      `Disposition: manual-action/MDN-sent-automatically; ${action}`,
       '--mdn-test--',
       '',
     ],
@@ -259,6 +259,7 @@ test('an inbound receipt request produces an encrypted Delta Chat MDN', async ()
   const parsed = parseDispositionNotification(receiptMime)
   assert.deepEqual(parsed, {
     disposition: 'manual-action/MDN-sent-automatically; displayed',
+    action: 'displayed',
     originalMessageID: '<contact-receipt@example.net>',
   })
   const statusReply = headers.find((entry) => entry.get('x-opencode-command') === 'session-command')
@@ -287,6 +288,7 @@ test('an encrypted inner Delta Chat receipt request produces exactly one MDN', a
   const parsed = parseDispositionNotification(await decryptedSent(h.sent, receiptIndex, bot))
   assert.deepEqual(parsed, {
     disposition: 'manual-action/MDN-sent-automatically; displayed',
+    action: 'displayed',
     originalMessageID: '<contact-inner-receipt@example.net>',
   })
   assert.ok(headers.some((entry) => entry.get('x-opencode-command') === 'session-command'))
@@ -332,6 +334,23 @@ test('an inbound MDN confirms the outbound message without generating mail', asy
   assert.ok(state.sent[outboundID.replace(/^<|>$/g, '')].receiptAt)
   const status = await bridge.getStatus()
   assert.ok(status.lastReceiptAt > 0)
+})
+
+test('a failed MDN disposition does not confirm the outbound message', async () => {
+  const bot = await keyPair('bot@example.org')
+  const contact = await keyPair('contact@example.net')
+  const h = harness(contact.fingerprint)
+  const bridge = await createBridge(h.ctx, h.cfg, {
+    identity: bot, sender: h.sender, log: () => {},
+  })
+
+  await bridge.process(contactMail(contact))
+  const outboundID = parseRawHeaders(h.sent[0].raw).get('message-id')
+  await bridge.process(mdnMail(contact, outboundID, 'failed'))
+
+  const state = h.values.get('autocrypt.state')
+  assert.ok(!state.sent[outboundID.replace(/^<|>$/g, '')].receiptAt)
+  assert.equal((await bridge.getStatus()).lastReceiptAt, 0)
 })
 
 test('a quoted-printable Delta Chat MDN confirms the matching outbound message', async () => {

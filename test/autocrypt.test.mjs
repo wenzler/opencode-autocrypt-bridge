@@ -149,7 +149,7 @@ test('a matching Autocrypt fingerprint learns the key and sends an encrypted con
 
   const status = await bridge.getStatus()
   assert.equal(status.established, true)
-  assert.equal(status.verified, true)
+  assert.equal(status.verified, false)
   assert.equal(status.learnedFingerprint, contact.fingerprint)
   assert.equal(h.sent.length, 1)
   assert.equal(h.sent[0].to, 'contact@example.net')
@@ -181,7 +181,7 @@ test('established replies keep the Autocrypt header and Chat-Version marker', as
 
   const status = await bridge.getStatus()
   assert.equal(status.established, true)
-  assert.equal(status.verified, true)
+  assert.equal(status.verified, false)
   assert.equal(h.sent.length, 2)
   const prompt = h.promptInputs[0]
   assert.equal(prompt.text.trim(), 'Hello from the pinned contact.')

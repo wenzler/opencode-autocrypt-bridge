@@ -1,8 +1,10 @@
 import { createSignal, onCleanup, onMount } from "solid-js"
 import { Command, Plugin, SettingsPage, Slot } from "@opencode/plugin/gui"
+import { normalizeHost, positiveInteger } from "./values.js"
 import { QuestionBridge } from "./question-ipc"
 import { BridgeRpc } from "./rpc.js"
 import { mailTestCurrent as mailTestCurrentFor, mailTestKey as mailTestKeyFor, secureJoinProgress, setupMarkdown, setupReadiness } from "./setup.js"
+import { SETTING_KEYS, SETTING_SPECS, UI_DEFAULTS } from "./settings.js"
 
 export default Plugin.define({
   setup(ctx) {
@@ -140,22 +142,7 @@ export default Plugin.define({
         onCleanup(stop)
       })
 
-      const defaults = {
-        remoteMode: "securejoin",
-        generateKey: true,
-        preferEncryptMutual: true,
-        verifyCertificate: true,
-        emailDecisions: true,
-        emailHighRiskDecisions: false,
-        emailQuestions: true,
-        emailPeek: true,
-        emailTail: true,
-        emailSendFiles: true,
-        emailWatch: true,
-        emailReadReceipts: true,
-        emailProgress: true,
-        emailProgressIntervalMs: 20000,
-      }
+      const defaults = UI_DEFAULTS
       const setField = (key, value) => setSettings((prev) => ({ ...prev, [key]: value }))
       const value = (key) => settings()[key] ?? ""
       const checked = (key) => {
@@ -163,14 +150,8 @@ export default Plugin.define({
         return current === undefined ? Boolean(defaults[key]) : Boolean(current)
       }
       const mode = () => String(value("remoteMode") || "securejoin")
-      const hostValue = (key) => {
-        const text = String(value(key)).trim()
-        return text.replace(/^[a-z][a-z\d+.-]*:\/\//i, "").replace(/^.*@/, "").split(/[/?#]/, 1)[0].toLowerCase()
-      }
-      const number = (key, fallback) => {
-        const parsed = Number(value(key))
-        return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
-      }
+      const hostValue = (key) => normalizeHost(value(key))
+      const number = (key, fallback) => positiveInteger(value(key), fallback)
 
       // A test only counts for the exact values shown in the form. A running
       // bridge with unchanged saved values also counts after a reload, since
@@ -304,49 +285,15 @@ export default Plugin.define({
         }
       }
 
-      const settingsPayload = () => ({
-          address: value("address"),
-          displayName: value("displayName"),
-          imapHost: hostValue("imapHost"),
-          imapPort: number("imapPort", 993),
-          imapSecurity: value("imapSecurity") || "tls",
-          imapUser: value("imapUser"),
-          imapPassword: value("imapPassword"),
-          imapMailbox: value("imapMailbox") || "INBOX",
-          smtpHost: hostValue("smtpHost"),
-          smtpPort: number("smtpPort", 465),
-          smtpSecurity: value("smtpSecurity") || "tls",
-          smtpUser: value("smtpUser"),
-          smtpPassword: value("smtpPassword"),
-          pinnedContact: value("pinnedContact"),
-          pinnedFingerprint: value("pinnedFingerprint"),
-          pinnedContactKey: value("pinnedContactKey"),
-          inviteUrl: value("inviteUrl"),
-          remoteMode: mode(),
-          secureJoinAuth: value("secureJoinAuth"),
-          secureJoinName: value("secureJoinName"),
-          secureJoinVersion: value("secureJoinVersion") || "3",
-          secureJoinRelays: value("secureJoinRelays"),
-          secureJoinInviteNumber: value("secureJoinInviteNumber"),
-          requireEncrypted: checked("requireEncrypted"),
-          pollIntervalMs: number("pollIntervalMs", 30000),
-          verifyCertificate: checked("verifyCertificate"),
-          deleteAfterRead: checked("deleteAfterRead"),
-          privateKeyArmored: value("privateKeyArmored"),
-          keyPassphrase: value("keyPassphrase"),
-          generateKey: checked("generateKey"),
-          preferEncryptMutual: checked("preferEncryptMutual"),
-          emailDecisions: checked("emailDecisions"),
-          emailHighRiskDecisions: checked("emailHighRiskDecisions"),
-          emailQuestions: checked("emailQuestions"),
-          emailPeek: checked("emailPeek"),
-          emailTail: checked("emailTail"),
-          emailSendFiles: checked("emailSendFiles"),
-          emailWatch: checked("emailWatch"),
-          emailReadReceipts: checked("emailReadReceipts"),
-          emailProgress: checked("emailProgress"),
-          emailProgressIntervalMs: number("emailProgressIntervalMs", 20000),
-      })
+      // Build the form payload from the same registry as the RPC schema so new
+      // settings cannot appear in one place and be silently dropped in another.
+      const settingsPayload = () => Object.fromEntries(SETTING_KEYS.map((key) => {
+        const spec = SETTING_SPECS[key]
+        if (key === "imapHost" || key === "smtpHost") return [key, hostValue(key)]
+        if (spec.type === "number") return [key, number(key, spec.fallback)]
+        if (spec.type === "boolean") return [key, checked(key)]
+        return [key, value(key) || (UI_DEFAULTS[key] ?? "")]
+      }))
 
       const save = () => run("Settings saved", () => rpc().updateSettings(settingsPayload()))
 
@@ -356,20 +303,22 @@ export default Plugin.define({
         const lines = [
           `Configured: ${current.configured ? "yes" : "no"}`,
           `Running: ${current.running ? "yes" : "no"}`,
-          `Remote type: ${value("remoteMode") || "securejoin"}`,
+          `Remote type: ${current.remoteMode || "securejoin"}`,
           `Bridge fingerprint (sent in SecureJoin): ${current.selfFingerprint || "(none)"}`,
           `Pinned contact / invite issuer: ${current.pinnedContact || "(none)"}`,
           `Pinned contact fingerprint: ${current.pinnedFingerprint || "(none)"}`,
           `Learned contact fingerprint: ${current.learnedFingerprint || "(none)"}`,
           `SecureJoin auth present: ${current.secureJoin?.hasAuth ? "yes" : "no"}`,
           `SecureJoin version: ${current.secureJoin?.version || "3"}`,
-          `Established: ${current.established ? "yes" : "no"}`,
-          `Fingerprint verified: ${current.verified ? "yes" : "no"}`,
+          `Established (key known): ${current.established ? "yes" : "no"}`,
+          `SecureJoin verified: ${current.verified ? "yes" : "no"}`,
           `Session: ${current.emailDisabled ? "DISABLED (none bound)" : (current.sessionTitle || current.sessionID || "(none)")}${current.sessionDirectory ? ` — ${current.sessionDirectory}` : ""}`,
           `Session directory: ${current.sessionDirectory || "(unknown)"}`,
           `State: ${current.handshake}`,
           `SecureJoin: ${current.secureJoin?.status || "idle"}`,
           `Last read receipt: ${current.lastReceiptAt ? new Date(current.lastReceiptAt).toLocaleString() : "(none)"}`,
+          `Queued replies: ${current.queuedReplies ?? 0}`,
+          ...(current.nextReplyRetryAt ? [`Next reply retry: ${new Date(current.nextReplyRetryAt).toLocaleString()}`] : []),
           ...(current.lastError ? [`Last error: ${current.lastError}`] : []),
         ]
         return lines.join("\n")

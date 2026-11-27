@@ -293,8 +293,12 @@ export function parseDispositionNotification(raw) {
     ))
     const disposition = String(fields.get('disposition') || '')
     if (!disposition) continue
+    const action = String(fields.get('action') || disposition.split(';').slice(1).join(';') || '')
+      .trim()
+      .toLowerCase()
     return {
       disposition,
+      action,
       originalMessageID: String(fields.get('original-message-id') || headers.get('in-reply-to') || ''),
     }
   }
