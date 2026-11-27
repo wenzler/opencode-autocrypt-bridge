@@ -150,6 +150,8 @@ export default Plugin.define({
         return current === undefined ? Boolean(defaults[key]) : Boolean(current)
       }
       const mode = () => String(value("remoteMode") || "securejoin")
+      const secureJoinOnly = (node) => (mode() === "securejoin" ? node : null)
+      const autocryptOnly = (node) => (mode() === "autocrypt" ? node : null)
       const hostValue = (key) => normalizeHost(value(key))
       const number = (key, fallback) => positiveInteger(value(key), fallback)
 
@@ -300,22 +302,27 @@ export default Plugin.define({
       const statusText = () => {
         const current = status()
         if (!current) return "Loading…"
+        const selectedMode = mode()
+        const liveMode = String(current.remoteMode || "securejoin")
+        const joinMode = selectedMode === "securejoin"
         const lines = [
           `Configured: ${current.configured ? "yes" : "no"}`,
           `Running: ${current.running ? "yes" : "no"}`,
-          `Remote type: ${current.remoteMode || "securejoin"}`,
-          `Bridge fingerprint (sent in SecureJoin): ${current.selfFingerprint || "(none)"}`,
-          `Pinned contact / invite issuer: ${current.pinnedContact || "(none)"}`,
+          `Remote type: ${liveMode}${liveMode !== selectedMode ? ` (selected: ${selectedMode}, not applied)` : ""}`,
+          `Bridge fingerprint: ${current.selfFingerprint || "(none)"}`,
+          `Pinned contact: ${current.pinnedContact || "(none)"}`,
           `Pinned contact fingerprint: ${current.pinnedFingerprint || "(none)"}`,
           `Learned contact fingerprint: ${current.learnedFingerprint || "(none)"}`,
-          `SecureJoin auth present: ${current.secureJoin?.hasAuth ? "yes" : "no"}`,
-          `SecureJoin version: ${current.secureJoin?.version || "3"}`,
           `Established (key known): ${current.established ? "yes" : "no"}`,
-          `SecureJoin verified: ${current.verified ? "yes" : "no"}`,
+          ...(joinMode ? [
+            `SecureJoin auth present: ${current.secureJoin?.hasAuth ? "yes" : "no"}`,
+            `SecureJoin version: ${current.secureJoin?.version || "3"}`,
+            `SecureJoin verified: ${current.verified ? "yes" : "no"}`,
+            `SecureJoin: ${current.secureJoin?.status || "idle"}`,
+          ] : []),
           `Session: ${current.emailDisabled ? "DISABLED (none bound)" : (current.sessionTitle || current.sessionID || "(none)")}${current.sessionDirectory ? ` — ${current.sessionDirectory}` : ""}`,
           `Session directory: ${current.sessionDirectory || "(unknown)"}`,
           `State: ${current.handshake}`,
-          `SecureJoin: ${current.secureJoin?.status || "idle"}`,
           `Last read receipt: ${current.lastReceiptAt ? new Date(current.lastReceiptAt).toLocaleString() : "(none)"}`,
           `Queued replies: ${current.queuedReplies ?? 0}`,
           ...(current.nextReplyRetryAt ? [`Next reply retry: ${new Date(current.nextReplyRetryAt).toLocaleString()}`] : []),
@@ -340,11 +347,13 @@ export default Plugin.define({
               title="Start here"
               description={
                 <ui.Markdown
-                  text={"1. Fill **Bot address**, IMAP and SMTP below.\n2. Click **Test IMAP + SMTP**.\n3. Only then paste the invite / fill the pinned contact and SecureJoin fields.\n4. Click **Save & restart**, then **Start SecureJoin**.\n\nChanging any mail field invalidates the test and locks setup again."}
+                  text={mode() === "securejoin"
+                    ? "1. Fill **Bot address**, IMAP and SMTP below.\n2. Click **Test IMAP + SMTP**.\n3. Only then paste the invite / fill the pinned contact and SecureJoin fields.\n4. Click **Save & restart**, then **Start SecureJoin**.\n\nChanging any mail field invalidates the test and locks setup again."
+                    : "1. Fill **Bot address**, IMAP and SMTP below.\n2. Click **Test IMAP + SMTP**.\n3. Only then enter the pinned contact address and OpenPGP fingerprint.\n4. Click **Save & restart**, then **Send Autocrypt request**.\n\nChanging any mail field invalidates the test and locks setup again."}
                 />
               }
             />
-            {mode() === "securejoin" ? (
+            {secureJoinOnly(
               <ui.SettingsRow
                 title="SecureJoin connection"
                 description={
@@ -363,7 +372,7 @@ export default Plugin.define({
                   Cancel
                 </ui.Button>
               </ui.SettingsRow>
-            ) : null}
+            )}
             <ui.SettingsRow title="Readiness" description={<ui.Markdown text={setupText()} />} />
           </ui.SettingsSection>
 
@@ -421,7 +430,7 @@ export default Plugin.define({
               title="Test mail account"
               description={mailTest()
                 ? `${mailTest().imap ? "IMAP login OK" : "IMAP failed"}; ${mailTest().smtp ? "SMTP auth OK" : "SMTP failed"}${mailTest().errors?.length ? ` — ${mailTest().errors.join("; ")}` : ""}`
-                : "Checks IMAP login and SMTP authentication without sending a message. Run this before starting SecureJoin."}
+                : `Checks IMAP login and SMTP authentication without sending a message. Run this before ${mode() === "securejoin" ? "starting SecureJoin" : "sending an Autocrypt request"}.`}
             >
               <ui.Button size="small" disabled={busy() || !readiness().mailReady} onClick={() => void testMail()}>Test IMAP + SMTP</ui.Button>
             </ui.SettingsRow>
@@ -440,16 +449,20 @@ export default Plugin.define({
                 ]}
               />
             </ui.SettingsRow>
-            <ui.SettingsRow id="inviteUrl" title="Contact invite URL / invite fields" description="Paste the QR URL from the pinned contact. It fills the pin and SecureJoin fields locally; s= is kept locally as the handshake auth code. Display hides the secret and nothing is fetched.">
-              <ui.TextInput label="Contact invite URL" disabled={setupBlocked()} value={value("inviteUrl")} onInput={(v) => setField("inviteUrl", v)} placeholder="OPENPGP4FPR:FPR#a=you%40example.org&n=Name&s=AUTH&v=3" />
-            </ui.SettingsRow>
-            <ui.SettingsRow title="Fill fields from invite">
-              <ui.Button size="small" disabled={busy() || setupBlocked() || !value("inviteUrl").trim()} onClick={() => void fillFromInvite()}>Fill SecureJoin fields</ui.Button>
-            </ui.SettingsRow>
+            {secureJoinOnly(<>
+              <ui.SettingsRow id="inviteUrl" title="Contact invite URL / invite fields" description="Paste the QR URL from the pinned contact. It fills the pin and SecureJoin fields locally; s= is kept locally as the handshake auth code. Display hides the secret and nothing is fetched.">
+                <ui.TextInput label="Contact invite URL" disabled={setupBlocked()} value={value("inviteUrl")} onInput={(v) => setField("inviteUrl", v)} placeholder="OPENPGP4FPR:FPR#a=you%40example.org&n=Name&s=AUTH&v=3" />
+              </ui.SettingsRow>
+              <ui.SettingsRow title="Fill fields from invite">
+                <ui.Button size="small" disabled={busy() || setupBlocked() || !value("inviteUrl").trim()} onClick={() => void fillFromInvite()}>Fill SecureJoin fields</ui.Button>
+              </ui.SettingsRow>
+            </>)}
             <ui.SettingsRow id="pinnedContact" title="Pinned contact" description="Required. Only this address may drive OpenCode.">
               <ui.TextInput label="Pinned contact" disabled={setupBlocked()} value={value("pinnedContact")} onInput={(v) => setField("pinnedContact", v)} placeholder="you@example.org" />
             </ui.SettingsRow>
-            <ui.SettingsRow id="pinnedFingerprint" title="Pinned fingerprint" description="Required for both modes. The contact's OpenPGP fingerprint. An invite-style link fills this and the pinned address locally.">
+            <ui.SettingsRow id="pinnedFingerprint" title="Pinned fingerprint" description={mode() === "securejoin"
+              ? "Required for both modes. The contact's OpenPGP fingerprint. An invite-style link fills this and the pinned address locally."
+              : "Required. Enter the pinned contact's OpenPGP fingerprint manually."}>
               <ui.TextInput label="Pinned fingerprint" disabled={setupBlocked()} value={value("pinnedFingerprint")} onInput={(v) => setField("pinnedFingerprint", v)} placeholder="669AE77C…" />
             </ui.SettingsRow>
             <ui.SettingsRow id="pinnedContactKey" title="Pinned public key (optional)" description={settings().hasPinnedContactKey ? "A key is saved; leave blank to keep it. It must match the fingerprint." : "Bootstrap key; otherwise learned during setup."}>
@@ -457,7 +470,7 @@ export default Plugin.define({
             </ui.SettingsRow>
           </ui.SettingsSection>
 
-          {mode() === "securejoin" ? (
+          {secureJoinOnly(
             <ui.SettingsSection title="SecureJoin setup">
               <ui.SettingsRow title="Join the contact's invite" description={readiness().canStartSecureJoin
                 ? "Ready. This bridge never creates a QR; it joins the invite supplied by the pinned contact."
@@ -487,7 +500,8 @@ export default Plugin.define({
                 <ui.TextInput label="Legacy invite number" disabled={setupBlocked()} value={value("secureJoinInviteNumber")} onInput={(v) => setField("secureJoinInviteNumber", v)} />
               </ui.SettingsRow>
             </ui.SettingsSection>
-          ) : (
+          )}
+          {autocryptOnly(
             <ui.SettingsSection title="Autocrypt setup">
               <ui.SettingsRow title="Autocrypt request" description={readiness().canStartHandshake
                 ? "Ready. Sends a plaintext hello with this bridge’s Autocrypt header."
@@ -619,7 +633,7 @@ export default Plugin.define({
               title="Current state"
               description={
                 <>
-                  <ui.Markdown text="Use the Setup guide above. Until mail, pin, auth and Apply are complete, the bridge stays unconfigured and sends nothing." />
+                  <ui.Markdown text="Use the Setup guide above. Until the mail account and pinned contact are applied and the selected handshake is complete, the bridge stays unconfigured and sends nothing." />
                   <ui.Code content={statusText()} language="text" />
                 </>
               }
@@ -636,11 +650,10 @@ export default Plugin.define({
       id: "autocrypt-bridge",
       title: "Autocrypt Bridge",
       entries: [
-        { id: "setup", title: "Setup guide", keywords: "wizard checklist securejoin invite apply ready" },
+        { id: "setup", title: "Setup guide", keywords: "wizard checklist securejoin invite url qr fill apply ready" },
         { id: "address", title: "Bot address", keywords: "imap smtp email" },
         { id: "pinnedContact", title: "Pinned contact", keywords: "fingerprint gate openpgp" },
-        { id: "remoteMode", title: "Remote type", keywords: "securejoin deltachat autocrypt" },
-        { id: "inviteUrl", title: "Contact invite URL", keywords: "fingerprint prefill" },
+        { id: "remoteMode", title: "Remote type", keywords: "securejoin deltachat autocrypt invite url qr" },
         { id: "sessions", title: "Open sessions", keywords: "session project routing" },
         { id: "emailSession", title: "Email session", keywords: "session project binding switch" },
         { id: "emailDecisions", title: "Remote controls", keywords: "permission decision question answer watch danger" },

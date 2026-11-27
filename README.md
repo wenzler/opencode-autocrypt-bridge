@@ -64,8 +64,8 @@ Choose **Remote type** in the GUI first. Pinning is common to both modes. In Sec
 The **Setup guide** section is the intended path, especially when changing the pinned contact:
 
 1. Fill the mail account fields and click **Test IMAP + SMTP**. This checks login only; it sends nothing. Until it succeeds with the current values, every other control in Settings is locked.
-2. Paste the invite URL and click **Fill SecureJoin fields**, or enter the pinned address, fingerprint and auth code manually.
-3. Click **Save & restart**. SecureJoin/handshake actions stay disabled until the live bridge uses these exact pinned values.
+2. In SecureJoin, paste the invite URL and click **Fill SecureJoin fields**, or enter the pinned address, fingerprint and auth code manually. In Autocrypt, only the pinned address and fingerprint are shown.
+3. Click **Save & restart**. Handshake actions stay disabled until the live bridge uses these exact pinned values.
 4. If a different contact was pinned before, click **Reset contact** to clear the old learned key and handshake state.
 5. Click **Start SecureJoin** (or **Send Autocrypt request** in legacy mode). A spinner and checklist show `vc-request-pubkey` sent, `vc-pubkey` received, `vc-request-with-auth` sent, and `vc-contact-confirm` received. **Cancel** aborts a pending join and ignores late replies until you start again. **Rescan inbox** picks up replies delayed by greylisting.
 

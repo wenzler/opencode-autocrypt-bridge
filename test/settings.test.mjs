@@ -45,6 +45,38 @@ test('one settings registry drives the RPC schema, stored values and GUI default
   assert.doesNotMatch(gui, /const defaults = \{/)
 })
 
+test('the GUI hides every SecureJoin-only control outside SecureJoin mode', () => {
+  const gui = readFileSync(fileURLToPath(new URL('../src/gui.tsx', import.meta.url)), 'utf8')
+  const gateCount = gui.match(/secureJoinOnly\(/g)?.length || 0
+  assert.ok(gateCount >= 3, 'invite fields, progress and setup are all gated')
+  const autocryptGate = gui.indexOf('autocryptOnly(')
+  for (const marker of [
+    'Contact invite URL / invite fields',
+    'Fill SecureJoin fields',
+    'SecureJoin connection',
+    'SecureJoin setup',
+    'Start SecureJoin',
+    'SecureJoin auth code (s=)',
+    'Invite display name (n=)',
+    'SecureJoin version (v=)',
+    'Relay addresses (r=)',
+    'Legacy invite number (i=/j=)',
+  ]) {
+    let found = false
+    for (let at = gui.indexOf(marker); at >= 0; at = gui.indexOf(marker, at + 1)) {
+      if (gui.lastIndexOf('secureJoinOnly(', at) >= 0 && (autocryptGate < 0 || at < autocryptGate)) {
+        found = true
+        break
+      }
+    }
+    assert.ok(found, `${marker} is behind a SecureJoin gate`)
+  }
+  assert.match(gui, /const selectedMode = mode\(\)/)
+  assert.match(gui, /const joinMode = selectedMode === "securejoin"/)
+  assert.match(gui, /autocryptOnly\(\s*<ui\.SettingsSection title="Autocrypt setup">/)
+  assert.doesNotMatch(gui, /id: "inviteUrl"/, 'the invite shortcut is not listed for both modes')
+})
+
 test('the mail and attachment size limits survive config reuse', () => {
   const cfg = loadConfig({
     address: 'bot@example.org', imapHost: 'imap.example.org', imapPassword: 'p',

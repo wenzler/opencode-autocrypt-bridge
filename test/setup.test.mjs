@@ -76,6 +76,29 @@ test('autocrypt mode does not require an invite auth code', () => {
   assert.equal(ready.canStartSecureJoin, false)
 })
 
+test('autocrypt setup guidance never directs the user to a SecureJoin invite', () => {
+  const ready = setupReadiness(settings({
+    remoteMode: 'autocrypt',
+    pinnedContact: '',
+    pinnedFingerprint: '',
+    secureJoinAuth: '',
+    hasSecureJoinAuth: false,
+  }), status({
+    configured: false,
+    running: false,
+    remoteMode: 'autocrypt',
+    pinnedContact: '',
+    pinnedFingerprint: '',
+    secureJoin: {},
+  }), { mailTestAvailable: true, mailTestOk: true })
+  assert.equal(ready.next.id, 'pin')
+  assert.match(ready.next.hint, /Enter the pinned address and OpenPGP fingerprint manually/)
+  assert.doesNotMatch(ready.next.hint, /invite/i)
+  const markdown = setupMarkdown(ready)
+  assert.match(markdown, /Pinned contact and fingerprint/)
+  assert.doesNotMatch(markdown, /Fill SecureJoin fields|Invite auth code/)
+})
+
 test('SecureJoin progress shows each wire step and pending state', () => {
   const sent = secureJoinProgress({ secureJoin: { status: 'request-sent', address: 'contact@example.net' } })
   assert.equal(sent.pending, true)

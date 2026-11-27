@@ -87,7 +87,9 @@ export function setupReadiness(settings = {}, status = {}, extra = {}) {
       done: Boolean(pinnedContact && fingerprint),
       hint: pinnedContact && fingerprint
         ? `${pinnedContact} · ${fingerprint}`
-        : 'Paste the invite URL and click "Fill SecureJoin fields", or enter both manually',
+        : (mode === 'securejoin'
+          ? 'Paste the invite URL and click "Fill SecureJoin fields", or enter both manually'
+          : 'Enter the pinned address and OpenPGP fingerprint manually'),
     },
   ]
   if (mode === 'securejoin') {
