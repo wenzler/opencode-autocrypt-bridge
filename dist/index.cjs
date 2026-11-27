@@ -129496,7 +129496,7 @@ var BridgeRpc = rpc_exports.define({
 });
 
 // src/index.js
-var PLUGIN_VERSION = "0.5.32";
+var PLUGIN_VERSION = "0.5.33";
 var STORAGE_KEY = "autocrypt.settings";
 var RUNTIME_KEY = Symbol.for("opencode-autocrypt-bridge.runtime");
 function runtimeSlot() {
@@ -129602,9 +129602,12 @@ async function setupInstance(ctx, slot) {
   const restart = async (guarded = false) => {
     const current = slot.runtime;
     if (!current) return currentStatus();
+    if (guarded && (slot.token !== token || slot.runtime !== current)) {
+      return restart(false);
+    }
     await stopBridge();
     current.stored = storedSettings(await current.ctx.storage.get(STORAGE_KEY));
-    if (guarded && (slot.token !== token || slot.runtime !== current)) return currentStatus();
+    if (guarded && (slot.token !== token || slot.runtime !== current)) return restart(false);
     try {
       current.cfg = loadConfig({ ...current.options, ...current.stored }, process.env);
       current.configError = "";
@@ -129617,7 +129620,7 @@ async function setupInstance(ctx, slot) {
         const staleBridge = current.bridge;
         current.bridge = null;
         if (staleBridge) await staleBridge.stop();
-        return currentStatus();
+        return restart(false);
       }
       current.bridge.start();
       slot.stop = stopBridge;

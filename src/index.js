@@ -7,7 +7,7 @@ import { BridgeRpc } from './rpc.js'
 import { formatSessionDirectory } from './session.js'
 import { applySettingValues, settingsView, storedSettings } from './settings.js'
 
-const PLUGIN_VERSION = '0.5.32'
+const PLUGIN_VERSION = '0.5.33'
 const STORAGE_KEY = 'autocrypt.settings'
 const RUNTIME_KEY = Symbol.for('opencode-autocrypt-bridge.runtime')
 
@@ -133,9 +133,14 @@ async function setupInstance(ctx, slot) {
   const restart = async (guarded = false) => {
     const current = slot.runtime
     if (!current) return currentStatus()
+    if (guarded && (slot.token !== token || slot.runtime !== current)) {
+      // A newer load owns the slot. Let it (or the next guarded restart) start
+      // the bridge instead of leaving the current runtime unconfigured.
+      return restart(false)
+    }
     await stopBridge()
     current.stored = storedSettings(await current.ctx.storage.get(STORAGE_KEY))
-    if (guarded && (slot.token !== token || slot.runtime !== current)) return currentStatus()
+    if (guarded && (slot.token !== token || slot.runtime !== current)) return restart(false)
     try {
       current.cfg = loadConfig({ ...current.options, ...current.stored }, process.env)
       current.configError = ''
@@ -148,7 +153,7 @@ async function setupInstance(ctx, slot) {
         const staleBridge = current.bridge
         current.bridge = null
         if (staleBridge) await staleBridge.stop()
-        return currentStatus()
+        return restart(false)
       }
       current.bridge.start()
       slot.stop = stopBridge
