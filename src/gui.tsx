@@ -2,7 +2,7 @@ import { createSignal, onCleanup, onMount } from "solid-js"
 import { Command, Plugin, SettingsPage, Slot } from "@opencode/plugin/gui"
 import { QuestionBridge } from "./question-ipc"
 import { BridgeRpc } from "./rpc.js"
-import { secureJoinProgress, setupMarkdown, setupReadiness } from "./setup.js"
+import { mailTestCurrent as mailTestCurrentFor, mailTestKey as mailTestKeyFor, secureJoinProgress, setupMarkdown, setupReadiness } from "./setup.js"
 
 export default Plugin.define({
   setup(ctx) {
@@ -114,6 +114,7 @@ export default Plugin.define({
       const [sessions, setSessions] = createSignal(null)
       const [sessionID, setSessionID] = createSignal("")
       const [mailTest, setMailTest] = createSignal(null)
+      const [appliedMailKey, setAppliedMailKey] = createSignal("")
 
       const reload = async () => {
         try {
@@ -123,6 +124,7 @@ export default Plugin.define({
             rpc().listSessions({}),
           ])
           setSettings(nextSettings)
+          setAppliedMailKey(mailTestKeyFor(nextSettings))
           setStatus(nextStatus)
           setSessions(nextSessions)
           if (!sessionID()) setSessionID(nextSessions.emailDisabled ? "none" : (nextSessions.boundSessionID || ""))
@@ -170,14 +172,11 @@ export default Plugin.define({
         return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
       }
 
-      // A test only counts for the exact values shown in the form. Editing any
-      // mail field invalidates it and re-locks the rest of setup.
-      const mailTestKey = () => JSON.stringify([
-        "address", "imapHost", "imapPort", "imapSecurity", "imapUser", "imapPassword", "imapMailbox",
-        "smtpHost", "smtpPort", "smtpSecurity", "smtpUser", "smtpPassword",
-        "verifyCertificate", "pollIntervalMs",
-      ].map((key) => [key, value(key)]))
-      const mailTestCurrent = () => Boolean(mailTest()?.ok && mailTest()?.key === mailTestKey())
+      // A test only counts for the exact values shown in the form. A running
+      // bridge with unchanged saved values also counts after a reload, since
+      // the in-session test result is deliberately not persisted.
+      const mailTestKey = () => mailTestKeyFor(settings())
+      const mailTestCurrent = () => mailTestCurrentFor(settings(), status(), mailTest(), appliedMailKey())
       const readiness = () => setupReadiness(settings(), status(), {
         mailTestAvailable: true,
         mailTestOk: mailTestCurrent(),
@@ -384,7 +383,7 @@ export default Plugin.define({
         >
           <ui.SettingsSection
             title="Setup guide"
-            description="Start here. Fill the mail account fields, test them, then set up the pinned contact. Everything outside the mail account stays locked until the test passes with the current values."
+            description="Start here. Fill the mail account fields, test them, then set up the pinned contact. Everything outside the mail account stays locked until the test passes with the current values; a running bridge with unchanged values counts as tested after a reload."
           >
             <ui.SettingsRow
               title="Start here"

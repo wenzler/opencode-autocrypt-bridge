@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { secureJoinProgress, setupMarkdown, setupReadiness } from '../src/setup.js'
+import { mailTestCurrent, mailTestKey, secureJoinProgress, setupMarkdown, setupReadiness } from '../src/setup.js'
 
 const FPR = '669AE77C1D829C65258FC4F8F220CFCAEAA9A4CE'
 
@@ -103,4 +103,31 @@ test('a failed mail test blocks the handshake', () => {
   })
   assert.equal(ready.next.id, 'mail')
   assert.equal(ready.canStartSecureJoin, false)
+})
+
+test('a running bridge with unchanged saved mail values counts as tested after reload', () => {
+  const current = settings()
+  const key = mailTestKey(current)
+  assert.equal(mailTestCurrent(current, status(), null, key), true)
+  assert.equal(setupReadiness(current, status(), {
+    mailTestAvailable: true, mailTestOk: mailTestCurrent(current, status(), null, key),
+  }).next.id, 'verify')
+})
+
+test('editing any mail field re-locks setup after reload', () => {
+  const current = settings()
+  const appliedKey = mailTestKey(current)
+  const edited = settings({ smtpHost: 'smtp.changed.example.org' })
+  const valid = mailTestCurrent(edited, status(), null, appliedKey)
+  assert.equal(valid, false)
+  assert.equal(setupReadiness(edited, status(), {
+    mailTestAvailable: true, mailTestOk: valid,
+  }).next.id, 'mail')
+})
+
+test('an in-session test still counts for the exact displayed values', () => {
+  const current = settings()
+  const key = mailTestKey(current)
+  assert.equal(mailTestCurrent(current, status({ running: false }), { ok: true, key }, ''), true)
+  assert.equal(mailTestCurrent(settings({ imapHost: 'other.example.org' }), status(), { ok: true, key }, ''), false)
 })

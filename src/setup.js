@@ -8,6 +8,35 @@ function safeFingerprint(value) {
   }
 }
 
+const MAIL_TEST_FIELDS = [
+  'address', 'imapHost', 'imapPort', 'imapSecurity', 'imapUser', 'imapPassword', 'imapMailbox',
+  'smtpHost', 'smtpPort', 'smtpSecurity', 'smtpUser', 'smtpPassword',
+  'verifyCertificate', 'pollIntervalMs',
+]
+
+/** Identity of the exact mail values shown in the form. */
+export function mailTestKey(settings = {}) {
+  const values = settings || {}
+  return JSON.stringify(MAIL_TEST_FIELDS.map((key) => [key, values[key] ?? '']))
+}
+
+/**
+ * A mail test counts for the exact values shown in the form, or for the saved
+ * values behind a running bridge. The second case keeps the rest of setup
+ * usable after a GUI/plugin reload, which clears the in-session test result.
+ * Editing any mail field changes the key and re-locks setup.
+ */
+export function mailTestCurrent(settings = {}, status = {}, mailTest = null, appliedMailKey = '') {
+  const key = mailTestKey(settings)
+  if (mailTest?.ok === true && mailTest?.key === key) return true
+  return Boolean(
+    status?.configured === true
+    && status?.running === true
+    && appliedMailKey
+    && appliedMailKey === key,
+  )
+}
+
 /**
  * Derive a guided setup checklist from the values currently in the form and
  * the live bridge status. This is intentionally pure so the GUI can show the

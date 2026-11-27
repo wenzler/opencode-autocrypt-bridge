@@ -129078,7 +129078,7 @@ var BridgeRpc = rpc_exports.define({
 });
 
 // src/index.js
-var PLUGIN_VERSION = "0.5.29";
+var PLUGIN_VERSION = "0.5.30";
 var SETTING_KEYS = [
   "address",
   "displayName",
