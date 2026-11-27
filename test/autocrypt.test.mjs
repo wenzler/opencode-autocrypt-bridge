@@ -326,6 +326,35 @@ test('!session #n switches using the number printed by !sessions', async () => {
   assert.match(parseRawHeaders(h.sent.at(-1).raw).get('subject'), /\[session:ses_main\]/)
 })
 
+test('subject marker routes to a session outside the current Desktop project', async () => {
+  const bot = await keyPair('bot7c@example.org')
+  const contact = await keyPair('contact7c@example.net')
+  const otherProject = {
+    id: 'ses_other_project',
+    title: 'ezflix',
+    projectID: 'p-ez',
+    location: { directory: '/other/project' },
+    time: { created: 100, updated: 10 },
+  }
+  const h = harness(contact.fingerprint, { assistantText: 'cross-project answer', sessions: [otherProject] })
+  const originalGet = h.ctx.session.get
+  h.ctx.session.get = async (input) => {
+    if (input.sessionID === 'ses_other_project') throw new Error('Unknown session in current project')
+    return originalGet(input)
+  }
+  const bridge = await createBridge(h.ctx, h.cfg, { identity: bot, sender: h.sender, log: () => {} })
+
+  await bridge.process(firstContactMail(contact))
+  await bridge.process(contactReply(contact, {
+    subject: 'Re: first contact [session:ses_other_project]',
+    text: 'route me',
+    messageId: '<cross-project@example.net>',
+  }))
+
+  assert.deepEqual(h.prompted, ['session-1', 'ses_other_project'])
+  assert.match(parseRawHeaders(h.sent.at(-1).raw).get('subject'), /\[session:ses_other_project\]/)
+})
+
 test('session aliases never move when another session becomes more recent', async () => {
   const bot = await keyPair('bot7b@example.org')
   const contact = await keyPair('contact7b@example.net')

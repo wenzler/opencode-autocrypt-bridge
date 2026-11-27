@@ -309,8 +309,11 @@ export async function createBridge(ctx, cfg, options = {}) {
   async function sessionExists(sessionID) {
     if (!sessionID) return false
     try {
-      const session = await ctx.session.get({ sessionID })
-      return Boolean(session?.id)
+      // ctx.session.get can be scoped to the current Desktop project, so a
+      // valid session in another project looks missing. Use the full catalog
+      // that routing decisions are made from instead.
+      const catalog = await listSessions()
+      return catalog.sessions.some((session) => session.id === sessionID)
     } catch {
       return false
     }

@@ -127096,8 +127096,8 @@ async function createBridge(ctx, cfg, options2 = {}) {
   async function sessionExists(sessionID) {
     if (!sessionID) return false;
     try {
-      const session = await ctx.session.get({ sessionID });
-      return Boolean(session?.id);
+      const catalog = await listSessions();
+      return catalog.sessions.some((session) => session.id === sessionID);
     } catch {
       return false;
     }
@@ -129496,7 +129496,7 @@ var BridgeRpc = rpc_exports.define({
 });
 
 // src/index.js
-var PLUGIN_VERSION = "0.5.33";
+var PLUGIN_VERSION = "0.5.34";
 var STORAGE_KEY = "autocrypt.settings";
 var RUNTIME_KEY = Symbol.for("opencode-autocrypt-bridge.runtime");
 function runtimeSlot() {
