@@ -282,6 +282,65 @@ test('a run that stops for a question still mails its leading streamed output', 
   assert.match(finalText, /Leading output before the question/)
 })
 
+test('streamed output is buffered when progressive mail is disabled', async () => {
+  const bot = await keyPair('bot@example.org')
+  const contact = await keyPair('contact@example.net')
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-ac-progress-'))
+
+  const h = harness(contact.fingerprint, root)
+  h.cfg.remote.progress = false
+  const bridge = await createBridge(h.ctx, h.cfg, {
+    identity: bot, sender: h.sender, log: () => {},
+  })
+
+  const pending = bridge.process(contactMail(contact))
+  await waitFor(h.waitCalled)
+  // The assistant message never commits because a question ends the run.
+  h.setMessages([
+    { id: 'user-message', type: 'user', content: [{ type: 'text', text: 'go' }] },
+  ])
+  await bridge.processEvent({
+    type: 'session.text.delta',
+    data: {
+      sessionID: h.session.id,
+      assistantMessageID: 'assistant-1',
+      delta: 'Buffered even without progress mail ',
+    },
+  })
+  h.release()
+  await pending
+
+  assert.equal(h.sent.length, 1, 'only the final mail is sent')
+  const headers = parseRawHeaders(h.sent[0].raw)
+  assert.equal(headers.get('x-opencode-notice'), undefined)
+  assert.match(await decryptedText(h.sent, 0, bot), /Buffered even without progress mail/)
+})
+
+test('a committed full reply is mailed in one piece when progressive mail is disabled', async () => {
+  const bot = await keyPair('bot@example.org')
+  const contact = await keyPair('contact@example.net')
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-ac-progress-'))
+
+  const h = harness(contact.fingerprint, root)
+  h.cfg.remote.progress = false
+  const bridge = await createBridge(h.ctx, h.cfg, {
+    identity: bot, sender: h.sender, log: () => {},
+  })
+
+  const pending = bridge.process(contactMail(contact))
+  await waitFor(h.waitCalled)
+  h.setMessages([
+    { id: 'user-message', type: 'user', content: [{ type: 'text', text: 'go' }] },
+    { id: 'assistant-1', type: 'assistant', content: [{ type: 'text', text: 'Full committed answer' }] },
+  ])
+  h.release()
+  await pending
+
+  assert.equal(h.sent.length, 1, 'one final mail, no progress mail')
+  assert.equal(parseRawHeaders(h.sent[0].raw).get('x-opencode-notice'), undefined)
+  assert.match(await decryptedText(h.sent, 0, bot), /Full committed answer/)
+})
+
 test('a fully mailed progress answer still gets one short completion mail', async () => {
   const bot = await keyPair('bot@example.org')
   const contact = await keyPair('contact@example.net')

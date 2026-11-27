@@ -77,6 +77,11 @@ function cleanRemoteNote(value, maxLength = 2_000) {
 
 const STATE_KEY = 'autocrypt.state'
 
+const OUTBOX_LIMIT = 200
+const OUTBOX_INTERVAL_MS = 10_000
+const OUTBOX_BASE_DELAY_MS = 15_000
+const OUTBOX_MAX_DELAY_MS = 15 * 60_000
+
 /**
  * Native events exposed to server plugins. OpenCode V2 streams assistant text
  * as `session.text.delta`; `message.part.delta` is TUI-only and is rejected by
@@ -102,7 +107,7 @@ async function loadState(ctx) {
     ? stored
     : {
       sessions: {}, peers: {}, seen: [], threads: {}, sessionContacts: {}, meta: {}, handshake: {},
-      watches: {}, pending: {}, questions: {}, sent: {},
+      watches: {}, pending: {}, questions: {}, sent: {}, outbox: [],
     }
   data.sessions ||= {}
   data.peers ||= {}
@@ -115,6 +120,7 @@ async function loadState(ctx) {
   data.pending ||= {}
   data.questions ||= {}
   data.sent ||= {}
+  data.outbox ||= []
   return {
     data,
     async save() {
@@ -162,6 +168,8 @@ export async function createBridge(ctx, cfg, options = {}) {
   const lastWatchNotify = new Map()
   const progress = new Map()
   const watchAnnounced = new Map()
+  let outboxTimer = null
+  let flushingOutbox = false
   const announcedDecisions = new Set()
   const announcingQuestions = new Set()
   let started = false
@@ -381,6 +389,9 @@ export async function createBridge(ctx, cfg, options = {}) {
     const joinPending = cfg.remote.mode === 'securejoin' && Boolean(cfg.pinned.secureJoin?.auth)
     const lastReceiptAt = Math.max(0, ...Object.values(state.data.sent)
       .map((entry) => Number(entry?.receiptAt) || 0))
+    const retryTimes = state.data.outbox
+      .map((entry) => Number(entry?.nextAt) || 0)
+      .filter((value) => value > 0)
     return {
       running: started,
       remoteMode: cfg.remote.mode,
@@ -408,6 +419,8 @@ export async function createBridge(ctx, cfg, options = {}) {
       sessionDirectory: String(session?.location?.directory || ''),
       sessionProjectID: String(session?.projectID || ''),
       lastReceiptAt,
+      queuedReplies: state.data.outbox.length,
+      nextReplyRetryAt: retryTimes.length ? Math.min(...retryTimes) : 0,
     }
   }
 
@@ -704,7 +717,6 @@ export async function createBridge(ctx, cfg, options = {}) {
 
   /** Send throttled working updates while one prompted session is running. */
   async function handleProgressEvent(event) {
-    if (cfg.remote.progress === false) return
     const data = event.data || {}
     const sessionID = String(data.sessionID || '')
     const active = progress.get(sessionID)
@@ -716,6 +728,9 @@ export async function createBridge(ctx, cfg, options = {}) {
     const delta = String(data.delta || '')
     if (!delta) return
     active.text += delta
+    // With progressive mail disabled the buffer still feeds the final mail,
+    // but no working mail is emitted.
+    if (active.sendProgress === false) return
     const configuredInterval = Number(cfg.remote.progressIntervalMs)
     const interval = Number.isFinite(configuredInterval) && configuredInterval >= 0
       ? configuredInterval
@@ -838,6 +853,74 @@ export async function createBridge(ctx, cfg, options = {}) {
     await state.save()
   }
 
+  async function queueReply({ raw, to, messageId, sessionID, subject, error }) {
+    const entry = {
+      id: randomUUID(),
+      to: String(to || ''),
+      raw: Buffer.from(raw).toString('base64'),
+      messageId: String(messageId || ''),
+      sessionID: String(sessionID || ''),
+      subject: String(subject || ''),
+      attempts: 0,
+      nextAt: Date.now() + OUTBOX_BASE_DELAY_MS,
+      lastError: String(error?.message || error || 'SMTP error').slice(0, 500),
+      createdAt: Date.now(),
+    }
+    state.data.outbox.push(entry)
+    if (state.data.outbox.length > OUTBOX_LIMIT) {
+      const dropped = state.data.outbox.splice(0, state.data.outbox.length - OUTBOX_LIMIT)
+      log(`Dropped ${dropped.length} old queued replies (outbox limit ${OUTBOX_LIMIT})`)
+    }
+    await state.save()
+    log(`Queued reply to ${entry.to} for retry (${entry.lastError})`)
+  }
+
+  async function flushOutbox(force = false) {
+    if (flushingOutbox || controller.signal.aborted) return
+    flushingOutbox = true
+    try {
+      const now = Date.now()
+      const due = state.data.outbox.filter((entry) => entry && (force || Number(entry.nextAt || 0) <= now))
+      if (!due.length) return
+      for (const entry of due) {
+        if (controller.signal.aborted) break
+        try {
+          await sender.send(Buffer.from(String(entry.raw || ''), 'base64'), String(entry.to || ''))
+          state.data.outbox = state.data.outbox.filter((candidate) => candidate?.id !== entry.id)
+          try {
+            await rememberSent(entry.messageId, entry.to, entry.sessionID, entry.subject)
+            if (entry.sessionID) await rememberThread(entry.messageId, entry.sessionID, entry.to)
+          } catch (error) {
+            log(`Could not record retried reply to ${entry.to}: ${error.message}`)
+          }
+          log(`Retried reply to ${entry.to}${entry.sessionID ? ` [session:${entry.sessionID}]` : ''}`)
+        } catch (error) {
+          entry.attempts = Number(entry.attempts || 0) + 1
+          entry.lastError = String(error?.message || error || 'SMTP error').slice(0, 500)
+          const backoff = Math.min(OUTBOX_MAX_DELAY_MS, OUTBOX_BASE_DELAY_MS * 2 ** Math.min(entry.attempts - 1, 6))
+          entry.nextAt = Date.now() + backoff
+          log(`Queued reply retry ${entry.attempts} to ${entry.to} failed: ${entry.lastError}`)
+        }
+      }
+      await state.save()
+    } finally {
+      flushingOutbox = false
+    }
+  }
+
+  function startOutbox() {
+    if (outboxTimer) return
+    controller.signal.addEventListener('abort', () => {
+      if (outboxTimer) clearInterval(outboxTimer)
+      outboxTimer = null
+    }, { once: true })
+    outboxTimer = setInterval(() => {
+      void flushOutbox().catch((error) => log(`Outbox flush failed: ${error.message}`))
+    }, OUTBOX_INTERVAL_MS)
+    outboxTimer.unref?.()
+    void flushOutbox().catch((error) => log(`Outbox flush failed: ${error.message}`))
+  }
+
   async function transmit({ to, text, attachments = [], inReplyTo, subject, headers = [], encrypt = true, sessionID = '' }) {
     const protectedBody = await protect(buildInnerMime({ text, attachments }), to, encrypt)
     const domain = cfg.address.split('@')[1] || 'localhost'
@@ -862,10 +945,17 @@ export async function createBridge(ctx, cfg, options = {}) {
       body: protectedBody.body,
       headers: [...headers, ...receiptHeaders],
     })
-    await sender.send(raw, to)
+    let queued = false
+    try {
+      await sender.send(raw, to)
+    } catch (error) {
+      queued = true
+      await queueReply({ raw, to, messageId, sessionID, subject: finalSubject, error })
+    }
     await rememberSent(messageId, to, sessionID, finalSubject)
     if (sessionID) await rememberThread(messageId, sessionID, to)
-    log(`Sent ${protectedBody.contentType.includes('encrypted') ? 'encrypted' : 'cleartext'} reply to ${to}${sessionID ? ` [session:${sessionID}]` : ''}`)
+    const delivery = queued ? 'Queued' : 'Sent'
+    log(`${delivery} ${protectedBody.contentType.includes('encrypted') ? 'encrypted' : 'cleartext'} reply to ${to}${sessionID ? ` [session:${sessionID}]` : ''}`)
   }
 
   /** Send an RFC 8098 MDN that is also a Delta Chat-compatible receipt. */
@@ -1713,13 +1803,18 @@ export async function createBridge(ctx, cfg, options = {}) {
         }
         const userMessageID = promptResult?.id || promptId
         const finalSubject = withSessionSubject(`Re: Message from ${cfg.displayName}`, sessionID)
-        const active = cfg.remote.progress === false ? null : {
+        // Always buffer streamed text: it is the only copy of leading output
+        // when a run stops at a question before the assistant message commits.
+        // `sendProgress` only controls whether working mail is emitted, not
+        // whether the buffer exists.
+        const active = {
           from,
           sessionID,
           inReplyTo: message.messageId,
           // Progressive and final mails share one subject and thread.
           subject: finalSubject,
           userMessageID,
+          sendProgress: cfg.remote.progress !== false,
           startedAt: Date.now(),
           lastSentAt: Date.now(),
           text: '',
@@ -1790,6 +1885,7 @@ export async function createBridge(ctx, cfg, options = {}) {
       started = true
       log(`Listening for Autocrypt mail at ${cfg.address} (${cfg.imap.mailbox})`)
       startEvents()
+      startOutbox()
       void startImap(cfg, store, handle, controller.signal, log)
       if (cfg.remote.mode === 'autocrypt' && cfg.pinned.contact && !state.data.peers[cfg.pinned.contact]?.keydata) {
         const last = Number(state.data.meta.autocryptBootstrapAt || 0)
@@ -1811,6 +1907,7 @@ export async function createBridge(ctx, cfg, options = {}) {
     // Exposed for tests and for local loopback checks against a real mail server.
     process: handle,
     processEvent: handleEvent,
+    flushOutbox,
     confirmQuestionReply,
     getStatus,
     startSecureJoin,

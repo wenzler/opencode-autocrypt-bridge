@@ -99,6 +99,8 @@ const statusOutput = {
     sessionDirectory: { type: 'string' },
     sessionProjectID: { type: 'string' },
     lastReceiptAt: { type: 'number' },
+    queuedReplies: { type: 'number' },
+    nextReplyRetryAt: { type: 'number' },
   },
   additionalProperties: false,
 }

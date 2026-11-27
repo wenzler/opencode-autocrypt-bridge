@@ -126850,6 +126850,10 @@ function cleanRemoteNote(value3, maxLength = 2e3) {
   return String(value3 || "").replace(/\r\n?/g, "\n").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "").replace(/\n+/g, " ").trim().slice(0, maxLength);
 }
 var STATE_KEY = "autocrypt.state";
+var OUTBOX_LIMIT = 200;
+var OUTBOX_INTERVAL_MS = 1e4;
+var OUTBOX_BASE_DELAY_MS = 15e3;
+var OUTBOX_MAX_DELAY_MS = 15 * 6e4;
 var BRIDGE_WATCH_EVENTS = [
   "permission.asked",
   "permission.replied",
@@ -126876,7 +126880,8 @@ async function loadState(ctx) {
     watches: {},
     pending: {},
     questions: {},
-    sent: {}
+    sent: {},
+    outbox: []
   };
   data.sessions ||= {};
   data.peers ||= {};
@@ -126889,6 +126894,7 @@ async function loadState(ctx) {
   data.pending ||= {};
   data.questions ||= {};
   data.sent ||= {};
+  data.outbox ||= [];
   return {
     data,
     async save() {
@@ -126936,6 +126942,8 @@ async function createBridge(ctx, cfg, options2 = {}) {
   const lastWatchNotify = /* @__PURE__ */ new Map();
   const progress = /* @__PURE__ */ new Map();
   const watchAnnounced = /* @__PURE__ */ new Map();
+  let outboxTimer = null;
+  let flushingOutbox = false;
   const announcedDecisions = /* @__PURE__ */ new Set();
   const announcingQuestions = /* @__PURE__ */ new Set();
   let started = false;
@@ -127133,6 +127141,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
     const handshake = state.data.handshake;
     const joinPending = cfg.remote.mode === "securejoin" && Boolean(cfg.pinned.secureJoin?.auth);
     const lastReceiptAt = Math.max(0, ...Object.values(state.data.sent).map((entry) => Number(entry?.receiptAt) || 0));
+    const retryTimes = state.data.outbox.map((entry) => Number(entry?.nextAt) || 0).filter((value3) => value3 > 0);
     return {
       running: started,
       remoteMode: cfg.remote.mode,
@@ -127159,7 +127168,9 @@ async function createBridge(ctx, cfg, options2 = {}) {
       sessionTitle: String(session?.title || ""),
       sessionDirectory: String(session?.location?.directory || ""),
       sessionProjectID: String(session?.projectID || ""),
-      lastReceiptAt
+      lastReceiptAt,
+      queuedReplies: state.data.outbox.length,
+      nextReplyRetryAt: retryTimes.length ? Math.min(...retryTimes) : 0
     };
   }
   async function sessionFor(from) {
@@ -127421,7 +127432,6 @@ async function createBridge(ctx, cfg, options2 = {}) {
     return final.slice(shared).trim();
   }
   async function handleProgressEvent(event) {
-    if (cfg.remote.progress === false) return;
     const data = event.data || {};
     const sessionID = String(data.sessionID || "");
     const active = progress.get(sessionID);
@@ -127433,6 +127443,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
     const delta = String(data.delta || "");
     if (!delta) return;
     active.text += delta;
+    if (active.sendProgress === false) return;
     const configuredInterval = Number(cfg.remote.progressIntervalMs);
     const interval = Number.isFinite(configuredInterval) && configuredInterval >= 0 ? configuredInterval : 2e4;
     const now3 = Date.now();
@@ -127556,6 +127567,71 @@ ${chunk}`
     }
     await state.save();
   }
+  async function queueReply({ raw, to, messageId, sessionID, subject, error }) {
+    const entry = {
+      id: (0, import_node_crypto5.randomUUID)(),
+      to: String(to || ""),
+      raw: Buffer.from(raw).toString("base64"),
+      messageId: String(messageId || ""),
+      sessionID: String(sessionID || ""),
+      subject: String(subject || ""),
+      attempts: 0,
+      nextAt: Date.now() + OUTBOX_BASE_DELAY_MS,
+      lastError: String(error?.message || error || "SMTP error").slice(0, 500),
+      createdAt: Date.now()
+    };
+    state.data.outbox.push(entry);
+    if (state.data.outbox.length > OUTBOX_LIMIT) {
+      const dropped = state.data.outbox.splice(0, state.data.outbox.length - OUTBOX_LIMIT);
+      log2(`Dropped ${dropped.length} old queued replies (outbox limit ${OUTBOX_LIMIT})`);
+    }
+    await state.save();
+    log2(`Queued reply to ${entry.to} for retry (${entry.lastError})`);
+  }
+  async function flushOutbox(force = false) {
+    if (flushingOutbox || controller.signal.aborted) return;
+    flushingOutbox = true;
+    try {
+      const now3 = Date.now();
+      const due = state.data.outbox.filter((entry) => entry && (force || Number(entry.nextAt || 0) <= now3));
+      if (!due.length) return;
+      for (const entry of due) {
+        if (controller.signal.aborted) break;
+        try {
+          await sender.send(Buffer.from(String(entry.raw || ""), "base64"), String(entry.to || ""));
+          state.data.outbox = state.data.outbox.filter((candidate) => candidate?.id !== entry.id);
+          try {
+            await rememberSent(entry.messageId, entry.to, entry.sessionID, entry.subject);
+            if (entry.sessionID) await rememberThread(entry.messageId, entry.sessionID, entry.to);
+          } catch (error) {
+            log2(`Could not record retried reply to ${entry.to}: ${error.message}`);
+          }
+          log2(`Retried reply to ${entry.to}${entry.sessionID ? ` [session:${entry.sessionID}]` : ""}`);
+        } catch (error) {
+          entry.attempts = Number(entry.attempts || 0) + 1;
+          entry.lastError = String(error?.message || error || "SMTP error").slice(0, 500);
+          const backoff = Math.min(OUTBOX_MAX_DELAY_MS, OUTBOX_BASE_DELAY_MS * 2 ** Math.min(entry.attempts - 1, 6));
+          entry.nextAt = Date.now() + backoff;
+          log2(`Queued reply retry ${entry.attempts} to ${entry.to} failed: ${entry.lastError}`);
+        }
+      }
+      await state.save();
+    } finally {
+      flushingOutbox = false;
+    }
+  }
+  function startOutbox() {
+    if (outboxTimer) return;
+    controller.signal.addEventListener("abort", () => {
+      if (outboxTimer) clearInterval(outboxTimer);
+      outboxTimer = null;
+    }, { once: true });
+    outboxTimer = setInterval(() => {
+      void flushOutbox().catch((error) => log2(`Outbox flush failed: ${error.message}`));
+    }, OUTBOX_INTERVAL_MS);
+    outboxTimer.unref?.();
+    void flushOutbox().catch((error) => log2(`Outbox flush failed: ${error.message}`));
+  }
   async function transmit({ to, text, attachments = [], inReplyTo, subject, headers = [], encrypt: encrypt2 = true, sessionID = "" }) {
     const protectedBody = await protect(buildInnerMime({ text, attachments }), to, encrypt2);
     const domain = cfg.address.split("@")[1] || "localhost";
@@ -127578,10 +127654,17 @@ ${chunk}`
       body: protectedBody.body,
       headers: [...headers, ...receiptHeaders]
     });
-    await sender.send(raw, to);
+    let queued = false;
+    try {
+      await sender.send(raw, to);
+    } catch (error) {
+      queued = true;
+      await queueReply({ raw, to, messageId, sessionID, subject: finalSubject, error });
+    }
     await rememberSent(messageId, to, sessionID, finalSubject);
     if (sessionID) await rememberThread(messageId, sessionID, to);
-    log2(`Sent ${protectedBody.contentType.includes("encrypted") ? "encrypted" : "cleartext"} reply to ${to}${sessionID ? ` [session:${sessionID}]` : ""}`);
+    const delivery = queued ? "Queued" : "Sent";
+    log2(`${delivery} ${protectedBody.contentType.includes("encrypted") ? "encrypted" : "cleartext"} reply to ${to}${sessionID ? ` [session:${sessionID}]` : ""}`);
   }
   async function sendReadReceipt(to, originalMessageID) {
     if (cfg.remote?.readReceipts === false) return;
@@ -128386,13 +128469,14 @@ ${command.rest}`;
         }
         const userMessageID = promptResult?.id || promptId;
         const finalSubject = withSessionSubject(`Re: Message from ${cfg.displayName}`, sessionID);
-        const active = cfg.remote.progress === false ? null : {
+        const active = {
           from,
           sessionID,
           inReplyTo: message.messageId,
           // Progressive and final mails share one subject and thread.
           subject: finalSubject,
           userMessageID,
+          sendProgress: cfg.remote.progress !== false,
           startedAt: Date.now(),
           lastSentAt: Date.now(),
           text: "",
@@ -128450,6 +128534,7 @@ ${command.rest}`;
       started = true;
       log2(`Listening for Autocrypt mail at ${cfg.address} (${cfg.imap.mailbox})`);
       startEvents();
+      startOutbox();
       void startImap(cfg, store, handle, controller.signal, log2);
       if (cfg.remote.mode === "autocrypt" && cfg.pinned.contact && !state.data.peers[cfg.pinned.contact]?.keydata) {
         const last = Number(state.data.meta.autocryptBootstrapAt || 0);
@@ -128471,6 +128556,7 @@ ${command.rest}`;
     // Exposed for tests and for local loopback checks against a real mail server.
     process: handle,
     processEvent: handleEvent,
+    flushOutbox,
     confirmQuestionReply,
     getStatus,
     startSecureJoin,
@@ -128760,7 +128846,9 @@ var statusOutput = {
     sessionTitle: { type: "string" },
     sessionDirectory: { type: "string" },
     sessionProjectID: { type: "string" },
-    lastReceiptAt: { type: "number" }
+    lastReceiptAt: { type: "number" },
+    queuedReplies: { type: "number" },
+    nextReplyRetryAt: { type: "number" }
   },
   additionalProperties: false
 };
@@ -128990,7 +129078,7 @@ var BridgeRpc = rpc_exports.define({
 });
 
 // src/index.js
-var PLUGIN_VERSION = "0.5.28";
+var PLUGIN_VERSION = "0.5.29";
 var SETTING_KEYS = [
   "address",
   "displayName",

@@ -144,7 +144,9 @@ Read receipts follow **RFC 8098** (the current MDN standard, obsoleting RFC 3798
 
 If a session is busy, the next prompt is queued with OpenCode's `delivery: "queue"` and the phone gets a short acknowledgement. `!watch` subscribes the thread to completion, failure, idle and decision notices so queued work can be followed without polling.
 
-While a session is working, `message.part.delta` text is sent as throttled "Working on …" emails on the same thread. The final mail contains only the text not already mailed, so one prompt never produces a duplicate terminal answer. The default interval is 20 seconds (about 180 mails/hour, below the practical 220/hour ceiling); it is configurable with `emailProgress` / `AC_EMAIL_PROGRESS` and `emailProgressIntervalMs` / `AC_EMAIL_PROGRESS_INTERVAL_MS`.
+While a session is working, `session.text.delta` text is buffered. With progressive replies enabled it is sent as throttled "Working on …" emails on the same thread, and the final mail contains only the text not already mailed, so one prompt never produces a duplicate terminal answer. With progressive replies disabled no working mail is sent; the full reply arrives in one final mail. The buffer also preserves leading output when a question ends the run before the assistant message is committed. The default interval is 20 seconds (about 180 mails/hour, below the practical 220/hour ceiling); it is configurable with `emailProgress` / `AC_EMAIL_PROGRESS` and `emailProgressIntervalMs` / `AC_EMAIL_PROGRESS_INTERVAL_MS`.
+
+If an SMTP send fails, the encrypted message is saved in the bridge's outbox and retried with exponential backoff (up to 15 minutes between attempts). `getStatus` reports `queuedReplies` and `nextReplyRetryAt`.
 
 ### Invite URL and manual parameters
 
