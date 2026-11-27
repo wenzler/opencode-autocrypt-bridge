@@ -80,6 +80,26 @@ test('displayed sessions are numbered and resolve through #n', () => {
   assert.match(text, /#3\s+ses_main\s+Main project\s+\[email-bound\]/)
 })
 
+test('aliases stay with their session when recency changes', () => {
+  const aliased = {
+    sessions: [
+      { ...catalog.sessions[0], alias: 2 },
+      { ...catalog.sessions[1], alias: 3 },
+      { ...catalog.sessions[2], alias: 1, updated: 5 },
+    ],
+  }
+  const displayed = orderedSessions(aliased)
+  assert.deepEqual(displayed.map((session) => session.id), ['ses_other', 'ses_bridge', 'ses_main'])
+  assert.equal(resolveSessionRef(aliased.sessions, '#1', displayed).id, 'ses_other')
+  assert.equal(resolveSessionRef(aliased.sessions, '#2', displayed).id, 'ses_bridge')
+  assert.equal(resolveSessionRef(aliased.sessions, '#3', displayed).id, 'ses_main')
+  assert.equal(resolveSessionRef(aliased.sessions, '#99', displayed), undefined)
+  const text = formatSessionDirectory(aliased, 'ses_main')
+  assert.match(text, /#1\s+ses_other/)
+  assert.match(text, /#2\s+ses_bridge/)
+  assert.match(text, /#3\s+ses_main/)
+})
+
 test('new session arguments split title from a known project', () => {
   assert.deepEqual(parseNewSessionArgs(catalog, 'Fix parser in /work/alpha', '/work/alpha'), {
     title: 'Fix parser',

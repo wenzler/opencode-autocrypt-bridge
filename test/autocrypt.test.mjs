@@ -7,7 +7,7 @@ import { decryptMessage, keyFingerprint } from '../src/crypto.js'
 import { loadConfig } from '../src/config.js'
 import { armorToBase64, autocryptHeader } from '../src/headers.js'
 import { extractArmored, parseRawHeaders } from '../src/mime.js'
-import { orderedSessions } from '../src/session.js'
+import { resolveSessionRef } from '../src/session.js'
 
 async function keyPair(email) {
   const pair = await openpgp.generateKey({
@@ -312,8 +312,8 @@ test('!session #n switches using the number printed by !sessions', async () => {
   const bridge = await createBridge(h.ctx, h.cfg, { identity: bot, sender: h.sender, log: () => {} })
 
   await bridge.process(firstContactMail(contact))
-  const displayed = orderedSessions(await bridge.listSessions())
-  const number = displayed.findIndex((session) => session.id === 'ses_main') + 1
+  const catalog = await bridge.listSessions()
+  const number = catalog.sessions.find((session) => session.id === 'ses_main').alias
   assert.ok(number > 0)
   await bridge.process(contactReply(contact, {
     subject: 'Re: first contact [session:session-1]',
@@ -324,6 +324,42 @@ test('!session #n switches using the number printed by !sessions', async () => {
   assert.deepEqual(h.prompted, ['session-1', 'ses_main'])
   assert.match(h.promptInputs[1].text, /please inspect/)
   assert.match(parseRawHeaders(h.sent.at(-1).raw).get('subject'), /\[session:ses_main\]/)
+})
+
+test('session aliases never move when another session becomes more recent', async () => {
+  const bot = await keyPair('bot7b@example.org')
+  const contact = await keyPair('contact7b@example.net')
+  const ezflix = {
+    id: 'ses_ezflix',
+    title: 'ezflix',
+    projectID: 'p-ez',
+    location: { directory: '/work/ez' },
+    time: { created: 100, updated: 100 },
+  }
+  const autocrypt = {
+    id: 'ses_autocrypt',
+    title: 'autocrypt',
+    projectID: 'p-ac',
+    location: { directory: '/work/ac' },
+    time: { created: 200, updated: 50 },
+  }
+  const h = harness(contact.fingerprint, { sessions: [ezflix, autocrypt] })
+  const bridge = await createBridge(h.ctx, h.cfg, { identity: bot, sender: h.sender, log: () => {} })
+
+  const first = await bridge.listSessions()
+  assert.equal(first.sessions.find((session) => session.id === 'ses_ezflix').alias, 1)
+  assert.equal(first.sessions.find((session) => session.id === 'ses_autocrypt').alias, 2)
+
+  h.ctx.session.list = async () => ({
+    data: [
+      { ...ezflix, time: { created: 100, updated: 50 } },
+      { ...autocrypt, time: { created: 200, updated: 200 } },
+    ],
+  })
+  const second = await bridge.listSessions()
+  assert.equal(second.sessions.find((session) => session.id === 'ses_ezflix').alias, 1)
+  assert.equal(second.sessions.find((session) => session.id === 'ses_autocrypt').alias, 2)
+  assert.equal(resolveSessionRef(second.sessions, '#1').id, 'ses_ezflix')
 })
 
 test('!sessions lists projects and sessions without prompting the agent', async () => {

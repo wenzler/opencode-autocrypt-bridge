@@ -144,7 +144,7 @@ async function loadState(ctx) {
     ? stored
     : {
       sessions: {}, peers: {}, seen: [], threads: {}, sessionContacts: {}, meta: {}, handshake: {},
-      watches: {}, pending: {}, questions: {}, sent: {}, outbox: [],
+      watches: {}, pending: {}, questions: {}, sent: {}, outbox: [], aliases: {}, nextAlias: 1,
     }
   data.sessions ||= {}
   data.peers ||= {}
@@ -160,6 +160,8 @@ async function loadState(ctx) {
   data.outbox ||= []
   data.retries ||= {}
   data.quarantine ||= {}
+  data.aliases ||= {}
+  data.nextAlias = Number(data.nextAlias) || 1
   return {
     data,
     async save() {
@@ -342,6 +344,18 @@ export async function createBridge(ctx, cfg, options = {}) {
     return ''
   }
 
+  /** Give each session a stable short number. Retired numbers are never reused. */
+  async function assignSessionAliases(ids) {
+    let changed = false
+    for (const id of ids) {
+      if (!id || Object.prototype.hasOwnProperty.call(state.data.aliases, id)) continue
+      state.data.aliases[id] = state.data.nextAlias
+      state.data.nextAlias = Number(state.data.nextAlias) + 1
+      changed = true
+    }
+    if (changed) await state.save()
+  }
+
   /** Session inventory shared by the GUI, email commands and the agent tool. */
   async function listSessions() {
     let response
@@ -358,8 +372,17 @@ export async function createBridge(ctx, cfg, options = {}) {
       directory: String(session.location?.directory || ''),
       agent: String(session.agent || ''),
       model: session.model ? `${session.model.providerID}/${session.model.id}` : '',
+      created: Number(session.time?.created) || 0,
       updated: Number(session.time?.updated) || 0,
     })).filter((session) => session.id)
+    // Seed aliases by creation order so an upgrade cannot hand #1 to whichever
+    // session happened to be most recently active.
+    const unaliased = sessions
+      .filter((session) => !Object.prototype.hasOwnProperty.call(state.data.aliases, session.id))
+      .sort((a, b) => a.created - b.created || a.id.localeCompare(b.id))
+      .map((session) => session.id)
+    await assignSessionAliases(unaliased)
+    for (const session of sessions) session.alias = state.data.aliases[session.id]
     const projects = new Map()
     for (const session of sessions) {
       const key = session.projectID || session.directory || 'unknown'
@@ -449,6 +472,7 @@ export async function createBridge(ctx, cfg, options = {}) {
       throw new Error(`Unknown project directory "${args.directory}"; use !sessions to list projects`)
     }
     const session = await ctx.session.create({ title: args.title, location: { directory: args.directory } })
+    await assignSessionAliases([String(session.id || '')])
     if (cfg.pinned.contact) {
       if (bindDefault) state.data.sessions[cfg.pinned.contact] = session.id
       state.data.sessionContacts[session.id] = cfg.pinned.contact
@@ -538,6 +562,7 @@ export async function createBridge(ctx, cfg, options = {}) {
       title: `Autocrypt: ${from}`,
       location: { directory },
     })
+    await assignSessionAliases([String(session.id || '')])
     state.data.sessions[from] = session.id
     state.data.sessionContacts[session.id] = from
     await state.save()

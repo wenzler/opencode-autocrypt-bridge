@@ -64,11 +64,19 @@ function displayGroups(catalog) {
     }
     const group = groups.get(key)
     group.updated = Math.max(group.updated, Number(session.updated) || 0)
+    group.alias = Math.min(group.alias ?? Number.POSITIVE_INFINITY, Number(session.alias) || Number.POSITIVE_INFINITY)
     group.sessions.push(session)
   }
   return [...groups.values()]
-    .sort((a, b) => b.updated - a.updated)
+    .sort((a, b) => (a.alias - b.alias) || (b.updated - a.updated))
     .slice(0, 8)
+    .map((group) => ({
+      ...group,
+      sessions: [...group.sessions].sort((a, b) => (
+        (Number(a.alias) || Number.POSITIVE_INFINITY) - (Number(b.alias) || Number.POSITIVE_INFINITY)
+        || (b.updated - a.updated)
+      )),
+    }))
 }
 
 /**
@@ -84,7 +92,13 @@ export function resolveSessionRef(sessions, ref, displayed = sessions) {
   const needle = String(ref || '').trim().toLowerCase()
   if (!needle) return undefined
   const numbered = /^#(\d+)$/.exec(needle)
-  if (numbered) return (displayed || [])[Number(numbered[1]) - 1] || undefined
+  if (numbered) {
+    const alias = Number(numbered[1])
+    const aliased = sessions.find((session) => Number(session.alias) === alias)
+    if (aliased) return aliased
+    if (sessions.some((session) => Number(session.alias) > 0)) return undefined
+    return (displayed || [])[alias - 1] || undefined
+  }
   const exact = sessions.find((session) => String(session.id).toLowerCase() === needle)
   if (exact) return exact
   const matches = sessions.filter((session) => (
@@ -132,16 +146,19 @@ export function formatSessionDirectory(catalog, boundSessionID = '', emailDisabl
   const total = (catalog?.sessions || []).length
   const lines = [`OpenCode sessions (${total}):`]
   if (emailDisabled) lines.push('Email bridge: DISABLED (no session bound; use !use <session-id|#n>)')
+  const useAliases = (catalog?.sessions || []).some((session) => Number(session.alias) > 0)
   let number = 0
   for (const group of groups) {
     lines.push(`Project ${group.directory}${group.id ? ` [${group.id}]` : ''}`)
     for (const session of group.sessions.slice(0, 12)) {
       number += 1
+      const alias = useAliases ? (Number(session.alias) || number) : number
       const marker = session.id === boundSessionID ? '  [email-bound]' : ''
-      lines.push(`  #${number}  ${session.id}  ${session.title || '(untitled)'}${marker}`)
+      lines.push(`  #${alias}  ${session.id}  ${session.title || '(untitled)'}${marker}`)
     }
   }
   if (total > number) lines.push(`...and ${total - number} more sessions (not numbered)`)
+  lines.push('Numbers are stable: a session keeps its #n until it is retired.')
   lines.push('')
   lines.push('Commands:')
   lines.push('  !sessions                 list projects and numbered sessions')

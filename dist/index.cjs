@@ -126788,9 +126788,13 @@ function displayGroups(catalog) {
     }
     const group = groups.get(key5);
     group.updated = Math.max(group.updated, Number(session.updated) || 0);
+    group.alias = Math.min(group.alias ?? Number.POSITIVE_INFINITY, Number(session.alias) || Number.POSITIVE_INFINITY);
     group.sessions.push(session);
   }
-  return [...groups.values()].sort((a, b) => b.updated - a.updated).slice(0, 8);
+  return [...groups.values()].sort((a, b) => a.alias - b.alias || b.updated - a.updated).slice(0, 8).map((group) => ({
+    ...group,
+    sessions: [...group.sessions].sort((a, b) => (Number(a.alias) || Number.POSITIVE_INFINITY) - (Number(b.alias) || Number.POSITIVE_INFINITY) || b.updated - a.updated)
+  }));
 }
 function orderedSessions(catalog) {
   return displayGroups(catalog).flatMap((group) => group.sessions.slice(0, 12));
@@ -126799,7 +126803,13 @@ function resolveSessionRef(sessions, ref, displayed = sessions) {
   const needle = String(ref || "").trim().toLowerCase();
   if (!needle) return void 0;
   const numbered = /^#(\d+)$/.exec(needle);
-  if (numbered) return (displayed || [])[Number(numbered[1]) - 1] || void 0;
+  if (numbered) {
+    const alias = Number(numbered[1]);
+    const aliased = sessions.find((session) => Number(session.alias) === alias);
+    if (aliased) return aliased;
+    if (sessions.some((session) => Number(session.alias) > 0)) return void 0;
+    return (displayed || [])[alias - 1] || void 0;
+  }
   const exact = sessions.find((session) => String(session.id).toLowerCase() === needle);
   if (exact) return exact;
   const matches = sessions.filter((session) => String(session.title || "").toLowerCase().includes(needle) || String(session.directory || "").toLowerCase() === needle || String(session.projectID || "").toLowerCase() === needle);
@@ -126835,16 +126845,19 @@ function formatSessionDirectory(catalog, boundSessionID = "", emailDisabled = fa
   const total2 = (catalog?.sessions || []).length;
   const lines = [`OpenCode sessions (${total2}):`];
   if (emailDisabled) lines.push("Email bridge: DISABLED (no session bound; use !use <session-id|#n>)");
+  const useAliases = (catalog?.sessions || []).some((session) => Number(session.alias) > 0);
   let number3 = 0;
   for (const group of groups) {
     lines.push(`Project ${group.directory}${group.id ? ` [${group.id}]` : ""}`);
     for (const session of group.sessions.slice(0, 12)) {
       number3 += 1;
+      const alias = useAliases ? Number(session.alias) || number3 : number3;
       const marker = session.id === boundSessionID ? "  [email-bound]" : "";
-      lines.push(`  #${number3}  ${session.id}  ${session.title || "(untitled)"}${marker}`);
+      lines.push(`  #${alias}  ${session.id}  ${session.title || "(untitled)"}${marker}`);
     }
   }
   if (total2 > number3) lines.push(`...and ${total2 - number3} more sessions (not numbered)`);
+  lines.push("Numbers are stable: a session keeps its #n until it is retired.");
   lines.push("");
   lines.push("Commands:");
   lines.push("  !sessions                 list projects and numbered sessions");
@@ -126935,7 +126948,9 @@ async function loadState(ctx) {
     pending: {},
     questions: {},
     sent: {},
-    outbox: []
+    outbox: [],
+    aliases: {},
+    nextAlias: 1
   };
   data.sessions ||= {};
   data.peers ||= {};
@@ -126951,6 +126966,8 @@ async function loadState(ctx) {
   data.outbox ||= [];
   data.retries ||= {};
   data.quarantine ||= {};
+  data.aliases ||= {};
+  data.nextAlias = Number(data.nextAlias) || 1;
   return {
     data,
     async save() {
@@ -127108,6 +127125,16 @@ async function createBridge(ctx, cfg, options2 = {}) {
     }
     return "";
   }
+  async function assignSessionAliases(ids) {
+    let changed = false;
+    for (const id2 of ids) {
+      if (!id2 || Object.prototype.hasOwnProperty.call(state.data.aliases, id2)) continue;
+      state.data.aliases[id2] = state.data.nextAlias;
+      state.data.nextAlias = Number(state.data.nextAlias) + 1;
+      changed = true;
+    }
+    if (changed) await state.save();
+  }
   async function listSessions() {
     let response2;
     try {
@@ -127123,8 +127150,12 @@ async function createBridge(ctx, cfg, options2 = {}) {
       directory: String(session.location?.directory || ""),
       agent: String(session.agent || ""),
       model: session.model ? `${session.model.providerID}/${session.model.id}` : "",
+      created: Number(session.time?.created) || 0,
       updated: Number(session.time?.updated) || 0
     })).filter((session) => session.id);
+    const unaliased = sessions.filter((session) => !Object.prototype.hasOwnProperty.call(state.data.aliases, session.id)).sort((a, b) => a.created - b.created || a.id.localeCompare(b.id)).map((session) => session.id);
+    await assignSessionAliases(unaliased);
+    for (const session of sessions) session.alias = state.data.aliases[session.id];
     const projects = /* @__PURE__ */ new Map();
     for (const session of sessions) {
       const key5 = session.projectID || session.directory || "unknown";
@@ -127210,6 +127241,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
       throw new Error(`Unknown project directory "${args2.directory}"; use !sessions to list projects`);
     }
     const session = await ctx.session.create({ title: args2.title, location: { directory: args2.directory } });
+    await assignSessionAliases([String(session.id || "")]);
     if (cfg.pinned.contact) {
       if (bindDefault) state.data.sessions[cfg.pinned.contact] = session.id;
       state.data.sessionContacts[session.id] = cfg.pinned.contact;
@@ -127292,6 +127324,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
       title: `Autocrypt: ${from}`,
       location: { directory }
     });
+    await assignSessionAliases([String(session.id || "")]);
     state.data.sessions[from] = session.id;
     state.data.sessionContacts[session.id] = from;
     await state.save();
@@ -129463,7 +129496,7 @@ var BridgeRpc = rpc_exports.define({
 });
 
 // src/index.js
-var PLUGIN_VERSION = "0.5.31";
+var PLUGIN_VERSION = "0.5.32";
 var STORAGE_KEY = "autocrypt.settings";
 var RUNTIME_KEY = Symbol.for("opencode-autocrypt-bridge.runtime");
 function runtimeSlot() {
