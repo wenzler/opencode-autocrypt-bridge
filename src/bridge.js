@@ -131,6 +131,10 @@ async function loadState(ctx) {
 
 export async function createBridge(ctx, cfg, options = {}) {
   const log = options.log || ((message) => console.log(`[autocrypt] ${message}`))
+  // Injectable so tests can drive the mail loop and crypto failure paths
+  // without opening sockets or changing the real OpenPGP implementation.
+  const imapLoop = options.startImap || startImap
+  const encryptMimeImpl = options.encryptMime || encryptMime
   const onStatus = options.onStatus || (() => {})
   const onQuestion = options.onQuestion || (() => {})
   const onQuestionAnswer = options.onQuestionAnswer || (() => {})
@@ -204,6 +208,16 @@ export async function createBridge(ctx, cfg, options = {}) {
     if (!messageId || seenBefore(messageId)) return
     state.data.seen.push(messageId)
     if (state.data.seen.length > 5_000) state.data.seen = state.data.seen.slice(-5_000)
+    await state.save()
+  }
+
+  // A failed message must be eligible for retry, so remove the early dedupe
+  // marker when handling throws before completion.
+  async function unmarkSeen(messageId) {
+    if (!messageId) return
+    const next = state.data.seen.filter((id) => id !== messageId)
+    if (next.length === state.data.seen.length) return
+    state.data.seen = next
     await state.save()
   }
 
@@ -820,17 +834,21 @@ export async function createBridge(ctx, cfg, options = {}) {
     let body = inner.body
     let contentType = inner.contentType
     const peerKey = explicitPeerKey || cfg.pinned.keyB64 || state.data.peers[to]?.keydata
-    if (encrypt && peerKey) {
-      try {
-        const armored = await encryptMime(inner.entity, identity, [peerKey])
-        const pgp = buildPgpMime(armored)
-        body = pgp.body
-        contentType = pgp.contentType
-      } catch (error) {
-        log(`Could not encrypt for ${to}, falling back to cleartext: ${error.message}`)
-      }
-    } else if (encrypt) {
+    if (!encrypt) return { body, contentType }
+    // A first Autocrypt request may need cleartext so the contact can learn
+    // our key. Once a key is known, encryption must never silently fail.
+    if (!peerKey) {
       log(`No Autocrypt key for ${to}; sending cleartext so the peer can learn ours`)
+      return { body, contentType }
+    }
+    try {
+      const armored = await encryptMimeImpl(inner.entity, identity, [peerKey])
+      const pgp = buildPgpMime(armored)
+      body = pgp.body
+      contentType = pgp.contentType
+    } catch (error) {
+      // Never silently downgrade a reply that was meant to be encrypted.
+      throw new Error(`Could not encrypt for ${to}: ${error.message}`)
     }
     return { body, contentType }
   }
@@ -1663,209 +1681,220 @@ export async function createBridge(ctx, cfg, options = {}) {
   const DECISION_COMMANDS = new Set(['approve', 'deny'])
 
   async function handle(raw) {
-    try {
-      if (await handleSecureJoinPubkey(raw)) return
-    } catch (error) {
-      log(`SecureJoin pubkey failed: ${error.message}`)
-    }
     let message
+    let promptAccepted = false
+    const done = (value = true) => value
     try {
-      message = await parseIncoming(
-        raw,
-        cfg,
-        identity,
-        log,
-        cfg.pinned,
-        state.data.peers[cfg.pinned.contact]?.keydata,
-      )
-    } catch (error) {
-      log(`Rejected message: ${error.message}`)
-      return
-    }
-    const from = String(message.from || '').toLowerCase()
-    if (!from || !allowed(from)) {
-      log(`Ignoring message from ${from || 'unknown'}`)
-      return
-    }
-    if (cfg.remote.mode === 'securejoin' && state.data.handshake.secureJoin?.verified && !message.encrypted) {
-      log(`Ignoring plaintext from ${from}: encrypted-only mode is active after SecureJoin`)
-      return
-    }
-    try {
-      if (await handleSecureJoinContactConfirm(from, message)) return
-    } catch (error) {
-      log(`SecureJoin confirmation failed: ${error.message}`)
-    }
-    if (cfg.remote.mode === 'securejoin' && cfg.pinned.secureJoin?.auth && !state.data.handshake.verified) {
-      log(`Ignoring ${from}: waiting for SecureJoin verification`)
-      return
-    }
-    // MDNs are idempotent and must survive a rescan even after their message
-    // id was marked seen, so old receipts can be backfilled after a parser fix.
-    if (message.mdn) {
-      await handleReadReceipt(from, message.mdn)
-      return
-    }
-    if (seenBefore(message.messageId)) return
-    await markSeen(message.messageId)
-
-    const command = parseSessionCommand(message.text)
-    const { establishedNow } = await learnPeer(from, message.autocrypt)
-    if (message.wantsReceipt) {
       try {
-        await sendReadReceipt(message.receiptTarget || from, message.messageId)
+        if (await handleSecureJoinPubkey(raw)) return done()
       } catch (error) {
-        log(`Could not send read receipt: ${error.message}`)
+        log(`SecureJoin pubkey failed: ${error.message}`)
       }
-    }
-    if (command && DECISION_COMMANDS.has(command.command)) {
-      await answerDecision(from, message, command)
-      return
-    }
-    if (command?.command === 'answer') {
-      await answerQuestion(from, message, command)
-      return
-    }
-    let resolution
-    try {
-      resolution = await resolveInboundSession(from, message, command)
-    } catch (error) {
-      log(`Session command failed: ${error.message}`)
-      const fallback = await sessionFor(from)
-      await rememberThread(message.messageId, fallback, from)
-      await sendCommandReply(from, message, fallback, `Error: ${error.message}`, 'error')
-      return
-    }
-    const sessionID = resolution.sessionID
-    await rememberThread(message.messageId, sessionID, from)
-
-    if (establishedNow && sessionID) {
       try {
-        await maybeSendWelcome(from, message, sessionID)
+        message = await parseIncoming(
+          raw,
+          cfg,
+          identity,
+          log,
+          cfg.pinned,
+          state.data.peers[cfg.pinned.contact]?.keydata,
+        )
       } catch (error) {
-        log(`Could not send welcome mail: ${error.message}`)
+        log(`Rejected message: ${error.message}`)
+        return done(false)
       }
-    }
-
-    if (command && LOCAL_ONLY_COMMANDS.has(command.command)) {
-      const catalog = await listSessions()
-      const text = await localCommandReply(from, message, command, catalog, sessionID, resolution)
-      await sendCommandReply(from, message, sessionID, text)
-      return
-    }
-    if (command?.command === 'use' && !command.rest) {
-      await sendCommandReply(from, message, sessionID, `${resolution.note || `Using session ${sessionID}`}.\n\nFurther replies in this subject stay in this session.`)
-      return
-    }
-    if (command?.command === 'use') {
-      // `!use <id> question` switches the thread and asks in one email.
-      command.rest = `${resolution.note || `Using session ${sessionID}`}\n\n${command.rest}`
-    }
-    if (!sessionID) {
-      await sendCommandReply(from, message, '', resolution.note || 'Email bridge is disabled; use !use <session> to re-enable it', 'session-disabled')
-      return
-    }
-
-    await enqueue(sessionID, async () => {
-      const current = sessionStatus.get(sessionID)
-      const wasBusy = inFlight.has(sessionID) || current === 'busy' || current === 'retry'
-      inFlight.add(sessionID)
+      const from = String(message.from || '').toLowerCase()
+      if (!from || !allowed(from)) {
+        log(`Ignoring message from ${from || 'unknown'}`)
+        return done()
+      }
+      if (cfg.remote.mode === 'securejoin' && state.data.handshake.secureJoin?.verified && !message.encrypted) {
+        log(`Ignoring plaintext from ${from}: encrypted-only mode is active after SecureJoin`)
+        return done()
+      }
       try {
-        const files = message.attachments.map((attachment) => ({
-          uri: attachment.uri,
-          name: attachment.filename,
-          description: attachment.description,
-        }))
-        const promptId = hashId(message.messageId)
-        // Only the email body is user input. Routing/sender metadata lives in
-        // the structured `metadata` field so it can never be echoed back into
-        // the conversation and mistaken for something the contact wrote.
-        const text = command?.rest || message.text || '(message contained no plain text)'
-        const promptResult = await ctx.session.prompt({
-          sessionID,
-          id: promptId,
-          text,
-          ...(files.length ? { files } : {}),
-          delivery: wasBusy ? 'queue' : 'steer',
-          metadata: {
-            source: 'autocrypt-email',
-            from,
-            fromName: message.fromName,
-            messageId: message.messageId,
-            sessionID,
-            note: resolution.note,
-            attachments: message.attachments.map((a) => a.filename),
-          },
-        })
-        if (wasBusy) {
-          await sendCommandReply(from, message, sessionID, `Session ${sessionID} is busy; your prompt was queued. !watch ${sessionID} emails you when it finishes.`)
-          return
-        }
-        const userMessageID = promptResult?.id || promptId
-        const finalSubject = withSessionSubject(`Re: Message from ${cfg.displayName}`, sessionID)
-        // Always buffer streamed text: it is the only copy of leading output
-        // when a run stops at a question before the assistant message commits.
-        // `sendProgress` only controls whether working mail is emitted, not
-        // whether the buffer exists.
-        const active = {
-          from,
-          sessionID,
-          inReplyTo: message.messageId,
-          // Progressive and final mails share one subject and thread.
-          subject: finalSubject,
-          userMessageID,
-          sendProgress: cfg.remote.progress !== false,
-          startedAt: Date.now(),
-          lastSentAt: Date.now(),
-          text: '',
-          sentLength: 0,
-        }
-        if (active) progress.set(sessionID, active)
+        if (await handleSecureJoinContactConfirm(from, message)) return done()
+      } catch (error) {
+        log(`SecureJoin confirmation failed: ${error.message}`)
+      }
+      if (cfg.remote.mode === 'securejoin' && cfg.pinned.secureJoin?.auth && !state.data.handshake.verified) {
+        log(`Ignoring ${from}: waiting for SecureJoin verification`)
+        return done()
+      }
+      // MDNs are idempotent and must survive a rescan even after their message
+      // id was marked seen, so old receipts can be backfilled after a parser fix.
+      if (message.mdn) {
+        await handleReadReceipt(from, message.mdn)
+        return done()
+      }
+      if (seenBefore(message.messageId)) return done()
+      await markSeen(message.messageId)
+
+      const command = parseSessionCommand(message.text)
+      const { establishedNow } = await learnPeer(from, message.autocrypt)
+      if (message.wantsReceipt) {
         try {
-          await ctx.session.wait({ sessionID })
-          const messages = await ctx.session.context({ sessionID })
-          const index = messages.findIndex((entry) => entry.id === userMessageID)
-          const assistantMessages = (index < 0 ? [] : messages.slice(index + 1))
-            .filter((entry) => entry.type === 'assistant' && !entry.error)
-          const replies = assistantMessages
-            .flatMap((entry) => entry.content.filter((part) => part.type === 'text').map((part) => part.text))
-            .join('\n\n')
-            .trim()
-          const sentProgress = Boolean(active?.sentLength)
-          // Only the prefix actually mailed may be dropped. Later deltas that
-          // arrived inside the throttle window are still unsent.
-          const mailedText = active ? active.text.slice(0, active.sentLength) : ''
-          // A run can stop for a question/permission before the assistant
-          // message is committed to the session context. In that case the
-          // streamed deltas are the only copy of the leading output, so prefer
-          // them over the (possibly empty) context replies.
-          const finalSource = active && active.text.length > replies.length ? active.text : replies
-          const remaining = active ? unreportedRemainder(finalSource, mailedText) : replies
-          const attachments = await attachmentsFromSession(assistantMessages, sessionID)
-          const terminalText = remaining || (sentProgress ? `Completed in session ${sessionID}.` : '')
-          if (terminalText || attachments.length) {
-            await transmit({
-              to: from,
-              text: terminalText,
-              attachments,
-              inReplyTo: message.messageId,
-              subject: active ? active.subject : finalSubject,
+          await sendReadReceipt(message.receiptTarget || from, message.messageId)
+        } catch (error) {
+          log(`Could not send read receipt: ${error.message}`)
+        }
+      }
+      if (command && DECISION_COMMANDS.has(command.command)) {
+        await answerDecision(from, message, command)
+        return done()
+      }
+      if (command?.command === 'answer') {
+        await answerQuestion(from, message, command)
+        return done()
+      }
+      let resolution
+      try {
+        resolution = await resolveInboundSession(from, message, command)
+      } catch (error) {
+        log(`Session command failed: ${error.message}`)
+        const fallback = await sessionFor(from)
+        await rememberThread(message.messageId, fallback, from)
+        await sendCommandReply(from, message, fallback, `Error: ${error.message}`, 'error')
+        return done()
+      }
+      const sessionID = resolution.sessionID
+      await rememberThread(message.messageId, sessionID, from)
+
+      if (establishedNow && sessionID) {
+        try {
+          await maybeSendWelcome(from, message, sessionID)
+        } catch (error) {
+          log(`Could not send welcome mail: ${error.message}`)
+        }
+      }
+
+      if (command && LOCAL_ONLY_COMMANDS.has(command.command)) {
+        const catalog = await listSessions()
+        const text = await localCommandReply(from, message, command, catalog, sessionID, resolution)
+        await sendCommandReply(from, message, sessionID, text)
+        return done()
+      }
+      if (command?.command === 'use' && !command.rest) {
+        await sendCommandReply(from, message, sessionID, `${resolution.note || `Using session ${sessionID}`}.\n\nFurther replies in this subject stay in this session.`)
+        return done()
+      }
+      if (command?.command === 'use') {
+        // `!use <id> question` switches the thread and asks in one email.
+        command.rest = `${resolution.note || `Using session ${sessionID}`}\n\n${command.rest}`
+      }
+      if (!sessionID) {
+        await sendCommandReply(from, message, '', resolution.note || 'Email bridge is disabled; use !use <session> to re-enable it', 'session-disabled')
+        return done()
+      }
+
+      await enqueue(sessionID, async () => {
+        const current = sessionStatus.get(sessionID)
+        const wasBusy = inFlight.has(sessionID) || current === 'busy' || current === 'retry'
+        inFlight.add(sessionID)
+        try {
+          const files = message.attachments.map((attachment) => ({
+            uri: attachment.uri,
+            name: attachment.filename,
+            description: attachment.description,
+          }))
+          const promptId = hashId(message.messageId)
+          // Only the email body is user input. Routing/sender metadata lives in
+          // the structured `metadata` field so it can never be echoed back into
+          // the conversation and mistaken for something the contact wrote.
+          const text = command?.rest || message.text || '(message contained no plain text)'
+          const promptResult = await ctx.session.prompt({
+            sessionID,
+            id: promptId,
+            text,
+            ...(files.length ? { files } : {}),
+            delivery: wasBusy ? 'queue' : 'steer',
+            metadata: {
+              source: 'autocrypt-email',
+              from,
+              fromName: message.fromName,
+              messageId: message.messageId,
               sessionID,
-            })
-          } else {
-            log(`No assistant text to send to ${from}`)
+              note: resolution.note,
+              attachments: message.attachments.map((a) => a.filename),
+            },
+          })
+          // Once accepted, a later failure must not cause a duplicate prompt.
+          promptAccepted = true
+          if (wasBusy) {
+            await sendCommandReply(from, message, sessionID, `Session ${sessionID} is busy; your prompt was queued. !watch ${sessionID} emails you when it finishes.`)
+            return
+          }
+          const userMessageID = promptResult?.id || promptId
+          const finalSubject = withSessionSubject(`Re: Message from ${cfg.displayName}`, sessionID)
+          // Always buffer streamed text: it is the only copy of leading output
+          // when a run stops at a question before the assistant message commits.
+          // `sendProgress` only controls whether working mail is emitted, not
+          // whether the buffer exists.
+          const active = {
+            from,
+            sessionID,
+            inReplyTo: message.messageId,
+            // Progressive and final mails share one subject and thread.
+            subject: finalSubject,
+            userMessageID,
+            sendProgress: cfg.remote.progress !== false,
+            startedAt: Date.now(),
+            lastSentAt: Date.now(),
+            text: '',
+            sentLength: 0,
+          }
+          if (active) progress.set(sessionID, active)
+          try {
+            await ctx.session.wait({ sessionID })
+            const messages = await ctx.session.context({ sessionID })
+            const index = messages.findIndex((entry) => entry.id === userMessageID)
+            const assistantMessages = (index < 0 ? [] : messages.slice(index + 1))
+              .filter((entry) => entry.type === 'assistant' && !entry.error)
+            const replies = assistantMessages
+              .flatMap((entry) => entry.content.filter((part) => part.type === 'text').map((part) => part.text))
+              .join('\n\n')
+              .trim()
+            const sentProgress = Boolean(active?.sentLength)
+            // Only the prefix actually mailed may be dropped. Later deltas that
+            // arrived inside the throttle window are still unsent.
+            const mailedText = active ? active.text.slice(0, active.sentLength) : ''
+            // A run can stop for a question/permission before the assistant
+            // message is committed to the session context. In that case the
+            // streamed deltas are the only copy of the leading output, so prefer
+            // them over the (possibly empty) context replies.
+            const finalSource = active && active.text.length > replies.length ? active.text : replies
+            const remaining = active ? unreportedRemainder(finalSource, mailedText) : replies
+            const attachments = await attachmentsFromSession(assistantMessages, sessionID)
+            const terminalText = remaining || (sentProgress ? `Completed in session ${sessionID}.` : '')
+            if (terminalText || attachments.length) {
+              await transmit({
+                to: from,
+                text: terminalText,
+                attachments,
+                inReplyTo: message.messageId,
+                subject: active ? active.subject : finalSubject,
+                sessionID,
+              })
+            } else {
+              log(`No assistant text to send to ${from}`)
+            }
+          } finally {
+            progress.delete(sessionID)
           }
         } finally {
-          progress.delete(sessionID)
+          inFlight.delete(sessionID)
         }
-      } finally {
-        inFlight.delete(sessionID)
-      }
-    })
+      })
+      return done()
+    } catch (error) {
+      if (message?.messageId && !promptAccepted) await unmarkSeen(message.messageId)
+      log(`Inbound mail failed: ${error.message}`)
+      return false
+    }
   }
-
   async function rescanInbox() {
-    const result = await rescanMailbox(cfg, store, handle, log, controller.signal)
+    const rescan = options.rescanMailbox || rescanMailbox
+    const result = await rescan(cfg, store, handle, log, controller.signal)
     log(`Rescanned ${result.total} mailbox message(s); handled ${result.processed}`)
     onStatus(await getStatus())
     return getStatus()
@@ -1886,7 +1915,7 @@ export async function createBridge(ctx, cfg, options = {}) {
       log(`Listening for Autocrypt mail at ${cfg.address} (${cfg.imap.mailbox})`)
       startEvents()
       startOutbox()
-      void startImap(cfg, store, handle, controller.signal, log)
+      void imapLoop(cfg, store, handle, controller.signal, log)
       if (cfg.remote.mode === 'autocrypt' && cfg.pinned.contact && !state.data.peers[cfg.pinned.contact]?.keydata) {
         const last = Number(state.data.meta.autocryptBootstrapAt || 0)
         if (!last || Date.now() - last > 24 * 60 * 60 * 1000) {
@@ -1896,12 +1925,12 @@ export async function createBridge(ctx, cfg, options = {}) {
           void bootstrap.catch((error) => log(`Contact bootstrap failed: ${error.message}`))
         }
       }
-      onStatus(getStatus())
+      void getStatus().then(onStatus).catch((error) => log(`Status event failed: ${error.message}`))
     },
     stop() {
       controller.abort()
       started = false
-      onStatus(getStatus())
+      void getStatus().then(onStatus).catch((error) => log(`Status event failed: ${error.message}`))
       log('Stopped')
     },
     // Exposed for tests and for local loopback checks against a real mail server.

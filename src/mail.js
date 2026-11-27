@@ -92,10 +92,10 @@ export async function deleteProcessedMessage(client, uid, log) {
 }
 
 /** Ported from opencode-email-sync: IDLE with a periodic reconciliation wake-up. */
-export async function startImap(cfg, store, onMessage, signal, log) {
+export async function startImap(cfg, store, onMessage, signal, log, clientFactory = (options) => new ImapFlow(options)) {
   let failures = 0
   while (!signal.aborted) {
-    const client = new ImapFlow(imapOptions(cfg, cfg.imap.password))
+    const client = clientFactory(imapOptions(cfg, cfg.imap.password))
     client.on('error', () => log('IMAP connection error; reconnecting'))
     client.on('exists', () => { if (client.idling) void client.noop().catch(() => {}) })
     const abort = () => client.close()
@@ -125,9 +125,15 @@ export async function startImap(cfg, store, onMessage, signal, log) {
             const fetched = await client.fetchOne(message.uid, { source: true }, { uid: true })
             if (fetched?.source) {
               try {
-                await onMessage(fetched.source)
-                store.set(key, { validity, uid: message.uid })
-                if (cfg.imap.deleteAfterRead) await deleteProcessedMessage(client, message.uid, log)
+                // `false` means the handler wants another attempt: keep the
+                // checkpoint behind this UID and leave the mail in the mailbox.
+                const handled = await onMessage(fetched.source) !== false
+                if (handled) {
+                  store.set(key, { validity, uid: message.uid })
+                  if (cfg.imap.deleteAfterRead) await deleteProcessedMessage(client, message.uid, log)
+                } else {
+                  log(`Inbound message UID ${message.uid} will be retried`)
+                }
               } catch (error) {
                 log(`Failed to handle message UID ${message.uid}: ${error.message}`)
               }
@@ -166,8 +172,8 @@ export async function startImap(cfg, store, onMessage, signal, log) {
 }
 
 /** Re-read messages already in the mailbox without rewinding the live IDLE loop. */
-export async function rescanMailbox(cfg, store, onMessage, log, signal = new AbortController().signal) {
-  const client = new ImapFlow(imapOptions(cfg, cfg.imap.password))
+export async function rescanMailbox(cfg, store, onMessage, log, signal = new AbortController().signal, clientFactory = (options) => new ImapFlow(options)) {
+  const client = clientFactory(imapOptions(cfg, cfg.imap.password))
   const abort = () => client.close()
   signal.addEventListener('abort', abort, { once: true })
   try {
@@ -193,7 +199,11 @@ export async function rescanMailbox(cfg, store, onMessage, log, signal = new Abo
       const fetched = await client.fetchOne(message.uid, { source: true }, { uid: true })
       if (!fetched?.source) continue
       try {
-        await onMessage(fetched.source)
+        const handled = await onMessage(fetched.source) !== false
+        if (!handled) {
+          log(`Rescan will retry message UID ${message.uid}`)
+          continue
+        }
         const current = store.get(checkpoint)
         const previousUid = current && current.validity === validity ? Number(current.uid) || 0 : 0
         store.set(checkpoint, { validity, uid: Math.max(previousUid, message.uid) })

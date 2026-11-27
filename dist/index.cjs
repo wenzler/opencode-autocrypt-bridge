@@ -126348,10 +126348,10 @@ async function deleteProcessedMessage(client, uid, log2) {
     return false;
   }
 }
-async function startImap(cfg, store, onMessage, signal, log2) {
+async function startImap(cfg, store, onMessage, signal, log2, clientFactory = (options2) => new import_imapflow.ImapFlow(options2)) {
   let failures = 0;
   while (!signal.aborted) {
-    const client = new import_imapflow.ImapFlow(imapOptions(cfg, cfg.imap.password));
+    const client = clientFactory(imapOptions(cfg, cfg.imap.password));
     client.on("error", () => log2("IMAP connection error; reconnecting"));
     client.on("exists", () => {
       if (client.idling) void client.noop().catch(() => {
@@ -126384,9 +126384,13 @@ async function startImap(cfg, store, onMessage, signal, log2) {
             const fetched = await client.fetchOne(message.uid, { source: true }, { uid: true });
             if (fetched?.source) {
               try {
-                await onMessage(fetched.source);
-                store.set(key5, { validity, uid: message.uid });
-                if (cfg.imap.deleteAfterRead) await deleteProcessedMessage(client, message.uid, log2);
+                const handled = await onMessage(fetched.source) !== false;
+                if (handled) {
+                  store.set(key5, { validity, uid: message.uid });
+                  if (cfg.imap.deleteAfterRead) await deleteProcessedMessage(client, message.uid, log2);
+                } else {
+                  log2(`Inbound message UID ${message.uid} will be retried`);
+                }
               } catch (error) {
                 log2(`Failed to handle message UID ${message.uid}: ${error.message}`);
               }
@@ -126423,8 +126427,8 @@ async function startImap(cfg, store, onMessage, signal, log2) {
   }
   log2("IMAP loop stopped");
 }
-async function rescanMailbox(cfg, store, onMessage, log2, signal = new AbortController().signal) {
-  const client = new import_imapflow.ImapFlow(imapOptions(cfg, cfg.imap.password));
+async function rescanMailbox(cfg, store, onMessage, log2, signal = new AbortController().signal, clientFactory = (options2) => new import_imapflow.ImapFlow(options2)) {
+  const client = clientFactory(imapOptions(cfg, cfg.imap.password));
   const abort = () => client.close();
   signal.addEventListener("abort", abort, { once: true });
   try {
@@ -126450,7 +126454,11 @@ async function rescanMailbox(cfg, store, onMessage, log2, signal = new AbortCont
       const fetched = await client.fetchOne(message.uid, { source: true }, { uid: true });
       if (!fetched?.source) continue;
       try {
-        await onMessage(fetched.source);
+        const handled = await onMessage(fetched.source) !== false;
+        if (!handled) {
+          log2(`Rescan will retry message UID ${message.uid}`);
+          continue;
+        }
         const current = store.get(checkpoint);
         const previousUid = current && current.validity === validity ? Number(current.uid) || 0 : 0;
         store.set(checkpoint, { validity, uid: Math.max(previousUid, message.uid) });
@@ -126904,6 +126912,8 @@ async function loadState(ctx) {
 }
 async function createBridge(ctx, cfg, options2 = {}) {
   const log2 = options2.log || ((message) => console.log(`[autocrypt] ${message}`));
+  const imapLoop = options2.startImap || startImap;
+  const encryptMimeImpl = options2.encryptMime || encryptMime;
   const onStatus = options2.onStatus || (() => {
   });
   const onQuestion = options2.onQuestion || (() => {
@@ -126971,6 +126981,13 @@ async function createBridge(ctx, cfg, options2 = {}) {
     if (!messageId || seenBefore(messageId)) return;
     state.data.seen.push(messageId);
     if (state.data.seen.length > 5e3) state.data.seen = state.data.seen.slice(-5e3);
+    await state.save();
+  }
+  async function unmarkSeen(messageId) {
+    if (!messageId) return;
+    const next = state.data.seen.filter((id2) => id2 !== messageId);
+    if (next.length === state.data.seen.length) return;
+    state.data.seen = next;
     await state.save();
   }
   async function sessionExists(sessionID) {
@@ -127536,17 +127553,18 @@ ${chunk}`
     let body = inner.body;
     let contentType = inner.contentType;
     const peerKey = explicitPeerKey || cfg.pinned.keyB64 || state.data.peers[to]?.keydata;
-    if (encrypt2 && peerKey) {
-      try {
-        const armored = await encryptMime(inner.entity, identity2, [peerKey]);
-        const pgp = buildPgpMime(armored);
-        body = pgp.body;
-        contentType = pgp.contentType;
-      } catch (error) {
-        log2(`Could not encrypt for ${to}, falling back to cleartext: ${error.message}`);
-      }
-    } else if (encrypt2) {
+    if (!encrypt2) return { body, contentType };
+    if (!peerKey) {
       log2(`No Autocrypt key for ${to}; sending cleartext so the peer can learn ours`);
+      return { body, contentType };
+    }
+    try {
+      const armored = await encryptMimeImpl(inner.entity, identity2, [peerKey]);
+      const pgp = buildPgpMime(armored);
+      body = pgp.body;
+      contentType = pgp.contentType;
+    } catch (error) {
+      throw new Error(`Could not encrypt for ${to}: ${error.message}`);
     }
     return { body, contentType };
   }
@@ -128335,188 +128353,199 @@ Further replies in this subject stay in this session.`;
   ]);
   const DECISION_COMMANDS = /* @__PURE__ */ new Set(["approve", "deny"]);
   async function handle(raw) {
-    try {
-      if (await handleSecureJoinPubkey(raw)) return;
-    } catch (error) {
-      log2(`SecureJoin pubkey failed: ${error.message}`);
-    }
     let message;
+    let promptAccepted = false;
+    const done3 = (value3 = true) => value3;
     try {
-      message = await parseIncoming(
-        raw,
-        cfg,
-        identity2,
-        log2,
-        cfg.pinned,
-        state.data.peers[cfg.pinned.contact]?.keydata
-      );
-    } catch (error) {
-      log2(`Rejected message: ${error.message}`);
-      return;
-    }
-    const from = String(message.from || "").toLowerCase();
-    if (!from || !allowed(from)) {
-      log2(`Ignoring message from ${from || "unknown"}`);
-      return;
-    }
-    if (cfg.remote.mode === "securejoin" && state.data.handshake.secureJoin?.verified && !message.encrypted) {
-      log2(`Ignoring plaintext from ${from}: encrypted-only mode is active after SecureJoin`);
-      return;
-    }
-    try {
-      if (await handleSecureJoinContactConfirm(from, message)) return;
-    } catch (error) {
-      log2(`SecureJoin confirmation failed: ${error.message}`);
-    }
-    if (cfg.remote.mode === "securejoin" && cfg.pinned.secureJoin?.auth && !state.data.handshake.verified) {
-      log2(`Ignoring ${from}: waiting for SecureJoin verification`);
-      return;
-    }
-    if (message.mdn) {
-      await handleReadReceipt(from, message.mdn);
-      return;
-    }
-    if (seenBefore(message.messageId)) return;
-    await markSeen(message.messageId);
-    const command = parseSessionCommand(message.text);
-    const { establishedNow } = await learnPeer(from, message.autocrypt);
-    if (message.wantsReceipt) {
       try {
-        await sendReadReceipt(message.receiptTarget || from, message.messageId);
+        if (await handleSecureJoinPubkey(raw)) return done3();
       } catch (error) {
-        log2(`Could not send read receipt: ${error.message}`);
+        log2(`SecureJoin pubkey failed: ${error.message}`);
       }
-    }
-    if (command && DECISION_COMMANDS.has(command.command)) {
-      await answerDecision(from, message, command);
-      return;
-    }
-    if (command?.command === "answer") {
-      await answerQuestion(from, message, command);
-      return;
-    }
-    let resolution;
-    try {
-      resolution = await resolveInboundSession(from, message, command);
-    } catch (error) {
-      log2(`Session command failed: ${error.message}`);
-      const fallback = await sessionFor(from);
-      await rememberThread(message.messageId, fallback, from);
-      await sendCommandReply(from, message, fallback, `Error: ${error.message}`, "error");
-      return;
-    }
-    const sessionID = resolution.sessionID;
-    await rememberThread(message.messageId, sessionID, from);
-    if (establishedNow && sessionID) {
       try {
-        await maybeSendWelcome(from, message, sessionID);
+        message = await parseIncoming(
+          raw,
+          cfg,
+          identity2,
+          log2,
+          cfg.pinned,
+          state.data.peers[cfg.pinned.contact]?.keydata
+        );
       } catch (error) {
-        log2(`Could not send welcome mail: ${error.message}`);
+        log2(`Rejected message: ${error.message}`);
+        return done3(false);
       }
-    }
-    if (command && LOCAL_ONLY_COMMANDS.has(command.command)) {
-      const catalog = await listSessions();
-      const text = await localCommandReply(from, message, command, catalog, sessionID, resolution);
-      await sendCommandReply(from, message, sessionID, text);
-      return;
-    }
-    if (command?.command === "use" && !command.rest) {
-      await sendCommandReply(from, message, sessionID, `${resolution.note || `Using session ${sessionID}`}.
+      const from = String(message.from || "").toLowerCase();
+      if (!from || !allowed(from)) {
+        log2(`Ignoring message from ${from || "unknown"}`);
+        return done3();
+      }
+      if (cfg.remote.mode === "securejoin" && state.data.handshake.secureJoin?.verified && !message.encrypted) {
+        log2(`Ignoring plaintext from ${from}: encrypted-only mode is active after SecureJoin`);
+        return done3();
+      }
+      try {
+        if (await handleSecureJoinContactConfirm(from, message)) return done3();
+      } catch (error) {
+        log2(`SecureJoin confirmation failed: ${error.message}`);
+      }
+      if (cfg.remote.mode === "securejoin" && cfg.pinned.secureJoin?.auth && !state.data.handshake.verified) {
+        log2(`Ignoring ${from}: waiting for SecureJoin verification`);
+        return done3();
+      }
+      if (message.mdn) {
+        await handleReadReceipt(from, message.mdn);
+        return done3();
+      }
+      if (seenBefore(message.messageId)) return done3();
+      await markSeen(message.messageId);
+      const command = parseSessionCommand(message.text);
+      const { establishedNow } = await learnPeer(from, message.autocrypt);
+      if (message.wantsReceipt) {
+        try {
+          await sendReadReceipt(message.receiptTarget || from, message.messageId);
+        } catch (error) {
+          log2(`Could not send read receipt: ${error.message}`);
+        }
+      }
+      if (command && DECISION_COMMANDS.has(command.command)) {
+        await answerDecision(from, message, command);
+        return done3();
+      }
+      if (command?.command === "answer") {
+        await answerQuestion(from, message, command);
+        return done3();
+      }
+      let resolution;
+      try {
+        resolution = await resolveInboundSession(from, message, command);
+      } catch (error) {
+        log2(`Session command failed: ${error.message}`);
+        const fallback = await sessionFor(from);
+        await rememberThread(message.messageId, fallback, from);
+        await sendCommandReply(from, message, fallback, `Error: ${error.message}`, "error");
+        return done3();
+      }
+      const sessionID = resolution.sessionID;
+      await rememberThread(message.messageId, sessionID, from);
+      if (establishedNow && sessionID) {
+        try {
+          await maybeSendWelcome(from, message, sessionID);
+        } catch (error) {
+          log2(`Could not send welcome mail: ${error.message}`);
+        }
+      }
+      if (command && LOCAL_ONLY_COMMANDS.has(command.command)) {
+        const catalog = await listSessions();
+        const text = await localCommandReply(from, message, command, catalog, sessionID, resolution);
+        await sendCommandReply(from, message, sessionID, text);
+        return done3();
+      }
+      if (command?.command === "use" && !command.rest) {
+        await sendCommandReply(from, message, sessionID, `${resolution.note || `Using session ${sessionID}`}.
 
 Further replies in this subject stay in this session.`);
-      return;
-    }
-    if (command?.command === "use") {
-      command.rest = `${resolution.note || `Using session ${sessionID}`}
+        return done3();
+      }
+      if (command?.command === "use") {
+        command.rest = `${resolution.note || `Using session ${sessionID}`}
 
 ${command.rest}`;
-    }
-    if (!sessionID) {
-      await sendCommandReply(from, message, "", resolution.note || "Email bridge is disabled; use !use <session> to re-enable it", "session-disabled");
-      return;
-    }
-    await enqueue(sessionID, async () => {
-      const current = sessionStatus.get(sessionID);
-      const wasBusy = inFlight.has(sessionID) || current === "busy" || current === "retry";
-      inFlight.add(sessionID);
-      try {
-        const files = message.attachments.map((attachment) => ({
-          uri: attachment.uri,
-          name: attachment.filename,
-          description: attachment.description
-        }));
-        const promptId = hashId(message.messageId);
-        const text = command?.rest || message.text || "(message contained no plain text)";
-        const promptResult = await ctx.session.prompt({
-          sessionID,
-          id: promptId,
-          text,
-          ...files.length ? { files } : {},
-          delivery: wasBusy ? "queue" : "steer",
-          metadata: {
-            source: "autocrypt-email",
-            from,
-            fromName: message.fromName,
-            messageId: message.messageId,
-            sessionID,
-            note: resolution.note,
-            attachments: message.attachments.map((a) => a.filename)
-          }
-        });
-        if (wasBusy) {
-          await sendCommandReply(from, message, sessionID, `Session ${sessionID} is busy; your prompt was queued. !watch ${sessionID} emails you when it finishes.`);
-          return;
-        }
-        const userMessageID = promptResult?.id || promptId;
-        const finalSubject = withSessionSubject(`Re: Message from ${cfg.displayName}`, sessionID);
-        const active = {
-          from,
-          sessionID,
-          inReplyTo: message.messageId,
-          // Progressive and final mails share one subject and thread.
-          subject: finalSubject,
-          userMessageID,
-          sendProgress: cfg.remote.progress !== false,
-          startedAt: Date.now(),
-          lastSentAt: Date.now(),
-          text: "",
-          sentLength: 0
-        };
-        if (active) progress.set(sessionID, active);
+      }
+      if (!sessionID) {
+        await sendCommandReply(from, message, "", resolution.note || "Email bridge is disabled; use !use <session> to re-enable it", "session-disabled");
+        return done3();
+      }
+      await enqueue(sessionID, async () => {
+        const current = sessionStatus.get(sessionID);
+        const wasBusy = inFlight.has(sessionID) || current === "busy" || current === "retry";
+        inFlight.add(sessionID);
         try {
-          await ctx.session.wait({ sessionID });
-          const messages = await ctx.session.context({ sessionID });
-          const index3 = messages.findIndex((entry) => entry.id === userMessageID);
-          const assistantMessages = (index3 < 0 ? [] : messages.slice(index3 + 1)).filter((entry) => entry.type === "assistant" && !entry.error);
-          const replies = assistantMessages.flatMap((entry) => entry.content.filter((part) => part.type === "text").map((part) => part.text)).join("\n\n").trim();
-          const sentProgress = Boolean(active?.sentLength);
-          const mailedText = active ? active.text.slice(0, active.sentLength) : "";
-          const finalSource = active && active.text.length > replies.length ? active.text : replies;
-          const remaining = active ? unreportedRemainder(finalSource, mailedText) : replies;
-          const attachments = await attachmentsFromSession(assistantMessages, sessionID);
-          const terminalText = remaining || (sentProgress ? `Completed in session ${sessionID}.` : "");
-          if (terminalText || attachments.length) {
-            await transmit({
-              to: from,
-              text: terminalText,
-              attachments,
-              inReplyTo: message.messageId,
-              subject: active ? active.subject : finalSubject,
-              sessionID
-            });
-          } else {
-            log2(`No assistant text to send to ${from}`);
+          const files = message.attachments.map((attachment) => ({
+            uri: attachment.uri,
+            name: attachment.filename,
+            description: attachment.description
+          }));
+          const promptId = hashId(message.messageId);
+          const text = command?.rest || message.text || "(message contained no plain text)";
+          const promptResult = await ctx.session.prompt({
+            sessionID,
+            id: promptId,
+            text,
+            ...files.length ? { files } : {},
+            delivery: wasBusy ? "queue" : "steer",
+            metadata: {
+              source: "autocrypt-email",
+              from,
+              fromName: message.fromName,
+              messageId: message.messageId,
+              sessionID,
+              note: resolution.note,
+              attachments: message.attachments.map((a) => a.filename)
+            }
+          });
+          promptAccepted = true;
+          if (wasBusy) {
+            await sendCommandReply(from, message, sessionID, `Session ${sessionID} is busy; your prompt was queued. !watch ${sessionID} emails you when it finishes.`);
+            return;
+          }
+          const userMessageID = promptResult?.id || promptId;
+          const finalSubject = withSessionSubject(`Re: Message from ${cfg.displayName}`, sessionID);
+          const active = {
+            from,
+            sessionID,
+            inReplyTo: message.messageId,
+            // Progressive and final mails share one subject and thread.
+            subject: finalSubject,
+            userMessageID,
+            sendProgress: cfg.remote.progress !== false,
+            startedAt: Date.now(),
+            lastSentAt: Date.now(),
+            text: "",
+            sentLength: 0
+          };
+          if (active) progress.set(sessionID, active);
+          try {
+            await ctx.session.wait({ sessionID });
+            const messages = await ctx.session.context({ sessionID });
+            const index3 = messages.findIndex((entry) => entry.id === userMessageID);
+            const assistantMessages = (index3 < 0 ? [] : messages.slice(index3 + 1)).filter((entry) => entry.type === "assistant" && !entry.error);
+            const replies = assistantMessages.flatMap((entry) => entry.content.filter((part) => part.type === "text").map((part) => part.text)).join("\n\n").trim();
+            const sentProgress = Boolean(active?.sentLength);
+            const mailedText = active ? active.text.slice(0, active.sentLength) : "";
+            const finalSource = active && active.text.length > replies.length ? active.text : replies;
+            const remaining = active ? unreportedRemainder(finalSource, mailedText) : replies;
+            const attachments = await attachmentsFromSession(assistantMessages, sessionID);
+            const terminalText = remaining || (sentProgress ? `Completed in session ${sessionID}.` : "");
+            if (terminalText || attachments.length) {
+              await transmit({
+                to: from,
+                text: terminalText,
+                attachments,
+                inReplyTo: message.messageId,
+                subject: active ? active.subject : finalSubject,
+                sessionID
+              });
+            } else {
+              log2(`No assistant text to send to ${from}`);
+            }
+          } finally {
+            progress.delete(sessionID);
           }
         } finally {
-          progress.delete(sessionID);
+          inFlight.delete(sessionID);
         }
-      } finally {
-        inFlight.delete(sessionID);
-      }
-    });
+      });
+      return done3();
+    } catch (error) {
+      if (message?.messageId && !promptAccepted) await unmarkSeen(message.messageId);
+      log2(`Inbound mail failed: ${error.message}`);
+      return false;
+    }
   }
   async function rescanInbox() {
-    const result3 = await rescanMailbox(cfg, store, handle, log2, controller.signal);
+    const rescan = options2.rescanMailbox || rescanMailbox;
+    const result3 = await rescan(cfg, store, handle, log2, controller.signal);
     log2(`Rescanned ${result3.total} mailbox message(s); handled ${result3.processed}`);
     onStatus(await getStatus());
     return getStatus();
@@ -128535,7 +128564,7 @@ ${command.rest}`;
       log2(`Listening for Autocrypt mail at ${cfg.address} (${cfg.imap.mailbox})`);
       startEvents();
       startOutbox();
-      void startImap(cfg, store, handle, controller.signal, log2);
+      void imapLoop(cfg, store, handle, controller.signal, log2);
       if (cfg.remote.mode === "autocrypt" && cfg.pinned.contact && !state.data.peers[cfg.pinned.contact]?.keydata) {
         const last = Number(state.data.meta.autocryptBootstrapAt || 0);
         if (!last || Date.now() - last > 24 * 60 * 60 * 1e3) {
@@ -128545,12 +128574,12 @@ ${command.rest}`;
           void bootstrap.catch((error) => log2(`Contact bootstrap failed: ${error.message}`));
         }
       }
-      onStatus(getStatus());
+      void getStatus().then(onStatus).catch((error) => log2(`Status event failed: ${error.message}`));
     },
     stop() {
       controller.abort();
       started = false;
-      onStatus(getStatus());
+      void getStatus().then(onStatus).catch((error) => log2(`Status event failed: ${error.message}`));
       log2("Stopped");
     },
     // Exposed for tests and for local loopback checks against a real mail server.
