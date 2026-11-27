@@ -94,6 +94,21 @@ export function parseInviteUrl(value) {
   }
 }
 
+const INVITE_SECRET_NAMES = new Set(['s', 'i', 'j'])
+
+/**
+ * True for an invite query pair whose decoded name is s=, i= or j=.
+ *
+ * `URLSearchParams` decodes parameter names in parseInviteUrl(), so redaction
+ * and secret detection must decode them the same way. Otherwise `%73=SECRET`
+ * is accepted as an auth code but displayed verbatim.
+ */
+export function isInviteSecretPair(pair) {
+  const name = String(pair || '').split('=', 1)[0]
+  const decoded = new URLSearchParams(`${name}=`).keys().next().value ?? name
+  return INVITE_SECRET_NAMES.has(String(decoded).split('=')[0].toLowerCase())
+}
+
 /**
  * Hide SecureJoin secrets when displaying an invite URL in the GUI.
  *
@@ -105,9 +120,17 @@ export function redactInviteUrl(value) {
   if (!text) return ''
   const withoutSecretPairs = (part) => part
     .split('&')
-    .filter((pair) => !/^(?:i|j|s)=/i.test(pair))
+    .filter((pair) => !isInviteSecretPair(pair))
     .join('&')
 
+  // In OPENPGP4FPR form the fingerprint is before the hash, so every pair
+  // after it is a real query pair and must be filtered. In ordinary URLs the
+  // first token after the hash is the fingerprint.
+  const openpgp = /^(OPENPGP4FPR:\s*[^#&]+)#([\s\S]*)$/i.exec(text)
+  if (openpgp) {
+    const kept = withoutSecretPairs(openpgp[2])
+    return `${openpgp[1]}#${kept}`
+  }
   const hash = text.indexOf('#')
   if (hash >= 0) {
     const prefix = text.slice(0, hash + 1)

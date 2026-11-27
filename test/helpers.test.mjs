@@ -201,6 +201,9 @@ test('invite URL parsing exposes pin fields and the SecureJoin auth code', () =>
   assert.equal(parseInviteUrl(`#${fingerprint}&a=me%40example.net`).address, 'me@example.net')
   assert.equal(parseInviteUrl(`#${fingerprint}&s=secret`).version, '')
   assert.equal(parseInviteUrl(`#${fingerprint}&j=legacy`).inviteNumber, 'legacy')
+  const encodedNames = parseInviteUrl(`#${fingerprint}&%73=encoded-auth&%69=encoded-invite&v=3`)
+  assert.equal(encodedNames.auth, 'encoded-auth')
+  assert.equal(encodedNames.inviteNumber, 'encoded-invite')
   assert.throws(() => parseInviteUrl('#nope&a=me%40example.net'), /Invalid OpenPGP fingerprint/)
 })
 
@@ -214,6 +217,21 @@ test('invite URL redaction hides secrets and is stable', () => {
   assert.equal(encoded, `OPENPGP4FPR:${fingerprint}#v=3`)
   assert.doesNotMatch(encoded, /secret/)
   assert.equal(redactInviteUrl(encoded), encoded)
+})
+
+test('invite URL redaction decodes percent-encoded secret names', () => {
+  const url = `https://example.org/#${fingerprint}&v=3&%73=auth&%69=invite&%6A=legacy&%61=keep%40example.net`
+  const redacted = redactInviteUrl(url)
+  assert.equal(redacted, `https://example.org/#${fingerprint}&v=3&%61=keep%40example.net`)
+  assert.doesNotMatch(redacted, /auth|invite|legacy/)
+  assert.equal(redactInviteUrl(redacted), redacted)
+
+  const openpgp = redactInviteUrl(`OPENPGP4FPR:${fingerprint}%23%53=AUTH&n=Me`)
+  assert.equal(openpgp, `OPENPGP4FPR:${fingerprint}#n=Me`)
+  assert.doesNotMatch(openpgp, /AUTH/)
+  assert.equal(redactInviteUrl(openpgp), openpgp)
+
+  assert.equal(redactInviteUrl(`#${fingerprint}&%73omething=keep`), `#${fingerprint}&%73omething=keep`)
 })
 
 test('invite URL must agree with the pinned gate', () => {
@@ -246,6 +264,15 @@ test('config keeps auth for SecureJoin while redacting the displayed invite URL'
   assert.equal(cfg.pinned.secureJoin.auth, 'secret')
   assert.equal(cfg.pinned.secureJoin.version, '3')
   assert.equal(cfg.pinned.mode, undefined)
+
+  const encoded = loadConfig({}, {
+    ...baseEnv,
+    AC_PINNED_CONTACT: 'me@example.net',
+    AC_INVITE_URL: `#${fingerprint}&v=3&%73=encoded-secret&a=me%40example.net`,
+  })
+  assert.equal(encoded.pinned.inviteUrl, `#${fingerprint}&v=3&a=me%40example.net`)
+  assert.equal(encoded.pinned.invite.auth, 'encoded-secret')
+  assert.equal(encoded.pinned.secureJoin.auth, 'encoded-secret')
 })
 
 test('optional pinned key is still accepted alongside the fingerprint', () => {

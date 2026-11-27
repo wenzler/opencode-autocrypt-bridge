@@ -370,6 +370,49 @@ test('watch subscriptions email completion notices and !peek reads session conte
   assert.ok(texts.some((text) => text.includes('The report is ready')))
 })
 
+test('a completion event during a run is not mailed early or twice', async () => {
+  const contact = await keyPair('contact@example.net')
+  const h = harness(await keyFingerprint(contact.publicB64), {}, {
+    assistantText: 'The deferred report is ready',
+  })
+  const bridge = await createBridge(h.ctx, h.cfg, { sender: h.sender, log: () => {} })
+
+  await bridge.process(contactMail(contact))
+  await bridge.process(contactReply(contact, {
+    messageId: '<watch-setup@example.net>',
+    text: '!watch',
+  }))
+
+  let signalWait
+  const waitCalled = new Promise((resolve) => { signalWait = resolve })
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  h.ctx.session.wait = async () => {
+    signalWait()
+    await gate
+  }
+
+  const completion = { type: 'session.execution.succeeded', data: { sessionID: 'session-1' } }
+  const pending = bridge.process(contactMail(contact, {
+    messageId: '<watch-prompt@example.net>',
+    text: 'run again',
+  }))
+  await waitCalled
+  const before = h.sent.length
+  await bridge.processEvent(completion)
+  assert.equal(h.sent.length, before, 'no watch notice is sent while the run is in flight')
+
+  release()
+  await pending
+  assert.equal(h.sent.length, before + 1, 'the in-flight prompt gets only its terminal answer')
+  assert.ok(!h.sent.some((entry) => entry.raw.includes('X-OpenCode-Notice: success')))
+
+  await bridge.processEvent(completion)
+  assert.ok(h.sent.some((entry) => entry.raw.includes('X-OpenCode-Notice: success')))
+  const texts = await sentTexts(h.sent, bridge.getIdentity())
+  assert.ok(texts.some((text) => text.includes('The deferred report is ready')))
+})
+
 test('binding to None disables email prompts until a session is selected again', async () => {
   const contact = await keyPair('contact@example.net')
   const h = harness(await keyFingerprint(contact.publicB64))

@@ -36,7 +36,7 @@ async function setupInstance(ctx, slot) {
   const previousStop = slot.stop
   slot.token = token
   slot.stop = null
-  if (previousStop) previousStop()
+  if (previousStop) await previousStop()
 
   const runtime = {
     ctx,
@@ -117,11 +117,12 @@ async function setupInstance(ctx, slot) {
   }
 
   /** Start the bridge when settings are complete; otherwise stay UI-configurable. */
-  const stopBridge = () => {
+  const stopBridge = async () => {
     const current = slot.runtime
-    current?.bridge?.stop()
+    const bridge = current?.bridge
     if (current) current.bridge = null
     if (slot.stop === stopBridge) slot.stop = null
+    if (bridge) await bridge.stop()
   }
 
   /**
@@ -132,7 +133,7 @@ async function setupInstance(ctx, slot) {
   const restart = async (guarded = false) => {
     const current = slot.runtime
     if (!current) return currentStatus()
-    stopBridge()
+    await stopBridge()
     current.stored = storedSettings(await current.ctx.storage.get(STORAGE_KEY))
     if (guarded && (slot.token !== token || slot.runtime !== current)) return currentStatus()
     try {
@@ -144,8 +145,9 @@ async function setupInstance(ctx, slot) {
         onQuestionAnswer: (answer) => emit('questionAnswer', answer),
       })
       if (guarded && (slot.token !== token || slot.runtime !== current)) {
-        current.bridge.stop()
+        const staleBridge = current.bridge
         current.bridge = null
+        if (staleBridge) await staleBridge.stop()
         return currentStatus()
       }
       current.bridge.start()
@@ -277,7 +279,7 @@ async function setupInstance(ctx, slot) {
     // A superseded plugin load must not tear down the newer runtime or its
     // registrations; stale handlers now delegate to slot.runtime anyway.
     if (slot.runtime !== runtime || slot.token !== token) return
-    stopBridge()
+    await stopBridge()
     await tool.dispose()
     await runtime.registration.dispose()
     slot.token = null

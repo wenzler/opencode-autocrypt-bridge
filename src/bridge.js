@@ -88,6 +88,9 @@ const INBOUND_MAX_ATTEMPTS = 3
 const INBOUND_RETRY_BASE_MS = 10_000
 const INBOUND_RETRY_MAX_MS = 5 * 60_000
 
+const WATCH_RECHECK_MS = 250
+const STOP_SETTLE_MS = 500
+
 const STATE_RECORD_LIMIT = 200
 const STATE_RECORD_TTL_MS = 24 * 60 * 60 * 1000
 
@@ -190,7 +193,15 @@ export async function createBridge(ctx, cfg, options = {}) {
     if (cfg.pinned.requireEncrypted) log('Pinned mode: plaintext messages are rejected')
   }
 
+  const controller = new AbortController()
+  // A retired bridge must never overwrite state loaded by its replacement.
+  let retired = false
   const state = await loadState(ctx)
+  const persistState = state.save.bind(state)
+  state.save = async () => {
+    if (retired || controller.signal.aborted) return
+    await persistState()
+  }
   pruneRecords(state.data.pending)
   pruneRecords(state.data.questions)
   pruneRecords(state.data.retries)
@@ -224,12 +235,16 @@ export async function createBridge(ctx, cfg, options = {}) {
   }
   const sender = options.sender || createSender(cfg)
   const queues = new Map()
-  const controller = new AbortController()
   const inFlight = new Set()
   const sessionStatus = new Map()
   const lastWatchNotify = new Map()
   const progress = new Map()
   const watchAnnounced = new Map()
+  const pendingWatch = new Map()
+  const watchRechecks = new Map()
+  const tasks = new Set()
+  let eventsTask = null
+  let imapTask = null
   let outboxTimer = null
   let flushingOutbox = false
   const announcedDecisions = new Set()
@@ -243,10 +258,22 @@ export async function createBridge(ctx, cfg, options = {}) {
     return cfg.allowedContacts.includes(from)
   }
 
+  function track(promise) {
+    const tracked = Promise.resolve(promise)
+    tasks.add(tracked)
+    tracked.then(
+      () => tasks.delete(tracked),
+      () => tasks.delete(tracked),
+    )
+    return promise
+  }
+
   const enqueue = (sessionID, task) => {
     const previous = queues.get(sessionID) || Promise.resolve()
     const next = previous.then(task, task)
-    queues.set(sessionID, next.catch((error) => log(`Session ${sessionID} failed: ${error.message}`)))
+    const settled = next.catch((error) => log(`Session ${sessionID} failed: ${error.message}`))
+    queues.set(sessionID, settled)
+    track(settled)
     return next
   }
 
@@ -569,13 +596,19 @@ export async function createBridge(ctx, cfg, options = {}) {
     return [...contacts]
   }
 
-  async function sendSessionNotice(sessionID, subject, text, kind = 'session-notice') {
-    const recipients = watchersFor(sessionID)
-    for (const to of recipients) {
+  function watchRecipients(sessionID, skipContacts = []) {
+    const skip = new Set(skipContacts.filter(Boolean))
+    return watchersFor(sessionID).filter((contact) => !skip.has(contact))
+  }
+
+  async function sendSessionNotice(sessionID, subject, text, kind = 'session-notice', skipContacts = []) {
+    for (const to of watchRecipients(sessionID, skipContacts)) {
+      const watch = state.data.watches[to] || {}
       await transmit({
         to,
         sessionID,
-        subject,
+        inReplyTo: watch.inReplyTo || undefined,
+        subject: watch.subject || subject,
         headers: [`X-OpenCode-Notice: ${kind}`],
         text,
       })
@@ -594,12 +627,18 @@ export async function createBridge(ctx, cfg, options = {}) {
     const fresh = messages.filter((entry) => (
       entry?.type === 'assistant' && !entry.error && !announced.has(entry.id)
     ))
-    const text = fresh
-      .flatMap((entry) => (entry.content || []).filter((part) => part?.type === 'text').map((part) => part.text))
-      .join('\n\n')
-      .trim()
-    const ids = messages.filter((entry) => entry?.type === 'assistant').map((entry) => entry.id)
-    return { text, ids }
+    const withText = fresh.map((entry) => ({
+      id: entry.id,
+      text: (entry.content || [])
+        .filter((part) => part?.type === 'text')
+        .map((part) => part.text)
+        .join('\n\n')
+        .trim(),
+    })).filter((entry) => entry.text)
+    return {
+      text: withText.map((entry) => entry.text).join('\n\n').trim(),
+      ids: withText.map((entry) => entry.id),
+    }
   }
 
   function markWatchResult(sessionID, ids) {
@@ -731,58 +770,117 @@ export async function createBridge(ctx, cfg, options = {}) {
     await state.save()
   }
 
+  function watchEventKind(event) {
+    if (event.type === 'session.execution.succeeded') return 'success'
+    if (event.type === 'session.execution.failed' || event.type === 'session.step.failed') return 'failure'
+    if (event.type === 'session.idle') return 'idle'
+    if (event.type === 'session.status' && event.data?.status?.type === 'idle') return 'idle'
+    return ''
+  }
+
+  function watchKindRank(kind) {
+    if (kind === 'failure') return 3
+    if (kind === 'success') return 2
+    if (kind === 'idle') return 1
+    return 0
+  }
+
+  function scheduleWatchRecheck(sessionID, event) {
+    if (retired || controller.signal.aborted || event.__watchRechecked || watchRechecks.has(sessionID)) return
+    const skipContacts = event.__watchSkipContacts || []
+    const retry = { ...event, __watchRechecked: true, __watchSkipContacts: skipContacts }
+    const timer = setTimeout(() => {
+      watchRechecks.delete(sessionID)
+      void sendWatchNotice(sessionID, retry, skipContacts).catch((error) => log(`Watch recheck failed: ${error.message}`))
+    }, WATCH_RECHECK_MS)
+    timer.unref?.()
+    watchRechecks.set(sessionID, timer)
+  }
+
+  /**
+   * Send one watch notice. Results found while the assistant message is still
+   * committing are rechecked once instead of being replaced by a generic mail.
+   */
+  async function sendWatchNotice(sessionID, event, skipContacts = []) {
+    if (retired || controller.signal.aborted) return
+    const kind = watchEventKind(event)
+    if (!kind) return
+    const data = event.data || {}
+    let subject = ''
+    let text = ''
+    let noticeKind = 'session-notice'
+    let resultIDs = []
+    if (kind === 'idle' || kind === 'success') {
+      const result = await freshWatchResult(sessionID)
+      resultIDs = result.ids
+      text = result.text
+      if (!text) {
+        if (watchRecipients(sessionID, skipContacts).length) {
+          scheduleWatchRecheck(sessionID, { ...event, __watchSkipContacts: skipContacts })
+        }
+        return
+      }
+    }
+    if (kind === 'failure') {
+      const last = Number(lastWatchNotify.get(sessionID) || 0)
+      if (Date.now() - last < 30_000) return
+      const error = data.error?.message || data.error || 'unknown error'
+      subject = `Session failed: ${sessionID}`
+      text = `Session ${sessionID} failed: ${error}`
+      noticeKind = 'failure'
+    } else if (kind === 'idle') {
+      subject = `Session idle: ${sessionID}`
+      noticeKind = 'idle'
+    } else {
+      subject = `Session finished: ${sessionID}`
+      noticeKind = 'success'
+    }
+    if (!watchRecipients(sessionID, skipContacts).length) return
+    if (resultIDs.length) markWatchResult(sessionID, resultIDs)
+    if (kind === 'failure') {
+      pruneMap(lastWatchNotify)
+      lastWatchNotify.set(sessionID, Date.now())
+    }
+    await sendSessionNotice(sessionID, subject, text, noticeKind, skipContacts)
+  }
+
+  /** Events that arrive mid-run are delivered after the terminal answer mail. */
+  async function flushPendingWatch(sessionID, skipContacts = []) {
+    const event = pendingWatch.get(sessionID)
+    if (!event) return
+    pendingWatch.delete(sessionID)
+    if (retired || controller.signal.aborted) return
+    try {
+      await sendWatchNotice(sessionID, event, skipContacts)
+    } catch (error) {
+      log(`Could not send watch notice: ${error.message}`)
+    }
+  }
+
   async function handleSessionEvent(event) {
     const data = event.data || {}
     const sessionID = String(data.sessionID || '')
-    if (!sessionID) return
+    if (!sessionID || retired || controller.signal.aborted) return
     if (event.type === 'session.status') {
       pruneMap(sessionStatus)
       sessionStatus.set(sessionID, String(data.status?.type || 'idle'))
     } else if (event.type === 'session.idle') {
       pruneMap(sessionStatus)
       sessionStatus.set(sessionID, 'idle')
+    } else if (event.type === 'session.execution.succeeded' || event.type === 'session.execution.failed') {
+      sessionStatus.set(sessionID, 'idle')
     }
-    if (!cfg.remote.watch || inFlight.has(sessionID)) return
-    const last = Number(lastWatchNotify.get(sessionID) || 0)
-    if (Date.now() - last < 30_000) return
-    let subject = ''
-    let text = ''
-    let kind = 'session-notice'
-    let resultIDs = []
-    const isIdle = event.type === 'session.idle'
-      || (event.type === 'session.status' && data.status?.type === 'idle')
-    const isSuccess = event.type === 'session.execution.succeeded'
-    if (isIdle || isSuccess) {
-      const result = await freshWatchResult(sessionID)
-      resultIDs = result.ids
-      text = result.text
-    }
-    if (event.type === 'session.status') {
-      if (data.status?.type !== 'idle') return
-      subject = `Session idle: ${sessionID}`
-      text = text || `Session ${sessionID} is idle.`
-      kind = 'idle'
-    } else if (event.type === 'session.idle') {
-      subject = `Session idle: ${sessionID}`
-      text = text || `Session ${sessionID} is idle.`
-      kind = 'idle'
-    } else if (event.type === 'session.execution.failed' || event.type === 'session.step.failed') {
-      const error = data.error?.message || data.error || 'unknown error'
-      subject = `Session failed: ${sessionID}`
-      text = `Session ${sessionID} failed: ${error}`
-      kind = 'failure'
-    } else if (isSuccess) {
-      subject = `Session finished: ${sessionID}`
-      text = text || `Session ${sessionID} finished. Use !peek to read the result.`
-      kind = 'success'
-    } else {
+    if (!cfg.remote.watch) return
+    const kind = watchEventKind(event)
+    if (!kind) return
+    if (inFlight.has(sessionID)) {
+      const previous = pendingWatch.get(sessionID)
+      if (!previous || watchKindRank(kind) >= watchKindRank(watchEventKind(previous))) {
+        pendingWatch.set(sessionID, event)
+      }
       return
     }
-    if (!watchersFor(sessionID).length) return
-    if (resultIDs.length) markWatchResult(sessionID, resultIDs)
-    pruneMap(lastWatchNotify)
-    lastWatchNotify.set(sessionID, Date.now())
-    await sendSessionNotice(sessionID, subject, text, kind)
+    await sendWatchNotice(sessionID, event)
   }
 
   /** Drop only the text already mailed, even if streamed deltas were reformatted. */
@@ -800,8 +898,9 @@ export async function createBridge(ctx, cfg, options = {}) {
     const sessionID = String(data.sessionID || '')
     const active = progress.get(sessionID)
     if (!active || String(data.field || 'text') !== 'text') return
-    const created = Number(event.created)
-    if (Number.isFinite(created) && created < active.startedAt) return
+    // Deltas are ephemeral and may be emitted before prompt() resolves. The
+    // per-run buffer is now installed before prompt(), so only the message-ID
+    // guard is needed to reject echoes of the inbound user message.
     const assistantMessageID = String(data.assistantMessageID || '')
     if (assistantMessageID && assistantMessageID === active.userMessageID) return
     const delta = String(data.delta || '')
@@ -831,6 +930,7 @@ export async function createBridge(ctx, cfg, options = {}) {
   }
 
   async function handleEvent(event) {
+    if (retired || controller.signal.aborted) return
     const data = event.data || {}
     switch (event.type) {
       case 'permission.asked': return handlePermissionAsked(data)
@@ -850,11 +950,12 @@ export async function createBridge(ctx, cfg, options = {}) {
 
   function startEvents() {
     if (!ctx.event?.subscribe || typeof ctx.event.subscribe !== 'function') return
-    void (async () => {
+    eventsTask = (async () => {
       for await (const event of ctx.event.subscribe({ types: BRIDGE_WATCH_EVENTS, signal: controller.signal })) {
-        void handleEvent(event).catch((error) => log(`Event ${event.type} failed: ${error.message}`))
+        track(handleEvent(event)).catch((error) => log(`Event ${event.type} failed: ${error.message}`))
       }
-    })().catch((error) => {
+    })()
+    track(eventsTask).catch((error) => {
       if (!controller.signal.aborted) log(`Event subscription stopped: ${error.message}`)
     })
   }
@@ -975,7 +1076,7 @@ export async function createBridge(ctx, cfg, options = {}) {
   }
 
   async function flushOutbox(force = false) {
-    if (flushingOutbox || controller.signal.aborted) return
+    if (flushingOutbox || retired || controller.signal.aborted) return
     flushingOutbox = true
     try {
       pruneOutbox()
@@ -1026,13 +1127,14 @@ export async function createBridge(ctx, cfg, options = {}) {
       outboxTimer = null
     }, { once: true })
     outboxTimer = setInterval(() => {
-      void flushOutbox().catch((error) => log(`Outbox flush failed: ${error.message}`))
+      track(flushOutbox()).catch((error) => log(`Outbox flush failed: ${error.message}`))
     }, OUTBOX_INTERVAL_MS)
     outboxTimer.unref?.()
-    void flushOutbox().catch((error) => log(`Outbox flush failed: ${error.message}`))
+    track(flushOutbox()).catch((error) => log(`Outbox flush failed: ${error.message}`))
   }
 
   async function transmit({ to, text, attachments = [], inReplyTo, subject, headers = [], encrypt = true, sessionID = '' }) {
+    if (retired || controller.signal.aborted) throw new Error('Bridge is stopping')
     const protectedBody = await protect(buildInnerMime({ text, attachments }), to, encrypt)
     const domain = cfg.address.split('@')[1] || 'localhost'
     const messageId = `${Date.now()}.${randomUUID()}@${domain}`
@@ -1821,6 +1923,7 @@ export async function createBridge(ctx, cfg, options = {}) {
   }
 
   async function handle(raw) {
+    if (retired || controller.signal.aborted) return true
     let message
     let promptAccepted = false
     // A completed message clears its retry/quarantine record. Failures keep it
@@ -1952,13 +2055,30 @@ export async function createBridge(ctx, cfg, options = {}) {
         const current = sessionStatus.get(sessionID)
         const wasBusy = inFlight.has(sessionID) || current === 'busy' || current === 'retry'
         inFlight.add(sessionID)
+        const files = message.attachments.map((attachment) => ({
+          uri: attachment.uri,
+          name: attachment.filename,
+          description: attachment.description,
+        }))
+        const promptId = hashId(message.messageId)
+        const finalSubject = withSessionSubject(`Re: Message from ${cfg.displayName}`, sessionID)
+        // Allocate the buffer before prompt(): real delta events can arrive
+        // while prompt() is still awaiting, and those are otherwise lost.
+        const active = {
+          from,
+          sessionID,
+          inReplyTo: message.messageId,
+          // Progressive and final mails share one subject and thread.
+          subject: finalSubject,
+          userMessageID: promptId,
+          sendProgress: cfg.remote.progress !== false,
+          startedAt: Date.now(),
+          lastSentAt: Date.now(),
+          text: '',
+          sentLength: 0,
+        }
+        progress.set(sessionID, active)
         try {
-          const files = message.attachments.map((attachment) => ({
-            uri: attachment.uri,
-            name: attachment.filename,
-            description: attachment.description,
-          }))
-          const promptId = hashId(message.messageId)
           // Only the email body is user input. Routing/sender metadata lives in
           // the structured `metadata` field so it can never be echoed back into
           // the conversation and mistaken for something the contact wrote.
@@ -1981,34 +2101,15 @@ export async function createBridge(ctx, cfg, options = {}) {
           })
           // Once accepted, a later failure must not cause a duplicate prompt.
           promptAccepted = true
-          if (wasBusy) {
-            await sendCommandReply(from, message, sessionID, `Session ${sessionID} is busy; your prompt was queued. !watch ${sessionID} emails you when it finishes.`)
-            return
+          active.userMessageID = promptResult?.id || promptId
+          const queued = wasBusy || promptResult?.delivery === 'queue'
+          if (queued) {
+            await sendCommandReply(from, message, sessionID, `Session ${sessionID} is busy; your prompt was queued. You will receive one answer when it completes.`)
           }
-          const userMessageID = promptResult?.id || promptId
-          const finalSubject = withSessionSubject(`Re: Message from ${cfg.displayName}`, sessionID)
-          // Always buffer streamed text: it is the only copy of leading output
-          // when a run stops at a question before the assistant message commits.
-          // `sendProgress` only controls whether working mail is emitted, not
-          // whether the buffer exists.
-          const active = {
-            from,
-            sessionID,
-            inReplyTo: message.messageId,
-            // Progressive and final mails share one subject and thread.
-            subject: finalSubject,
-            userMessageID,
-            sendProgress: cfg.remote.progress !== false,
-            startedAt: Date.now(),
-            lastSentAt: Date.now(),
-            text: '',
-            sentLength: 0,
-          }
-          progress.set(sessionID, active)
           try {
             await ctx.session.wait({ sessionID })
             const messages = await ctx.session.context({ sessionID })
-            const index = messages.findIndex((entry) => entry.id === userMessageID)
+            const index = messages.findIndex((entry) => entry.id === active.userMessageID)
             const assistantMessages = (index < 0 ? [] : messages.slice(index + 1))
               .filter((entry) => entry.type === 'assistant' && !entry.error)
             const replies = assistantMessages
@@ -2044,6 +2145,9 @@ export async function createBridge(ctx, cfg, options = {}) {
           }
         } finally {
           inFlight.delete(sessionID)
+          pruneMap(sessionStatus)
+          sessionStatus.set(sessionID, 'idle')
+          await flushPendingWatch(sessionID, [from])
         }
       })
       return done()
@@ -2075,27 +2179,51 @@ export async function createBridge(ctx, cfg, options = {}) {
 
   return {
     start() {
-      if (started) return
+      if (started || retired) return
       started = true
       log(`Listening for Autocrypt mail at ${cfg.address} (${cfg.imap.mailbox})`)
       startEvents()
       startOutbox()
-      void imapLoop(cfg, store, handle, controller.signal, log)
+      imapTask = track(imapLoop(cfg, store, handle, controller.signal, log))
+      Promise.resolve(imapTask).catch((error) => {
+        if (!controller.signal.aborted) log(`Mail loop stopped: ${error.message}`)
+      })
       if (cfg.remote.mode === 'autocrypt' && cfg.pinned.contact && !state.data.peers[cfg.pinned.contact]?.keydata) {
         const last = Number(state.data.meta.autocryptBootstrapAt || 0)
         if (!last || Date.now() - last > 24 * 60 * 60 * 1000) {
           state.data.meta.autocryptBootstrapAt = Date.now()
           void state.save()
-          const bootstrap = startAutocryptHandshake(true)
-          void bootstrap.catch((error) => log(`Contact bootstrap failed: ${error.message}`))
+          const bootstrap = track(startAutocryptHandshake(true))
+          Promise.resolve(bootstrap).catch((error) => log(`Contact bootstrap failed: ${error.message}`))
         }
       }
       void getStatus().then(onStatus).catch((error) => log(`Status event failed: ${error.message}`))
     },
-    stop() {
-      controller.abort()
+    async stop() {
+      if (retired) return
       started = false
-      void getStatus().then(onStatus).catch((error) => log(`Status event failed: ${error.message}`))
+      const finalStatus = await getStatus()
+      retired = true
+      controller.abort()
+      if (outboxTimer) clearInterval(outboxTimer)
+      outboxTimer = null
+      for (const timer of watchRechecks.values()) clearTimeout(timer)
+      watchRechecks.clear()
+      pendingWatch.clear()
+      progress.clear()
+      void Promise.resolve(finalStatus).then(onStatus).catch((error) => log(`Status event failed: ${error.message}`))
+      // Abort plus the retired guards stop new work immediately. Give any
+      // already-running task a short bounded chance to settle before the next
+      // bridge generation reads the same persisted state.
+      let deadline
+      try {
+        await Promise.race([
+          Promise.allSettled([...tasks]),
+          new Promise((resolve) => { deadline = setTimeout(resolve, STOP_SETTLE_MS) }),
+        ])
+      } finally {
+        if (deadline) clearTimeout(deadline)
+      }
       log('Stopped')
     },
     // Exposed for tests and for local loopback checks against a real mail server.

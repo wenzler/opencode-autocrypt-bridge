@@ -405,3 +405,100 @@ test('session files outside the project are not attached', async () => {
   assert.match(finalText, /done/)
   assert.doesNotMatch(finalMime, /outside\.txt/)
 })
+
+test('deltas emitted while prompt() is still pending are included in the answer', async () => {
+  const bot = await keyPair('bot@example.org')
+  const contact = await keyPair('contact@example.net')
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-ac-progress-'))
+
+  const h = harness(contact.fingerprint, root)
+  let signalPrompt
+  const promptCalled = new Promise((resolve) => { signalPrompt = resolve })
+  let releasePrompt
+  const promptGate = new Promise((resolve) => { releasePrompt = resolve })
+  h.ctx.session.prompt = async () => {
+    signalPrompt()
+    await promptGate
+    return { id: 'user-message' }
+  }
+
+  const bridge = await createBridge(h.ctx, h.cfg, {
+    identity: bot, sender: h.sender, log: () => {},
+  })
+  const pending = bridge.process(contactMail(contact))
+  await waitFor(promptCalled)
+
+  await bridge.processEvent({
+    type: 'session.text.delta',
+    data: { sessionID: h.session.id, assistantMessageID: 'assistant-1', delta: 'Early text ' },
+  })
+  releasePrompt()
+  await waitFor(h.waitCalled)
+  h.setMessages([
+    { id: 'user-message', type: 'user', content: [{ type: 'text', text: 'go' }] },
+    { id: 'assistant-1', type: 'assistant', content: [{ type: 'text', text: 'Early text and final text' }] },
+  ])
+  h.release()
+  await pending
+
+  assert.equal(h.sent.length, 2, 'early delta produced a progress mail and one final mail')
+  assert.match(await decryptedText(h.sent, 0, bot), /Early text/)
+  const finalText = await decryptedText(h.sent, 1, bot)
+  assert.match(finalText, /final text/)
+  assert.doesNotMatch(finalText, /Early text/)
+})
+
+test('a queued prompt still receives exactly one terminal answer', async () => {
+  const bot = await keyPair('bot@example.org')
+  const contact = await keyPair('contact@example.net')
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-ac-progress-'))
+
+  const h = harness(contact.fingerprint, root)
+  h.ctx.session.prompt = async () => ({ id: 'user-message', delivery: 'queue' })
+  const bridge = await createBridge(h.ctx, h.cfg, {
+    identity: bot, sender: h.sender, log: () => {},
+  })
+
+  const pending = bridge.process(contactMail(contact))
+  await waitFor(h.waitCalled)
+  h.setMessages([
+    { id: 'user-message', type: 'user', content: [{ type: 'text', text: 'go' }] },
+    { id: 'assistant-1', type: 'assistant', content: [{ type: 'text', text: 'Queued answer' }] },
+  ])
+  h.release()
+  await pending
+
+  const headers = h.sent.map((entry) => parseRawHeaders(entry.raw))
+  assert.equal(h.sent.length, 2, 'one acknowledgement and one terminal answer')
+  assert.ok(headers.some((entry) => entry.get('x-opencode-command')), 'queued prompt is acknowledged')
+  const terminalIndex = headers.findIndex((entry) => (
+    !entry.get('x-opencode-command') && !entry.get('x-opencode-notice')
+  ))
+  assert.ok(terminalIndex >= 0)
+  assert.match(await decryptedText(h.sent, terminalIndex, bot), /Queued answer/)
+})
+
+test('stopping mid-run retires the old bridge before it can mail a stale answer', async () => {
+  const bot = await keyPair('bot@example.org')
+  const contact = await keyPair('contact@example.net')
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-ac-progress-'))
+
+  const h = harness(contact.fingerprint, root)
+  const bridge = await createBridge(h.ctx, h.cfg, {
+    identity: bot, sender: h.sender, log: () => {},
+  })
+  const pending = bridge.process(contactMail(contact))
+  await waitFor(h.waitCalled)
+
+  const before = h.sent.length
+  await bridge.stop()
+  h.setMessages([
+    { id: 'user-message', type: 'user', content: [{ type: 'text', text: 'go' }] },
+    { id: 'assistant-1', type: 'assistant', content: [{ type: 'text', text: 'Late answer' }] },
+  ])
+  h.release()
+  await pending
+
+  assert.equal(h.sent.length, before, 'a retired bridge sends no late terminal mail')
+  assert.equal((await bridge.getStatus()).running, false)
+})

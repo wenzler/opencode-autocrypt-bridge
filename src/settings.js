@@ -1,4 +1,4 @@
-import { parseInviteUrl, redactInviteUrl } from './headers.js'
+import { isInviteSecretPair, parseInviteUrl, redactInviteUrl } from './headers.js'
 import { normalizeHost } from './values.js'
 
 /**
@@ -122,7 +122,7 @@ export function settingsView(values = {}) {
 function hasInviteSecret(url) {
   const text = String(url || '')
   const fragment = text.includes('#') ? text.slice(text.indexOf('#') + 1) : text
-  return /(?:^|&)(?:s|i|j)=/i.test(fragment)
+  return fragment.split('&').some(isInviteSecretPair)
 }
 
 /**

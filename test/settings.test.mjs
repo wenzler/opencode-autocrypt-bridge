@@ -69,6 +69,21 @@ test('a redacted invite URL keeps the stored secret; a new secret URL replaces i
   assert.equal(view.imapPassword, '')
 })
 
+test('percent-encoded invite secrets are redacted and preserved like literal ones', () => {
+  const stored = { inviteUrl: `OPENPGP4FPR:${FPR}#a=contact%40example.net&v=3&%73=OLD_AUTH&%69=42` }
+  const redacted = redactInviteUrl(stored.inviteUrl)
+  assert.doesNotMatch(redacted, /OLD_AUTH|42/)
+  assert.deepEqual(applySettingValues(stored, { inviteUrl: redacted }), stored)
+  const updated = applySettingValues(stored, {
+    inviteUrl: stored.inviteUrl.replace('OLD_AUTH', 'NEW_AUTH'),
+  })
+  assert.match(updated.inviteUrl, /NEW_AUTH/)
+  assert.doesNotMatch(updated.inviteUrl, /OLD_AUTH/)
+  const view = settingsView(stored)
+  assert.equal(view.hasSecureJoinAuth, true)
+  assert.equal(view.inviteUrl, redacted)
+})
+
 test('Autocrypt key confirmation does not claim SecureJoin verification', () => {
   const values = {
     address: 'bot@example.org', imapHost: 'imap.example.org', smtpHost: 'smtp.example.org',

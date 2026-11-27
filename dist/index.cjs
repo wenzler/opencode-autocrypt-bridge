@@ -125807,10 +125807,21 @@ function parseInviteUrl(value3) {
     broadcastName: String(params2.get("b") || "")
   };
 }
+var INVITE_SECRET_NAMES = /* @__PURE__ */ new Set(["s", "i", "j"]);
+function isInviteSecretPair(pair) {
+  const name = String(pair || "").split("=", 1)[0];
+  const decoded = new URLSearchParams(`${name}=`).keys().next().value ?? name;
+  return INVITE_SECRET_NAMES.has(String(decoded).split("=")[0].toLowerCase());
+}
 function redactInviteUrl(value3) {
   const text = String(value3 || "").trim().replace(/%23/gi, "#");
   if (!text) return "";
-  const withoutSecretPairs = (part) => part.split("&").filter((pair) => !/^(?:i|j|s)=/i.test(pair)).join("&");
+  const withoutSecretPairs = (part) => part.split("&").filter((pair) => !isInviteSecretPair(pair)).join("&");
+  const openpgp = /^(OPENPGP4FPR:\s*[^#&]+)#([\s\S]*)$/i.exec(text);
+  if (openpgp) {
+    const kept2 = withoutSecretPairs(openpgp[2]);
+    return `${openpgp[1]}#${kept2}`;
+  }
   const hash2 = text.indexOf("#");
   if (hash2 >= 0) {
     const prefix = text.slice(0, hash2 + 1);
@@ -126874,6 +126885,8 @@ var OUTBOX_MAX_DELAY_MS = 15 * 6e4;
 var INBOUND_MAX_ATTEMPTS = 3;
 var INBOUND_RETRY_BASE_MS = 1e4;
 var INBOUND_RETRY_MAX_MS = 5 * 6e4;
+var WATCH_RECHECK_MS = 250;
+var STOP_SETTLE_MS = 500;
 var STATE_RECORD_LIMIT = 200;
 var STATE_RECORD_TTL_MS = 24 * 60 * 60 * 1e3;
 function pruneRecords(collection, limit = STATE_RECORD_LIMIT, ttlMs = STATE_RECORD_TTL_MS) {
@@ -126969,7 +126982,14 @@ async function createBridge(ctx, cfg, options2 = {}) {
     if (!cfg.pinned.keyB64) log2("Pinned key will be learned from the contact's Autocrypt header");
     if (cfg.pinned.requireEncrypted) log2("Pinned mode: plaintext messages are rejected");
   }
+  const controller = new AbortController();
+  let retired = false;
   const state = await loadState(ctx);
+  const persistState = state.save.bind(state);
+  state.save = async () => {
+    if (retired || controller.signal.aborted) return;
+    await persistState();
+  };
   pruneRecords(state.data.pending);
   pruneRecords(state.data.questions);
   pruneRecords(state.data.retries);
@@ -126998,12 +127018,16 @@ async function createBridge(ctx, cfg, options2 = {}) {
   };
   const sender = options2.sender || createSender(cfg);
   const queues = /* @__PURE__ */ new Map();
-  const controller = new AbortController();
   const inFlight = /* @__PURE__ */ new Set();
   const sessionStatus = /* @__PURE__ */ new Map();
   const lastWatchNotify = /* @__PURE__ */ new Map();
   const progress = /* @__PURE__ */ new Map();
   const watchAnnounced = /* @__PURE__ */ new Map();
+  const pendingWatch = /* @__PURE__ */ new Map();
+  const watchRechecks = /* @__PURE__ */ new Map();
+  const tasks = /* @__PURE__ */ new Set();
+  let eventsTask = null;
+  let imapTask = null;
   let outboxTimer = null;
   let flushingOutbox = false;
   const announcedDecisions = /* @__PURE__ */ new Set();
@@ -127014,10 +127038,21 @@ async function createBridge(ctx, cfg, options2 = {}) {
     if (from === cfg.address) return false;
     return cfg.allowedContacts.includes(from);
   };
+  function track2(promise3) {
+    const tracked = Promise.resolve(promise3);
+    tasks.add(tracked);
+    tracked.then(
+      () => tasks.delete(tracked),
+      () => tasks.delete(tracked)
+    );
+    return promise3;
+  }
   const enqueue = (sessionID, task) => {
     const previous = queues.get(sessionID) || Promise.resolve();
     const next = previous.then(task, task);
-    queues.set(sessionID, next.catch((error) => log2(`Session ${sessionID} failed: ${error.message}`)));
+    const settled = next.catch((error) => log2(`Session ${sessionID} failed: ${error.message}`));
+    queues.set(sessionID, settled);
+    track2(settled);
     return next;
   };
   async function setHandshake(patch) {
@@ -127303,13 +127338,18 @@ async function createBridge(ctx, cfg, options2 = {}) {
     }
     return [...contacts];
   }
-  async function sendSessionNotice(sessionID, subject, text, kind = "session-notice") {
-    const recipients = watchersFor(sessionID);
-    for (const to of recipients) {
+  function watchRecipients(sessionID, skipContacts = []) {
+    const skip = new Set(skipContacts.filter(Boolean));
+    return watchersFor(sessionID).filter((contact) => !skip.has(contact));
+  }
+  async function sendSessionNotice(sessionID, subject, text, kind = "session-notice", skipContacts = []) {
+    for (const to of watchRecipients(sessionID, skipContacts)) {
+      const watch = state.data.watches[to] || {};
       await transmit({
         to,
         sessionID,
-        subject,
+        inReplyTo: watch.inReplyTo || void 0,
+        subject: watch.subject || subject,
         headers: [`X-OpenCode-Notice: ${kind}`],
         text
       });
@@ -127324,9 +127364,14 @@ async function createBridge(ctx, cfg, options2 = {}) {
     }
     const announced = watchAnnounced.get(sessionID) || /* @__PURE__ */ new Set();
     const fresh = messages.filter((entry) => entry?.type === "assistant" && !entry.error && !announced.has(entry.id));
-    const text = fresh.flatMap((entry) => (entry.content || []).filter((part) => part?.type === "text").map((part) => part.text)).join("\n\n").trim();
-    const ids = messages.filter((entry) => entry?.type === "assistant").map((entry) => entry.id);
-    return { text, ids };
+    const withText = fresh.map((entry) => ({
+      id: entry.id,
+      text: (entry.content || []).filter((part) => part?.type === "text").map((part) => part.text).join("\n\n").trim()
+    })).filter((entry) => entry.text);
+    return {
+      text: withText.map((entry) => entry.text).join("\n\n").trim(),
+      ids: withText.map((entry) => entry.id)
+    };
   }
   function markWatchResult(sessionID, ids) {
     const announced = watchAnnounced.get(sessionID) || /* @__PURE__ */ new Set();
@@ -127450,57 +127495,107 @@ async function createBridge(ctx, cfg, options2 = {}) {
     pending.repliedAt = Date.now();
     await state.save();
   }
+  function watchEventKind(event) {
+    if (event.type === "session.execution.succeeded") return "success";
+    if (event.type === "session.execution.failed" || event.type === "session.step.failed") return "failure";
+    if (event.type === "session.idle") return "idle";
+    if (event.type === "session.status" && event.data?.status?.type === "idle") return "idle";
+    return "";
+  }
+  function watchKindRank(kind) {
+    if (kind === "failure") return 3;
+    if (kind === "success") return 2;
+    if (kind === "idle") return 1;
+    return 0;
+  }
+  function scheduleWatchRecheck(sessionID, event) {
+    if (retired || controller.signal.aborted || event.__watchRechecked || watchRechecks.has(sessionID)) return;
+    const skipContacts = event.__watchSkipContacts || [];
+    const retry3 = { ...event, __watchRechecked: true, __watchSkipContacts: skipContacts };
+    const timer = setTimeout(() => {
+      watchRechecks.delete(sessionID);
+      void sendWatchNotice(sessionID, retry3, skipContacts).catch((error) => log2(`Watch recheck failed: ${error.message}`));
+    }, WATCH_RECHECK_MS);
+    timer.unref?.();
+    watchRechecks.set(sessionID, timer);
+  }
+  async function sendWatchNotice(sessionID, event, skipContacts = []) {
+    if (retired || controller.signal.aborted) return;
+    const kind = watchEventKind(event);
+    if (!kind) return;
+    const data = event.data || {};
+    let subject = "";
+    let text = "";
+    let noticeKind = "session-notice";
+    let resultIDs = [];
+    if (kind === "idle" || kind === "success") {
+      const result3 = await freshWatchResult(sessionID);
+      resultIDs = result3.ids;
+      text = result3.text;
+      if (!text) {
+        if (watchRecipients(sessionID, skipContacts).length) {
+          scheduleWatchRecheck(sessionID, { ...event, __watchSkipContacts: skipContacts });
+        }
+        return;
+      }
+    }
+    if (kind === "failure") {
+      const last = Number(lastWatchNotify.get(sessionID) || 0);
+      if (Date.now() - last < 3e4) return;
+      const error = data.error?.message || data.error || "unknown error";
+      subject = `Session failed: ${sessionID}`;
+      text = `Session ${sessionID} failed: ${error}`;
+      noticeKind = "failure";
+    } else if (kind === "idle") {
+      subject = `Session idle: ${sessionID}`;
+      noticeKind = "idle";
+    } else {
+      subject = `Session finished: ${sessionID}`;
+      noticeKind = "success";
+    }
+    if (!watchRecipients(sessionID, skipContacts).length) return;
+    if (resultIDs.length) markWatchResult(sessionID, resultIDs);
+    if (kind === "failure") {
+      pruneMap(lastWatchNotify);
+      lastWatchNotify.set(sessionID, Date.now());
+    }
+    await sendSessionNotice(sessionID, subject, text, noticeKind, skipContacts);
+  }
+  async function flushPendingWatch(sessionID, skipContacts = []) {
+    const event = pendingWatch.get(sessionID);
+    if (!event) return;
+    pendingWatch.delete(sessionID);
+    if (retired || controller.signal.aborted) return;
+    try {
+      await sendWatchNotice(sessionID, event, skipContacts);
+    } catch (error) {
+      log2(`Could not send watch notice: ${error.message}`);
+    }
+  }
   async function handleSessionEvent(event) {
     const data = event.data || {};
     const sessionID = String(data.sessionID || "");
-    if (!sessionID) return;
+    if (!sessionID || retired || controller.signal.aborted) return;
     if (event.type === "session.status") {
       pruneMap(sessionStatus);
       sessionStatus.set(sessionID, String(data.status?.type || "idle"));
     } else if (event.type === "session.idle") {
       pruneMap(sessionStatus);
       sessionStatus.set(sessionID, "idle");
+    } else if (event.type === "session.execution.succeeded" || event.type === "session.execution.failed") {
+      sessionStatus.set(sessionID, "idle");
     }
-    if (!cfg.remote.watch || inFlight.has(sessionID)) return;
-    const last = Number(lastWatchNotify.get(sessionID) || 0);
-    if (Date.now() - last < 3e4) return;
-    let subject = "";
-    let text = "";
-    let kind = "session-notice";
-    let resultIDs = [];
-    const isIdle = event.type === "session.idle" || event.type === "session.status" && data.status?.type === "idle";
-    const isSuccess6 = event.type === "session.execution.succeeded";
-    if (isIdle || isSuccess6) {
-      const result3 = await freshWatchResult(sessionID);
-      resultIDs = result3.ids;
-      text = result3.text;
-    }
-    if (event.type === "session.status") {
-      if (data.status?.type !== "idle") return;
-      subject = `Session idle: ${sessionID}`;
-      text = text || `Session ${sessionID} is idle.`;
-      kind = "idle";
-    } else if (event.type === "session.idle") {
-      subject = `Session idle: ${sessionID}`;
-      text = text || `Session ${sessionID} is idle.`;
-      kind = "idle";
-    } else if (event.type === "session.execution.failed" || event.type === "session.step.failed") {
-      const error = data.error?.message || data.error || "unknown error";
-      subject = `Session failed: ${sessionID}`;
-      text = `Session ${sessionID} failed: ${error}`;
-      kind = "failure";
-    } else if (isSuccess6) {
-      subject = `Session finished: ${sessionID}`;
-      text = text || `Session ${sessionID} finished. Use !peek to read the result.`;
-      kind = "success";
-    } else {
+    if (!cfg.remote.watch) return;
+    const kind = watchEventKind(event);
+    if (!kind) return;
+    if (inFlight.has(sessionID)) {
+      const previous = pendingWatch.get(sessionID);
+      if (!previous || watchKindRank(kind) >= watchKindRank(watchEventKind(previous))) {
+        pendingWatch.set(sessionID, event);
+      }
       return;
     }
-    if (!watchersFor(sessionID).length) return;
-    if (resultIDs.length) markWatchResult(sessionID, resultIDs);
-    pruneMap(lastWatchNotify);
-    lastWatchNotify.set(sessionID, Date.now());
-    await sendSessionNotice(sessionID, subject, text, kind);
+    await sendWatchNotice(sessionID, event);
   }
   function unreportedRemainder(finalText, mailedText) {
     const final = String(finalText || "");
@@ -127514,8 +127609,6 @@ async function createBridge(ctx, cfg, options2 = {}) {
     const sessionID = String(data.sessionID || "");
     const active = progress.get(sessionID);
     if (!active || String(data.field || "text") !== "text") return;
-    const created = Number(event.created);
-    if (Number.isFinite(created) && created < active.startedAt) return;
     const assistantMessageID = String(data.assistantMessageID || "");
     if (assistantMessageID && assistantMessageID === active.userMessageID) return;
     const delta = String(data.delta || "");
@@ -127542,6 +127635,7 @@ ${chunk}`
     });
   }
   async function handleEvent(event) {
+    if (retired || controller.signal.aborted) return;
     const data = event.data || {};
     switch (event.type) {
       case "permission.asked":
@@ -127567,11 +127661,12 @@ ${chunk}`
   }
   function startEvents() {
     if (!ctx.event?.subscribe || typeof ctx.event.subscribe !== "function") return;
-    void (async () => {
+    eventsTask = (async () => {
       for await (const event of ctx.event.subscribe({ types: BRIDGE_WATCH_EVENTS, signal: controller.signal })) {
-        void handleEvent(event).catch((error) => log2(`Event ${event.type} failed: ${error.message}`));
+        track2(handleEvent(event)).catch((error) => log2(`Event ${event.type} failed: ${error.message}`));
       }
-    })().catch((error) => {
+    })();
+    track2(eventsTask).catch((error) => {
       if (!controller.signal.aborted) log2(`Event subscription stopped: ${error.message}`);
     });
   }
@@ -127678,7 +127773,7 @@ ${chunk}`
     log2(`Queued reply to ${entry.to} for retry (${entry.lastError})`);
   }
   async function flushOutbox(force = false) {
-    if (flushingOutbox || controller.signal.aborted) return;
+    if (flushingOutbox || retired || controller.signal.aborted) return;
     flushingOutbox = true;
     try {
       pruneOutbox();
@@ -127723,12 +127818,13 @@ ${chunk}`
       outboxTimer = null;
     }, { once: true });
     outboxTimer = setInterval(() => {
-      void flushOutbox().catch((error) => log2(`Outbox flush failed: ${error.message}`));
+      track2(flushOutbox()).catch((error) => log2(`Outbox flush failed: ${error.message}`));
     }, OUTBOX_INTERVAL_MS);
     outboxTimer.unref?.();
-    void flushOutbox().catch((error) => log2(`Outbox flush failed: ${error.message}`));
+    track2(flushOutbox()).catch((error) => log2(`Outbox flush failed: ${error.message}`));
   }
   async function transmit({ to, text, attachments = [], inReplyTo, subject, headers = [], encrypt: encrypt2 = true, sessionID = "" }) {
+    if (retired || controller.signal.aborted) throw new Error("Bridge is stopping");
     const protectedBody = await protect(buildInnerMime({ text, attachments }), to, encrypt2);
     const domain = cfg.address.split("@")[1] || "localhost";
     const messageId = `${Date.now()}.${(0, import_node_crypto5.randomUUID)()}@${domain}`;
@@ -128468,6 +128564,7 @@ Further replies in this subject stay in this session.`;
     return false;
   }
   async function handle(raw) {
+    if (retired || controller.signal.aborted) return true;
     let message;
     let promptAccepted = false;
     const done3 = async (value3 = true) => {
@@ -128592,13 +128689,28 @@ ${command.rest}`;
         const current = sessionStatus.get(sessionID);
         const wasBusy = inFlight.has(sessionID) || current === "busy" || current === "retry";
         inFlight.add(sessionID);
+        const files = message.attachments.map((attachment) => ({
+          uri: attachment.uri,
+          name: attachment.filename,
+          description: attachment.description
+        }));
+        const promptId = hashId(message.messageId);
+        const finalSubject = withSessionSubject(`Re: Message from ${cfg.displayName}`, sessionID);
+        const active = {
+          from,
+          sessionID,
+          inReplyTo: message.messageId,
+          // Progressive and final mails share one subject and thread.
+          subject: finalSubject,
+          userMessageID: promptId,
+          sendProgress: cfg.remote.progress !== false,
+          startedAt: Date.now(),
+          lastSentAt: Date.now(),
+          text: "",
+          sentLength: 0
+        };
+        progress.set(sessionID, active);
         try {
-          const files = message.attachments.map((attachment) => ({
-            uri: attachment.uri,
-            name: attachment.filename,
-            description: attachment.description
-          }));
-          const promptId = hashId(message.messageId);
           const text = command?.rest || message.text || "(message contained no plain text)";
           const promptResult = await ctx.session.prompt({
             sessionID,
@@ -128617,30 +128729,15 @@ ${command.rest}`;
             }
           });
           promptAccepted = true;
-          if (wasBusy) {
-            await sendCommandReply(from, message, sessionID, `Session ${sessionID} is busy; your prompt was queued. !watch ${sessionID} emails you when it finishes.`);
-            return;
+          active.userMessageID = promptResult?.id || promptId;
+          const queued = wasBusy || promptResult?.delivery === "queue";
+          if (queued) {
+            await sendCommandReply(from, message, sessionID, `Session ${sessionID} is busy; your prompt was queued. You will receive one answer when it completes.`);
           }
-          const userMessageID = promptResult?.id || promptId;
-          const finalSubject = withSessionSubject(`Re: Message from ${cfg.displayName}`, sessionID);
-          const active = {
-            from,
-            sessionID,
-            inReplyTo: message.messageId,
-            // Progressive and final mails share one subject and thread.
-            subject: finalSubject,
-            userMessageID,
-            sendProgress: cfg.remote.progress !== false,
-            startedAt: Date.now(),
-            lastSentAt: Date.now(),
-            text: "",
-            sentLength: 0
-          };
-          progress.set(sessionID, active);
           try {
             await ctx.session.wait({ sessionID });
             const messages = await ctx.session.context({ sessionID });
-            const index3 = messages.findIndex((entry) => entry.id === userMessageID);
+            const index3 = messages.findIndex((entry) => entry.id === active.userMessageID);
             const assistantMessages = (index3 < 0 ? [] : messages.slice(index3 + 1)).filter((entry) => entry.type === "assistant" && !entry.error);
             const replies = assistantMessages.flatMap((entry) => entry.content.filter((part) => part.type === "text").map((part) => part.text)).join("\n\n").trim();
             const sentProgress = Boolean(active.sentLength);
@@ -128666,6 +128763,9 @@ ${command.rest}`;
           }
         } finally {
           inFlight.delete(sessionID);
+          pruneMap(sessionStatus);
+          sessionStatus.set(sessionID, "idle");
+          await flushPendingWatch(sessionID, [from]);
         }
       });
       return done3();
@@ -128693,27 +128793,50 @@ ${command.rest}`;
   }
   return {
     start() {
-      if (started) return;
+      if (started || retired) return;
       started = true;
       log2(`Listening for Autocrypt mail at ${cfg.address} (${cfg.imap.mailbox})`);
       startEvents();
       startOutbox();
-      void imapLoop(cfg, store, handle, controller.signal, log2);
+      imapTask = track2(imapLoop(cfg, store, handle, controller.signal, log2));
+      Promise.resolve(imapTask).catch((error) => {
+        if (!controller.signal.aborted) log2(`Mail loop stopped: ${error.message}`);
+      });
       if (cfg.remote.mode === "autocrypt" && cfg.pinned.contact && !state.data.peers[cfg.pinned.contact]?.keydata) {
         const last = Number(state.data.meta.autocryptBootstrapAt || 0);
         if (!last || Date.now() - last > 24 * 60 * 60 * 1e3) {
           state.data.meta.autocryptBootstrapAt = Date.now();
           void state.save();
-          const bootstrap = startAutocryptHandshake(true);
-          void bootstrap.catch((error) => log2(`Contact bootstrap failed: ${error.message}`));
+          const bootstrap = track2(startAutocryptHandshake(true));
+          Promise.resolve(bootstrap).catch((error) => log2(`Contact bootstrap failed: ${error.message}`));
         }
       }
       void getStatus().then(onStatus).catch((error) => log2(`Status event failed: ${error.message}`));
     },
-    stop() {
-      controller.abort();
+    async stop() {
+      if (retired) return;
       started = false;
-      void getStatus().then(onStatus).catch((error) => log2(`Status event failed: ${error.message}`));
+      const finalStatus = await getStatus();
+      retired = true;
+      controller.abort();
+      if (outboxTimer) clearInterval(outboxTimer);
+      outboxTimer = null;
+      for (const timer of watchRechecks.values()) clearTimeout(timer);
+      watchRechecks.clear();
+      pendingWatch.clear();
+      progress.clear();
+      void Promise.resolve(finalStatus).then(onStatus).catch((error) => log2(`Status event failed: ${error.message}`));
+      let deadline;
+      try {
+        await Promise.race([
+          Promise.allSettled([...tasks]),
+          new Promise((resolve3) => {
+            deadline = setTimeout(resolve3, STOP_SETTLE_MS);
+          })
+        ]);
+      } finally {
+        if (deadline) clearTimeout(deadline);
+      }
       log2("Stopped");
     },
     // Exposed for tests and for local loopback checks against a real mail server.
@@ -129030,7 +129153,7 @@ function settingsView(values2 = {}) {
 function hasInviteSecret(url) {
   const text = String(url || "");
   const fragment = text.includes("#") ? text.slice(text.indexOf("#") + 1) : text;
-  return /(?:^|&)(?:s|i|j)=/i.test(fragment);
+  return fragment.split("&").some(isInviteSecretPair);
 }
 function applySettingValues(stored = {}, input = {}) {
   const values2 = { ...stored };
@@ -129360,7 +129483,7 @@ async function setupInstance(ctx, slot) {
   const previousStop = slot.stop;
   slot.token = token;
   slot.stop = null;
-  if (previousStop) previousStop();
+  if (previousStop) await previousStop();
   const runtime = {
     ctx,
     options: ctx.options || {},
@@ -129436,16 +129559,17 @@ async function setupInstance(ctx, slot) {
     if (!current) return statusView({ lastError: "Autocrypt Bridge is not loaded" });
     return current.bridge ? statusView(await current.bridge.getStatus(), current) : unconfiguredStatus(current);
   };
-  const stopBridge = () => {
+  const stopBridge = async () => {
     const current = slot.runtime;
-    current?.bridge?.stop();
+    const bridge = current?.bridge;
     if (current) current.bridge = null;
     if (slot.stop === stopBridge) slot.stop = null;
+    if (bridge) await bridge.stop();
   };
   const restart = async (guarded = false) => {
     const current = slot.runtime;
     if (!current) return currentStatus();
-    stopBridge();
+    await stopBridge();
     current.stored = storedSettings(await current.ctx.storage.get(STORAGE_KEY));
     if (guarded && (slot.token !== token || slot.runtime !== current)) return currentStatus();
     try {
@@ -129457,8 +129581,9 @@ async function setupInstance(ctx, slot) {
         onQuestionAnswer: (answer) => emit("questionAnswer", answer)
       });
       if (guarded && (slot.token !== token || slot.runtime !== current)) {
-        current.bridge.stop();
+        const staleBridge = current.bridge;
         current.bridge = null;
+        if (staleBridge) await staleBridge.stop();
         return currentStatus();
       }
       current.bridge.start();
@@ -129577,7 +129702,7 @@ async function setupInstance(ctx, slot) {
     if (disposed) return;
     disposed = true;
     if (slot.runtime !== runtime || slot.token !== token) return;
-    stopBridge();
+    await stopBridge();
     await tool.dispose();
     await runtime.registration.dispose();
     slot.token = null;
