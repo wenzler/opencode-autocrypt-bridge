@@ -2255,7 +2255,7 @@ export async function createBridge(ctx, cfg, options = {}) {
 
   async function acquireLease() {
     const current = await readLease()
-    if (current && current.owner !== leaseOwner && Date.now() - current.renewedAt < leaseTtlMs) return false
+    if (current && current.owner && current.owner !== leaseOwner && Date.now() - current.renewedAt < leaseTtlMs) return false
     const now = Date.now()
     await ctx.storage.set(LEASE_KEY, {
       owner: leaseOwner,
@@ -2277,7 +2277,12 @@ export async function createBridge(ctx, cfg, options = {}) {
     leaseHeld = false
     try {
       const current = await readLease()
-      if (current?.owner === leaseOwner) await ctx.storage.set(LEASE_KEY, null)
+      // Storage treats null as "no change" on some backends, so write an
+      // explicit released marker that the next starter can claim immediately.
+      if (current?.owner === leaseOwner) {
+        const now = Date.now()
+        await ctx.storage.set(LEASE_KEY, { owner: '', renewedAt: now, releasedAt: now })
+      }
     } catch (error) {
       log(`Could not release mail lease: ${error.message}`)
     }

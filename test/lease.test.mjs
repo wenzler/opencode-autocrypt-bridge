@@ -85,7 +85,7 @@ test('only the bridge holding the shared mail lease runs IMAP', async () => {
   assert.equal(await second.process('unreadable'), false)
 
   await first.stop()
-  assert.equal(values.get('autocrypt.bridge.lease'), null)
+  assert.equal(values.get('autocrypt.bridge.lease').owner, '')
 
   assert.equal(await second.start(), true)
   assert.equal((await second.getStatus()).running, true)

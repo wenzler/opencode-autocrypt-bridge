@@ -128868,7 +128868,7 @@ ${command.rest}`;
   }
   async function acquireLease() {
     const current = await readLease();
-    if (current && current.owner !== leaseOwner && Date.now() - current.renewedAt < leaseTtlMs) return false;
+    if (current && current.owner && current.owner !== leaseOwner && Date.now() - current.renewedAt < leaseTtlMs) return false;
     const now3 = Date.now();
     await ctx.storage.set(LEASE_KEY, {
       owner: leaseOwner,
@@ -128887,7 +128887,10 @@ ${command.rest}`;
     leaseHeld = false;
     try {
       const current = await readLease();
-      if (current?.owner === leaseOwner) await ctx.storage.set(LEASE_KEY, null);
+      if (current?.owner === leaseOwner) {
+        const now3 = Date.now();
+        await ctx.storage.set(LEASE_KEY, { owner: "", renewedAt: now3, releasedAt: now3 });
+      }
     } catch (error) {
       log2(`Could not release mail lease: ${error.message}`);
     }
@@ -129627,7 +129630,7 @@ var BridgeRpc = rpc_exports.define({
 });
 
 // src/index.js
-var PLUGIN_VERSION = "0.5.35";
+var PLUGIN_VERSION = "0.5.36";
 var STORAGE_KEY = "autocrypt.settings";
 var RUNTIME_KEY = Symbol.for("opencode-autocrypt-bridge.runtime");
 function runtimeSlot() {
