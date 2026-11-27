@@ -76,6 +76,21 @@ function cleanRemoteNote(value, maxLength = 2_000) {
 }
 
 const STATE_KEY = 'autocrypt.state'
+// Shared across OpenCode processes. Only the instance holding this lease may
+// run the IMAP loop, so two plugin loads cannot answer the same mail twice.
+const LEASE_KEY = 'autocrypt.bridge.lease'
+const LEASE_TTL_MS = 45_000
+const LEASE_HEARTBEAT_MS = 10_000
+const LEASE_CONFIRM_MS = 250
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+function normalizeLease(value) {
+  if (!value || typeof value !== 'object' || typeof value.owner !== 'string') return null
+  const renewedAt = Number(value.renewedAt)
+  if (!Number.isFinite(renewedAt)) return null
+  return { ...value, renewedAt }
+}
 
 const OUTBOX_LIMIT = 200
 const OUTBOX_BYTES_LIMIT = 20 * 1024 * 1024
@@ -181,6 +196,9 @@ export async function createBridge(ctx, cfg, options = {}) {
   const onQuestionAnswer = options.onQuestionAnswer || (() => {})
   const identity = options.identity || await loadIdentity(ctx, cfg)
   const selfFingerprint = await keyFingerprint(identity.publicB64)
+  const leaseTtlMs = Number(options.leaseTtlMs) || LEASE_TTL_MS
+  const leaseHeartbeatMs = Number(options.leaseHeartbeatMs) || LEASE_HEARTBEAT_MS
+  const leaseConfirmMs = Number(options.leaseConfirmMs) || LEASE_CONFIRM_MS
 
   if (cfg.pinned.contact) {
     if (cfg.pinned.keyB64) {
@@ -198,6 +216,12 @@ export async function createBridge(ctx, cfg, options = {}) {
   const controller = new AbortController()
   // A retired bridge must never overwrite state loaded by its replacement.
   let retired = false
+  const leaseOwner = randomUUID()
+  let leaseAttempted = false
+  let leaseHeld = false
+  let halting = false
+  let leaseTimer = null
+  let startPromise = null
   const state = await loadState(ctx)
   const persistState = state.save.bind(state)
   state.save = async () => {
@@ -410,6 +434,7 @@ export async function createBridge(ctx, cfg, options = {}) {
   }
 
   async function bindSession(sessionID) {
+    assertLeaseOwner()
     const candidate = String(sessionID || '').trim()
     if (!candidate) throw new Error('sessionID is required')
     if (/^(none|off|disable|disabled)$/i.test(candidate)) {
@@ -469,6 +494,7 @@ export async function createBridge(ctx, cfg, options = {}) {
   }
 
   async function createAndBindSession(title, directory, bindDefault = true) {
+    assertLeaseOwner()
     const catalog = await listSessions()
     const args = parseNewSessionArgs(catalog, title, directory || ctx.location.directory)
     if (!args.directory || !await sessionDirectoryExists(catalog, args.directory)) {
@@ -1104,7 +1130,7 @@ export async function createBridge(ctx, cfg, options = {}) {
   }
 
   async function flushOutbox(force = false) {
-    if (flushingOutbox || retired || controller.signal.aborted) return
+    if ((leaseAttempted && !leaseHeld) || flushingOutbox || retired || controller.signal.aborted) return
     flushingOutbox = true
     try {
       pruneOutbox()
@@ -1282,6 +1308,7 @@ export async function createBridge(ctx, cfg, options = {}) {
   }
 
   async function sendFile({ sessionID, filePath, text }) {
+    assertLeaseOwner()
     const to = contactForSession(sessionID)
     if (!to) return { content: 'This session is not linked to an Autocrypt contact' }
     const root = await sessionRoot(sessionID)
@@ -1382,6 +1409,7 @@ export async function createBridge(ctx, cfg, options = {}) {
   }
 
   async function startSecureJoin() {
+    assertLeaseOwner()
     if (cfg.remote.mode !== 'securejoin') {
       throw new Error('SecureJoin is only available in SecureJoin remote mode')
     }
@@ -1418,6 +1446,7 @@ export async function createBridge(ctx, cfg, options = {}) {
 
   /** Abort a pending SecureJoin. Late contact replies are ignored until restarted. */
   async function cancelSecureJoin() {
+    assertLeaseOwner()
     if (cfg.remote.mode !== 'securejoin') {
       throw new Error('Cancel SecureJoin is only available in SecureJoin remote mode')
     }
@@ -1624,6 +1653,7 @@ export async function createBridge(ctx, cfg, options = {}) {
   }
 
   async function startAutocryptHandshake(force = false) {
+    assertLeaseOwner()
     if (!cfg.pinned.contact) throw new Error('Autocrypt handshake requires pinnedContact')
     if (!force && state.data.peers[cfg.pinned.contact]?.keydata) {
       await setHandshake({ phase: 'ready', established: true, lastError: '' })
@@ -1790,6 +1820,7 @@ export async function createBridge(ctx, cfg, options = {}) {
   }
 
   async function confirmQuestionReply({ formID, ok, error = '' }) {
+    assertLeaseOwner()
     const pending = state.data.questions[String(formID || '')]
     if (!pending || pending.completionNotified) return
     if (!ok && (pending.answered || pending.repliedAt)) return
@@ -1951,6 +1982,7 @@ export async function createBridge(ctx, cfg, options = {}) {
   }
 
   async function handle(raw) {
+    if (leaseAttempted && !leaseHeld) return false
     if (retired || controller.signal.aborted) return true
     let message
     let promptAccepted = false
@@ -2189,6 +2221,7 @@ export async function createBridge(ctx, cfg, options = {}) {
     }
   }
   async function rescanInbox() {
+    assertLeaseOwner()
     const rescan = options.rescanMailbox || rescanMailbox
     const result = await rescan(cfg, store, handle, log, controller.signal)
     log(`Rescanned ${result.total} mailbox message(s); handled ${result.processed}`)
@@ -2197,6 +2230,7 @@ export async function createBridge(ctx, cfg, options = {}) {
   }
 
   async function resetContact() {
+    assertLeaseOwner()
     delete state.data.peers[cfg.pinned.contact]
     state.data.handshake = { phase: 'idle', established: false, verified: false, lastError: '' }
     state.data.outbox = []
@@ -2205,54 +2239,163 @@ export async function createBridge(ctx, cfg, options = {}) {
     return getStatus()
   }
 
+  function assertLeaseOwner() {
+    if (leaseAttempted && !leaseHeld) {
+      throw new Error(`Another Autocrypt bridge is already handling ${cfg.imap.mailbox}`)
+    }
+  }
+
+  async function readLease() {
+    try {
+      return normalizeLease(await ctx.storage.get(LEASE_KEY))
+    } catch {
+      return null
+    }
+  }
+
+  async function acquireLease() {
+    const current = await readLease()
+    if (current && current.owner !== leaseOwner && Date.now() - current.renewedAt < leaseTtlMs) return false
+    const now = Date.now()
+    await ctx.storage.set(LEASE_KEY, {
+      owner: leaseOwner,
+      pid: process.pid || 0,
+      address: cfg.address,
+      mailbox: cfg.imap.mailbox,
+      acquiredAt: now,
+      renewedAt: now,
+    })
+    // get/set is not an atomic compare-and-swap. Confirm after a short delay so
+    // two simultaneous starters cannot both believe they own the mailbox.
+    await sleep(leaseConfirmMs)
+    const confirmed = await readLease()
+    return confirmed?.owner === leaseOwner
+  }
+
+  async function releaseLease(force = false) {
+    if (!leaseHeld && !force) return
+    leaseHeld = false
+    try {
+      const current = await readLease()
+      if (current?.owner === leaseOwner) await ctx.storage.set(LEASE_KEY, null)
+    } catch (error) {
+      log(`Could not release mail lease: ${error.message}`)
+    }
+  }
+
+  async function haltBridge({ reason = '', release = true } = {}) {
+    if (retired || halting) return
+    halting = true
+    started = false
+    retired = true
+    if (reason) state.data.handshake.lastError = reason
+    let finalStatus
+    try {
+      finalStatus = await getStatus()
+    } catch (error) {
+      log(`Final status failed: ${error.message}`)
+      finalStatus = { running: false }
+    }
+    controller.abort()
+    const held = leaseHeld
+    leaseHeld = false
+    if (leaseTimer) clearInterval(leaseTimer)
+    leaseTimer = null
+    if (outboxTimer) clearInterval(outboxTimer)
+    outboxTimer = null
+    for (const timer of watchRechecks.values()) clearTimeout(timer)
+    watchRechecks.clear()
+    pendingWatch.clear()
+    progress.clear()
+    void Promise.resolve(finalStatus).then(onStatus).catch((error) => log(`Status event failed: ${error.message}`))
+    // Abort plus the retired guards stop new work immediately. Give any
+    // already-running task a short bounded chance to settle before the next
+    // bridge generation reads the same persisted state or lease.
+    let deadline
+    try {
+      await Promise.race([
+        Promise.allSettled([...tasks]),
+        new Promise((resolve) => { deadline = setTimeout(resolve, STOP_SETTLE_MS) }),
+      ])
+    } finally {
+      if (deadline) clearTimeout(deadline)
+    }
+    if (release && held) await releaseLease(true)
+    log(release ? 'Stopped' : `Stopped: ${reason || 'mail lease lost'}`)
+  }
+
+  async function renewLease() {
+    if (!leaseHeld || retired || controller.signal.aborted) return
+    const current = await readLease()
+    if (!leaseHeld || retired || controller.signal.aborted) return
+    if (!current || current.owner !== leaseOwner) {
+      track(haltBridge({
+        reason: `Another Autocrypt bridge is already handling ${cfg.imap.mailbox}`,
+        release: false,
+      })).catch((error) => log(`Mail lease loss cleanup failed: ${error.message}`))
+      return
+    }
+    current.renewedAt = Date.now()
+    await ctx.storage.set(LEASE_KEY, current)
+  }
+
+  function startLeaseHeartbeat() {
+    if (leaseTimer) return
+    leaseTimer = setInterval(() => {
+      track(renewLease()).catch((error) => log(`Mail lease renewal failed: ${error.message}`))
+    }, leaseHeartbeatMs)
+    leaseTimer.unref?.()
+  }
+
+  async function beginStart() {
+    if (started || retired) return started
+    leaseAttempted = true
+    try {
+      if (!await acquireLease()) {
+        const reason = `Another Autocrypt bridge is already handling ${cfg.imap.mailbox}`
+        state.data.handshake.lastError = reason
+        log(reason)
+        void getStatus().then(onStatus).catch((error) => log(`Status event failed: ${error.message}`))
+        return false
+      }
+    } catch (error) {
+      const reason = `Could not claim mail lease: ${error.message}`
+      state.data.handshake.lastError = reason
+      log(reason)
+      void getStatus().then(onStatus).catch((error) => log(`Status event failed: ${error.message}`))
+      return false
+    }
+    leaseHeld = true
+    started = true
+    startLeaseHeartbeat()
+    log(`Listening for Autocrypt mail at ${cfg.address} (${cfg.imap.mailbox})`)
+    startEvents()
+    startOutbox()
+    imapTask = track(imapLoop(cfg, store, handle, controller.signal, log))
+    Promise.resolve(imapTask).catch((error) => {
+      if (!controller.signal.aborted) log(`Mail loop stopped: ${error.message}`)
+    })
+    if (cfg.remote.mode === 'autocrypt' && cfg.pinned.contact && !state.data.peers[cfg.pinned.contact]?.keydata) {
+      const last = Number(state.data.meta.autocryptBootstrapAt || 0)
+      if (!last || Date.now() - last > 24 * 60 * 60 * 1000) {
+        state.data.meta.autocryptBootstrapAt = Date.now()
+        void state.save()
+        const bootstrap = track(startAutocryptHandshake(true))
+        Promise.resolve(bootstrap).catch((error) => log(`Contact bootstrap failed: ${error.message}`))
+      }
+    }
+    void getStatus().then(onStatus).catch((error) => log(`Status event failed: ${error.message}`))
+    return true
+  }
+
   return {
     start() {
-      if (started || retired) return
-      started = true
-      log(`Listening for Autocrypt mail at ${cfg.address} (${cfg.imap.mailbox})`)
-      startEvents()
-      startOutbox()
-      imapTask = track(imapLoop(cfg, store, handle, controller.signal, log))
-      Promise.resolve(imapTask).catch((error) => {
-        if (!controller.signal.aborted) log(`Mail loop stopped: ${error.message}`)
-      })
-      if (cfg.remote.mode === 'autocrypt' && cfg.pinned.contact && !state.data.peers[cfg.pinned.contact]?.keydata) {
-        const last = Number(state.data.meta.autocryptBootstrapAt || 0)
-        if (!last || Date.now() - last > 24 * 60 * 60 * 1000) {
-          state.data.meta.autocryptBootstrapAt = Date.now()
-          void state.save()
-          const bootstrap = track(startAutocryptHandshake(true))
-          Promise.resolve(bootstrap).catch((error) => log(`Contact bootstrap failed: ${error.message}`))
-        }
-      }
-      void getStatus().then(onStatus).catch((error) => log(`Status event failed: ${error.message}`))
+      if (startPromise) return startPromise
+      startPromise = beginStart().finally(() => { startPromise = null })
+      return startPromise
     },
     async stop() {
-      if (retired) return
-      started = false
-      const finalStatus = await getStatus()
-      retired = true
-      controller.abort()
-      if (outboxTimer) clearInterval(outboxTimer)
-      outboxTimer = null
-      for (const timer of watchRechecks.values()) clearTimeout(timer)
-      watchRechecks.clear()
-      pendingWatch.clear()
-      progress.clear()
-      void Promise.resolve(finalStatus).then(onStatus).catch((error) => log(`Status event failed: ${error.message}`))
-      // Abort plus the retired guards stop new work immediately. Give any
-      // already-running task a short bounded chance to settle before the next
-      // bridge generation reads the same persisted state.
-      let deadline
-      try {
-        await Promise.race([
-          Promise.allSettled([...tasks]),
-          new Promise((resolve) => { deadline = setTimeout(resolve, STOP_SETTLE_MS) }),
-        ])
-      } finally {
-        if (deadline) clearTimeout(deadline)
-      }
-      log('Stopped')
+      await haltBridge()
     },
     // Exposed for tests and for local loopback checks against a real mail server.
     process: handle,

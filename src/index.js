@@ -7,7 +7,7 @@ import { BridgeRpc } from './rpc.js'
 import { formatSessionDirectory } from './session.js'
 import { applySettingValues, settingsView, storedSettings } from './settings.js'
 
-const PLUGIN_VERSION = '0.5.34'
+const PLUGIN_VERSION = '0.5.35'
 const STORAGE_KEY = 'autocrypt.settings'
 const RUNTIME_KEY = Symbol.for('opencode-autocrypt-bridge.runtime')
 
@@ -155,7 +155,13 @@ async function setupInstance(ctx, slot) {
         if (staleBridge) await staleBridge.stop()
         return restart(false)
       }
-      current.bridge.start()
+      await current.bridge.start()
+      if (guarded && (slot.token !== token || slot.runtime !== current)) {
+        const staleBridge = current.bridge
+        current.bridge = null
+        if (staleBridge) await staleBridge.stop()
+        return restart(false)
+      }
       slot.stop = stopBridge
     } catch (error) {
       current.cfg = null

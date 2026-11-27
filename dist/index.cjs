@@ -1261,7 +1261,7 @@ var require_atomic_sleep = __commonJS({
   "node_modules/atomic-sleep/index.js"(exports2, module2) {
     "use strict";
     if (typeof SharedArrayBuffer !== "undefined" && typeof Atomics !== "undefined") {
-      let sleep4 = function(ms) {
+      let sleep5 = function(ms) {
         const valid = ms > 0 && ms < Infinity;
         if (valid === false) {
           if (typeof ms !== "number" && typeof ms !== "bigint") {
@@ -1272,9 +1272,9 @@ var require_atomic_sleep = __commonJS({
         Atomics.wait(nil, 0, 0, Number(ms));
       };
       const nil = new Int32Array(new SharedArrayBuffer(4));
-      module2.exports = sleep4;
+      module2.exports = sleep5;
     } else {
-      let sleep4 = function(ms) {
+      let sleep5 = function(ms) {
         const valid = ms > 0 && ms < Infinity;
         if (valid === false) {
           if (typeof ms !== "number" && typeof ms !== "bigint") {
@@ -1286,7 +1286,7 @@ var require_atomic_sleep = __commonJS({
         while (target > Date.now()) {
         }
       };
-      module2.exports = sleep4;
+      module2.exports = sleep5;
     }
   }
 });
@@ -1299,7 +1299,7 @@ var require_sonic_boom = __commonJS({
     var EventEmitter = require("events");
     var inherits = require("util").inherits;
     var path5 = require("path");
-    var sleep4 = require_atomic_sleep();
+    var sleep5 = require_atomic_sleep();
     var assert = require("assert");
     var BUSY_WRITE_TIMEOUT = 100;
     var kEmptyBuffer = Buffer.allocUnsafe(0);
@@ -1445,7 +1445,7 @@ var require_sonic_boom = __commonJS({
           if ((err2.code === "EAGAIN" || err2.code === "EBUSY") && this.retryEAGAIN(err2, this._writingBuf.length, this._len - this._writingBuf.length)) {
             if (this.sync) {
               try {
-                sleep4(BUSY_WRITE_TIMEOUT);
+                sleep5(BUSY_WRITE_TIMEOUT);
                 this.release(void 0, 0);
               } catch (err3) {
                 this.release(err3);
@@ -1758,7 +1758,7 @@ var require_sonic_boom = __commonJS({
           if (shouldRetry && !this.retryEAGAIN(err2, buf.length, this._len - buf.length)) {
             throw err2;
           }
-          sleep4(BUSY_WRITE_TIMEOUT);
+          sleep5(BUSY_WRITE_TIMEOUT);
         }
       }
       try {
@@ -1795,7 +1795,7 @@ var require_sonic_boom = __commonJS({
           if (shouldRetry && !this.retryEAGAIN(err2, buf.length, this._len - buf.length)) {
             throw err2;
           }
-          sleep4(BUSY_WRITE_TIMEOUT);
+          sleep5(BUSY_WRITE_TIMEOUT);
         }
       }
     }
@@ -2562,7 +2562,7 @@ var require_transport = __commonJS({
     var { createRequire: createRequire2 } = require("module");
     var getCallers = require_caller();
     var { join, isAbsolute, sep } = require("node:path");
-    var sleep4 = require_atomic_sleep();
+    var sleep5 = require_atomic_sleep();
     var onExit3 = require_on_exit_leak_free();
     var ThreadStream = require_thread_stream();
     function setupOnExit(stream) {
@@ -2596,7 +2596,7 @@ var require_transport = __commonJS({
           return;
         }
         stream.flushSync();
-        sleep4(100);
+        sleep5(100);
         stream.end();
       }
       return stream;
@@ -126889,6 +126889,17 @@ function cleanRemoteNote(value3, maxLength = 2e3) {
   return String(value3 || "").replace(/\r\n?/g, "\n").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "").replace(/\n+/g, " ").trim().slice(0, maxLength);
 }
 var STATE_KEY = "autocrypt.state";
+var LEASE_KEY = "autocrypt.bridge.lease";
+var LEASE_TTL_MS = 45e3;
+var LEASE_HEARTBEAT_MS = 1e4;
+var LEASE_CONFIRM_MS = 250;
+var sleep4 = (ms) => new Promise((resolve3) => setTimeout(resolve3, ms));
+function normalizeLease(value3) {
+  if (!value3 || typeof value3 !== "object" || typeof value3.owner !== "string") return null;
+  const renewedAt = Number(value3.renewedAt);
+  if (!Number.isFinite(renewedAt)) return null;
+  return { ...value3, renewedAt };
+}
 var OUTBOX_LIMIT = 200;
 var OUTBOX_BYTES_LIMIT = 20 * 1024 * 1024;
 var OUTBOX_TTL_MS = 24 * 60 * 60 * 1e3;
@@ -126987,6 +126998,9 @@ async function createBridge(ctx, cfg, options2 = {}) {
   });
   const identity2 = options2.identity || await loadIdentity(ctx, cfg);
   const selfFingerprint = await keyFingerprint(identity2.publicB64);
+  const leaseTtlMs = Number(options2.leaseTtlMs) || LEASE_TTL_MS;
+  const leaseHeartbeatMs = Number(options2.leaseHeartbeatMs) || LEASE_HEARTBEAT_MS;
+  const leaseConfirmMs = Number(options2.leaseConfirmMs) || LEASE_CONFIRM_MS;
   if (cfg.pinned.contact) {
     if (cfg.pinned.keyB64) {
       const actual = await validatePublicKey(cfg.pinned.keyB64, cfg.pinned.fingerprint || void 0);
@@ -127001,6 +127015,12 @@ async function createBridge(ctx, cfg, options2 = {}) {
   }
   const controller = new AbortController();
   let retired = false;
+  const leaseOwner = (0, import_node_crypto5.randomUUID)();
+  let leaseAttempted = false;
+  let leaseHeld = false;
+  let halting = false;
+  let leaseTimer = null;
+  let startPromise = null;
   const state = await loadState(ctx);
   const persistState = state.save.bind(state);
   state.save = async () => {
@@ -127179,6 +127199,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
     };
   }
   async function bindSession(sessionID) {
+    assertLeaseOwner();
     const candidate = String(sessionID || "").trim();
     if (!candidate) throw new Error("sessionID is required");
     if (/^(none|off|disable|disabled)$/i.test(candidate)) {
@@ -127235,6 +127256,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
     return getStatus();
   }
   async function createAndBindSession(title, directory, bindDefault = true) {
+    assertLeaseOwner();
     const catalog = await listSessions();
     const args2 = parseNewSessionArgs(catalog, title, directory || ctx.location.directory);
     if (!args2.directory || !await sessionDirectoryExists(catalog, args2.directory)) {
@@ -127806,7 +127828,7 @@ ${chunk}`
     log2(`Queued reply to ${entry.to} for retry (${entry.lastError})`);
   }
   async function flushOutbox(force = false) {
-    if (flushingOutbox || retired || controller.signal.aborted) return;
+    if (leaseAttempted && !leaseHeld || flushingOutbox || retired || controller.signal.aborted) return;
     flushingOutbox = true;
     try {
       pruneOutbox();
@@ -127959,6 +127981,7 @@ ${chunk}`
     await state.save();
   }
   async function sendFile({ sessionID, filePath, text }) {
+    assertLeaseOwner();
     const to = contactForSession(sessionID);
     if (!to) return { content: "This session is not linked to an Autocrypt contact" };
     const root = await sessionRoot(sessionID);
@@ -128045,6 +128068,7 @@ ${chunk}`
     };
   }
   async function startSecureJoin() {
+    assertLeaseOwner();
     if (cfg.remote.mode !== "securejoin") {
       throw new Error("SecureJoin is only available in SecureJoin remote mode");
     }
@@ -128082,6 +128106,7 @@ ${chunk}`
     return getStatus();
   }
   async function cancelSecureJoin() {
+    assertLeaseOwner();
     if (cfg.remote.mode !== "securejoin") {
       throw new Error("Cancel SecureJoin is only available in SecureJoin remote mode");
     }
@@ -128276,6 +128301,7 @@ ${chunk}`
     return true;
   }
   async function startAutocryptHandshake(force = false) {
+    assertLeaseOwner();
     if (!cfg.pinned.contact) throw new Error("Autocrypt handshake requires pinnedContact");
     if (!force && state.data.peers[cfg.pinned.contact]?.keydata) {
       await setHandshake({ phase: "ready", established: true, lastError: "" });
@@ -128431,6 +128457,7 @@ Use: !answer ${pending.code} 1`, "error");
     }
   }
   async function confirmQuestionReply({ formID, ok, error = "" }) {
+    assertLeaseOwner();
     const pending = state.data.questions[String(formID || "")];
     if (!pending || pending.completionNotified) return;
     if (!ok && (pending.answered || pending.repliedAt)) return;
@@ -128597,6 +128624,7 @@ Further replies in this subject stay in this session.`;
     return false;
   }
   async function handle(raw) {
+    if (leaseAttempted && !leaseHeld) return false;
     if (retired || controller.signal.aborted) return true;
     let message;
     let promptAccepted = false;
@@ -128810,6 +128838,7 @@ ${command.rest}`;
     }
   }
   async function rescanInbox() {
+    assertLeaseOwner();
     const rescan = options2.rescanMailbox || rescanMailbox;
     const result3 = await rescan(cfg, store, handle, log2, controller.signal);
     log2(`Rescanned ${result3.total} mailbox message(s); handled ${result3.processed}`);
@@ -128817,6 +128846,7 @@ ${command.rest}`;
     return getStatus();
   }
   async function resetContact() {
+    assertLeaseOwner();
     delete state.data.peers[cfg.pinned.contact];
     state.data.handshake = { phase: "idle", established: false, verified: false, lastError: "" };
     state.data.outbox = [];
@@ -128824,53 +128854,154 @@ ${command.rest}`;
     onStatus(await getStatus());
     return getStatus();
   }
+  function assertLeaseOwner() {
+    if (leaseAttempted && !leaseHeld) {
+      throw new Error(`Another Autocrypt bridge is already handling ${cfg.imap.mailbox}`);
+    }
+  }
+  async function readLease() {
+    try {
+      return normalizeLease(await ctx.storage.get(LEASE_KEY));
+    } catch {
+      return null;
+    }
+  }
+  async function acquireLease() {
+    const current = await readLease();
+    if (current && current.owner !== leaseOwner && Date.now() - current.renewedAt < leaseTtlMs) return false;
+    const now3 = Date.now();
+    await ctx.storage.set(LEASE_KEY, {
+      owner: leaseOwner,
+      pid: process.pid || 0,
+      address: cfg.address,
+      mailbox: cfg.imap.mailbox,
+      acquiredAt: now3,
+      renewedAt: now3
+    });
+    await sleep4(leaseConfirmMs);
+    const confirmed = await readLease();
+    return confirmed?.owner === leaseOwner;
+  }
+  async function releaseLease(force = false) {
+    if (!leaseHeld && !force) return;
+    leaseHeld = false;
+    try {
+      const current = await readLease();
+      if (current?.owner === leaseOwner) await ctx.storage.set(LEASE_KEY, null);
+    } catch (error) {
+      log2(`Could not release mail lease: ${error.message}`);
+    }
+  }
+  async function haltBridge({ reason = "", release = true } = {}) {
+    if (retired || halting) return;
+    halting = true;
+    started = false;
+    retired = true;
+    if (reason) state.data.handshake.lastError = reason;
+    let finalStatus;
+    try {
+      finalStatus = await getStatus();
+    } catch (error) {
+      log2(`Final status failed: ${error.message}`);
+      finalStatus = { running: false };
+    }
+    controller.abort();
+    const held = leaseHeld;
+    leaseHeld = false;
+    if (leaseTimer) clearInterval(leaseTimer);
+    leaseTimer = null;
+    if (outboxTimer) clearInterval(outboxTimer);
+    outboxTimer = null;
+    for (const timer of watchRechecks.values()) clearTimeout(timer);
+    watchRechecks.clear();
+    pendingWatch.clear();
+    progress.clear();
+    void Promise.resolve(finalStatus).then(onStatus).catch((error) => log2(`Status event failed: ${error.message}`));
+    let deadline;
+    try {
+      await Promise.race([
+        Promise.allSettled([...tasks]),
+        new Promise((resolve3) => {
+          deadline = setTimeout(resolve3, STOP_SETTLE_MS);
+        })
+      ]);
+    } finally {
+      if (deadline) clearTimeout(deadline);
+    }
+    if (release && held) await releaseLease(true);
+    log2(release ? "Stopped" : `Stopped: ${reason || "mail lease lost"}`);
+  }
+  async function renewLease() {
+    if (!leaseHeld || retired || controller.signal.aborted) return;
+    const current = await readLease();
+    if (!leaseHeld || retired || controller.signal.aborted) return;
+    if (!current || current.owner !== leaseOwner) {
+      track2(haltBridge({
+        reason: `Another Autocrypt bridge is already handling ${cfg.imap.mailbox}`,
+        release: false
+      })).catch((error) => log2(`Mail lease loss cleanup failed: ${error.message}`));
+      return;
+    }
+    current.renewedAt = Date.now();
+    await ctx.storage.set(LEASE_KEY, current);
+  }
+  function startLeaseHeartbeat() {
+    if (leaseTimer) return;
+    leaseTimer = setInterval(() => {
+      track2(renewLease()).catch((error) => log2(`Mail lease renewal failed: ${error.message}`));
+    }, leaseHeartbeatMs);
+    leaseTimer.unref?.();
+  }
+  async function beginStart() {
+    if (started || retired) return started;
+    leaseAttempted = true;
+    try {
+      if (!await acquireLease()) {
+        const reason = `Another Autocrypt bridge is already handling ${cfg.imap.mailbox}`;
+        state.data.handshake.lastError = reason;
+        log2(reason);
+        void getStatus().then(onStatus).catch((error) => log2(`Status event failed: ${error.message}`));
+        return false;
+      }
+    } catch (error) {
+      const reason = `Could not claim mail lease: ${error.message}`;
+      state.data.handshake.lastError = reason;
+      log2(reason);
+      void getStatus().then(onStatus).catch((error2) => log2(`Status event failed: ${error2.message}`));
+      return false;
+    }
+    leaseHeld = true;
+    started = true;
+    startLeaseHeartbeat();
+    log2(`Listening for Autocrypt mail at ${cfg.address} (${cfg.imap.mailbox})`);
+    startEvents();
+    startOutbox();
+    imapTask = track2(imapLoop(cfg, store, handle, controller.signal, log2));
+    Promise.resolve(imapTask).catch((error) => {
+      if (!controller.signal.aborted) log2(`Mail loop stopped: ${error.message}`);
+    });
+    if (cfg.remote.mode === "autocrypt" && cfg.pinned.contact && !state.data.peers[cfg.pinned.contact]?.keydata) {
+      const last = Number(state.data.meta.autocryptBootstrapAt || 0);
+      if (!last || Date.now() - last > 24 * 60 * 60 * 1e3) {
+        state.data.meta.autocryptBootstrapAt = Date.now();
+        void state.save();
+        const bootstrap = track2(startAutocryptHandshake(true));
+        Promise.resolve(bootstrap).catch((error) => log2(`Contact bootstrap failed: ${error.message}`));
+      }
+    }
+    void getStatus().then(onStatus).catch((error) => log2(`Status event failed: ${error.message}`));
+    return true;
+  }
   return {
     start() {
-      if (started || retired) return;
-      started = true;
-      log2(`Listening for Autocrypt mail at ${cfg.address} (${cfg.imap.mailbox})`);
-      startEvents();
-      startOutbox();
-      imapTask = track2(imapLoop(cfg, store, handle, controller.signal, log2));
-      Promise.resolve(imapTask).catch((error) => {
-        if (!controller.signal.aborted) log2(`Mail loop stopped: ${error.message}`);
+      if (startPromise) return startPromise;
+      startPromise = beginStart().finally(() => {
+        startPromise = null;
       });
-      if (cfg.remote.mode === "autocrypt" && cfg.pinned.contact && !state.data.peers[cfg.pinned.contact]?.keydata) {
-        const last = Number(state.data.meta.autocryptBootstrapAt || 0);
-        if (!last || Date.now() - last > 24 * 60 * 60 * 1e3) {
-          state.data.meta.autocryptBootstrapAt = Date.now();
-          void state.save();
-          const bootstrap = track2(startAutocryptHandshake(true));
-          Promise.resolve(bootstrap).catch((error) => log2(`Contact bootstrap failed: ${error.message}`));
-        }
-      }
-      void getStatus().then(onStatus).catch((error) => log2(`Status event failed: ${error.message}`));
+      return startPromise;
     },
     async stop() {
-      if (retired) return;
-      started = false;
-      const finalStatus = await getStatus();
-      retired = true;
-      controller.abort();
-      if (outboxTimer) clearInterval(outboxTimer);
-      outboxTimer = null;
-      for (const timer of watchRechecks.values()) clearTimeout(timer);
-      watchRechecks.clear();
-      pendingWatch.clear();
-      progress.clear();
-      void Promise.resolve(finalStatus).then(onStatus).catch((error) => log2(`Status event failed: ${error.message}`));
-      let deadline;
-      try {
-        await Promise.race([
-          Promise.allSettled([...tasks]),
-          new Promise((resolve3) => {
-            deadline = setTimeout(resolve3, STOP_SETTLE_MS);
-          })
-        ]);
-      } finally {
-        if (deadline) clearTimeout(deadline);
-      }
-      log2("Stopped");
+      await haltBridge();
     },
     // Exposed for tests and for local loopback checks against a real mail server.
     process: handle,
@@ -129496,7 +129627,7 @@ var BridgeRpc = rpc_exports.define({
 });
 
 // src/index.js
-var PLUGIN_VERSION = "0.5.34";
+var PLUGIN_VERSION = "0.5.35";
 var STORAGE_KEY = "autocrypt.settings";
 var RUNTIME_KEY = Symbol.for("opencode-autocrypt-bridge.runtime");
 function runtimeSlot() {
@@ -129622,7 +129753,13 @@ async function setupInstance(ctx, slot) {
         if (staleBridge) await staleBridge.stop();
         return restart(false);
       }
-      current.bridge.start();
+      await current.bridge.start();
+      if (guarded && (slot.token !== token || slot.runtime !== current)) {
+        const staleBridge = current.bridge;
+        current.bridge = null;
+        if (staleBridge) await staleBridge.stop();
+        return restart(false);
+      }
       slot.stop = stopBridge;
     } catch (error) {
       current.cfg = null;
