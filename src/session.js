@@ -138,6 +138,8 @@ export function formatSessionDirectory(catalog, boundSessionID = '', emailDisabl
   lines.push('  !new <title> in <project> create a session in a listed project')
   lines.push('  !default                  return this thread to the email-bound session')
   lines.push('  !status                   show the current bridge binding')
+  lines.push('  !watch [session-id]       email result, failure and decision notices')
+  lines.push('  !unwatch                  stop those notices')
   lines.push('  !help                     full remote-control command list')
   return lines.join('\n')
 }

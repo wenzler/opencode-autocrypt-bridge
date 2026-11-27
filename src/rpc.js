@@ -269,6 +269,10 @@ export const BridgeRpc = Rpc.define({
       input: emptyInput,
       output: statusOutput,
     },
+    cancelSecureJoin: {
+      input: emptyInput,
+      output: statusOutput,
+    },
     startHandshake: {
       input: emptyInput,
       output: statusOutput,

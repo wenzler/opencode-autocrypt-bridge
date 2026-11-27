@@ -2,7 +2,7 @@ import { createSignal, onCleanup, onMount } from "solid-js"
 import { Command, Plugin, SettingsPage, Slot } from "@opencode/plugin/gui"
 import { QuestionBridge } from "./question-ipc"
 import { BridgeRpc } from "./rpc.js"
-import { setupMarkdown, setupReadiness } from "./setup.js"
+import { secureJoinProgress, setupMarkdown, setupReadiness } from "./setup.js"
 
 export default Plugin.define({
   setup(ctx) {
@@ -170,19 +170,31 @@ export default Plugin.define({
         return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
       }
 
+      // A test only counts for the exact values shown in the form. Editing any
+      // mail field invalidates it and re-locks the rest of setup.
+      const mailTestKey = () => JSON.stringify([
+        "address", "imapHost", "imapPort", "imapSecurity", "imapUser", "imapPassword", "imapMailbox",
+        "smtpHost", "smtpPort", "smtpSecurity", "smtpUser", "smtpPassword",
+        "verifyCertificate", "pollIntervalMs",
+      ].map((key) => [key, value(key)]))
+      const mailTestCurrent = () => Boolean(mailTest()?.ok && mailTest()?.key === mailTestKey())
       const readiness = () => setupReadiness(settings(), status(), {
         mailTestAvailable: true,
-        mailTestOk: Boolean(mailTest()?.ok),
+        mailTestOk: mailTestCurrent(),
       })
       const setupText = () => setupMarkdown(readiness())
+      const setupBlocked = () => !readiness().steps.find((step) => step.id === "mail")?.done
+      const join = () => secureJoinProgress(status() || {})
+      const joinCancellable = () => join().pending || join().failed
 
       const testMail = async () => {
+        const key = mailTestKey()
         setBusy(true)
         setMessage("")
         try {
           const result = await rpc().testMailAccount(settingsPayload())
           const ok = Boolean(result.imap && result.smtp)
-          setMailTest({ ...result, ok })
+          setMailTest({ ...result, ok, key })
           const detail = result.errors?.length ? ` — ${result.errors.join("; ")}` : ""
           setMessage(`${ok ? "IMAP and SMTP login succeeded" : "Mail account check failed"}${detail}`)
           ctx.toast.show({
@@ -192,7 +204,7 @@ export default Plugin.define({
           })
         } catch (error) {
           const text = error?.message || String(error)
-          setMailTest(null)
+          setMailTest({ ok: false, errors: [text], key })
           setMessage(text)
           ctx.toast.show({ title: "Mail account check failed", description: text, variant: "error" })
         } finally {
@@ -264,6 +276,7 @@ export default Plugin.define({
       }
 
       const bindSession = () => run("Session switched", () => rpc().bindSession({ sessionID: sessionID().trim() }))
+      const cancelJoin = () => run("SecureJoin cancelled", () => rpc().cancelSecureJoin({}))
 
       const fillFromInvite = async () => {
         setBusy(true)
@@ -369,7 +382,38 @@ export default Plugin.define({
           description="Drive OpenCode from an OpenPGP-capable email client over IMAP/SMTP, gated by one pinned contact and fingerprint."
           actions={<ui.Button onClick={() => void reload()} disabled={busy()}>Refresh</ui.Button>}
         >
-          <ui.SettingsSection title="Setup guide" description="Do these in order. The checklist is based on the values in this form and the live bridge status.">
+          <ui.SettingsSection
+            title="Setup guide"
+            description="Start here. Fill the mail account fields, test them, then set up the pinned contact. Everything outside the mail account stays locked until the test passes with the current values."
+          >
+            <ui.SettingsRow
+              title="Start here"
+              description={
+                <ui.Markdown
+                  text={"1. Fill **Bot address**, IMAP and SMTP below.\n2. Click **Test IMAP + SMTP**.\n3. Only then paste the invite / fill the pinned contact and SecureJoin fields.\n4. Click **Save & restart**, then **Start SecureJoin**.\n\nChanging any mail field invalidates the test and locks setup again."}
+                />
+              }
+            />
+            {mode() === "securejoin" ? (
+              <ui.SettingsRow
+                title="SecureJoin connection"
+                description={
+                  <>
+                    {join().pending ? <ui.Loader size="small" /> : null}
+                    <ui.Markdown text={join().markdown} />
+                  </>
+                }
+              >
+                <ui.Button
+                  size="small"
+                  variant="danger"
+                  disabled={busy() || !joinCancellable()}
+                  onClick={() => void cancelJoin()}
+                >
+                  Cancel
+                </ui.Button>
+              </ui.SettingsRow>
+            ) : null}
             <ui.SettingsRow title="Readiness" description={<ui.Markdown text={setupText()} />} />
           </ui.SettingsSection>
 
@@ -437,6 +481,7 @@ export default Plugin.define({
             <ui.SettingsRow id="remoteMode" title="Remote type" description="SecureJoin joins a QR invite supplied by the pinned contact (Delta Chat or any compatible client). Autocrypt is the legacy key-discovery mode.">
               <ui.Select
                 label="Remote type"
+                disabled={setupBlocked()}
                 value={mode()}
                 onChange={(v) => setField("remoteMode", v)}
                 options={[
@@ -446,19 +491,19 @@ export default Plugin.define({
               />
             </ui.SettingsRow>
             <ui.SettingsRow id="inviteUrl" title="Contact invite URL / invite fields" description="Paste the QR URL from the pinned contact. It fills the pin and SecureJoin fields locally; s= is kept locally as the handshake auth code. Display hides the secret and nothing is fetched.">
-              <ui.TextInput label="Contact invite URL" value={value("inviteUrl")} onInput={(v) => setField("inviteUrl", v)} placeholder="OPENPGP4FPR:FPR#a=you%40example.org&n=Name&s=AUTH&v=3" />
+              <ui.TextInput label="Contact invite URL" disabled={setupBlocked()} value={value("inviteUrl")} onInput={(v) => setField("inviteUrl", v)} placeholder="OPENPGP4FPR:FPR#a=you%40example.org&n=Name&s=AUTH&v=3" />
             </ui.SettingsRow>
             <ui.SettingsRow title="Fill fields from invite">
-              <ui.Button size="small" disabled={busy() || !value("inviteUrl").trim()} onClick={() => void fillFromInvite()}>Fill SecureJoin fields</ui.Button>
+              <ui.Button size="small" disabled={busy() || setupBlocked() || !value("inviteUrl").trim()} onClick={() => void fillFromInvite()}>Fill SecureJoin fields</ui.Button>
             </ui.SettingsRow>
             <ui.SettingsRow id="pinnedContact" title="Pinned contact" description="Required. Only this address may drive OpenCode.">
-              <ui.TextInput label="Pinned contact" value={value("pinnedContact")} onInput={(v) => setField("pinnedContact", v)} placeholder="you@example.org" />
+              <ui.TextInput label="Pinned contact" disabled={setupBlocked()} value={value("pinnedContact")} onInput={(v) => setField("pinnedContact", v)} placeholder="you@example.org" />
             </ui.SettingsRow>
             <ui.SettingsRow id="pinnedFingerprint" title="Pinned fingerprint" description="Required for both modes. The contact's OpenPGP fingerprint. An invite-style link fills this and the pinned address locally.">
-              <ui.TextInput label="Pinned fingerprint" value={value("pinnedFingerprint")} onInput={(v) => setField("pinnedFingerprint", v)} placeholder="669AE77C…" />
+              <ui.TextInput label="Pinned fingerprint" disabled={setupBlocked()} value={value("pinnedFingerprint")} onInput={(v) => setField("pinnedFingerprint", v)} placeholder="669AE77C…" />
             </ui.SettingsRow>
             <ui.SettingsRow id="pinnedContactKey" title="Pinned public key (optional)" description={settings().hasPinnedContactKey ? "A key is saved; leave blank to keep it. It must match the fingerprint." : "Bootstrap key; otherwise learned during setup."}>
-              <ui.TextInput label="Pinned public key" type="password" value="" onInput={(v) => setField("pinnedContactKey", v)} placeholder={settings().hasPinnedContactKey ? "Saved" : "Armored key or base64 keydata"} />
+              <ui.TextInput label="Pinned public key" type="password" disabled={setupBlocked()} value="" onInput={(v) => setField("pinnedContactKey", v)} placeholder={settings().hasPinnedContactKey ? "Saved" : "Armored key or base64 keydata"} />
             </ui.SettingsRow>
           </ui.SettingsSection>
 
@@ -467,22 +512,29 @@ export default Plugin.define({
               <ui.SettingsRow title="Join the contact's invite" description={readiness().canStartSecureJoin
                 ? "Ready. This bridge never creates a QR; it joins the invite supplied by the pinned contact."
                 : `Not ready: ${readiness().next.hint || readiness().next.label}.`}>
-                <ui.Button size="small" disabled={busy() || !readiness().canStartSecureJoin} onClick={() => void run("SecureJoin started", () => rpc().startSecureJoin({}))}>Start SecureJoin</ui.Button>
+                <ui.Button
+                  size="small"
+                  busy={busy() || join().pending}
+                  disabled={setupBlocked() || !readiness().canStartSecureJoin}
+                  onClick={() => void run("SecureJoin started", () => rpc().startSecureJoin({}))}
+                >
+                  Start SecureJoin
+                </ui.Button>
               </ui.SettingsRow>
               <ui.SettingsRow id="secureJoinAuth" title="SecureJoin auth code (s=)" description={settings().hasSecureJoinAuth ? "An auth code is saved; leave blank to keep it. Paste a new s= value to replace it." : "Required. The s= auth code from the contact's invite URL."}>
-                <ui.TextInput label="SecureJoin auth code" type="password" value="" onInput={(v) => setField("secureJoinAuth", v)} placeholder={settings().hasSecureJoinAuth ? "Saved" : "URL-safe auth code"} />
+                <ui.TextInput label="SecureJoin auth code" type="password" disabled={setupBlocked()} value="" onInput={(v) => setField("secureJoinAuth", v)} placeholder={settings().hasSecureJoinAuth ? "Saved" : "URL-safe auth code"} />
               </ui.SettingsRow>
               <ui.SettingsRow id="secureJoinName" title="Invite display name (n=)" description="Optional local copy of the name shown in the contact's invite.">
-                <ui.TextInput label="Invite display name" value={value("secureJoinName")} onInput={(v) => setField("secureJoinName", v)} />
+                <ui.TextInput label="Invite display name" disabled={setupBlocked()} value={value("secureJoinName")} onInput={(v) => setField("secureJoinName", v)} />
               </ui.SettingsRow>
               <ui.SettingsRow id="secureJoinVersion" title="SecureJoin version (v=)" description="Only contact SecureJoin v3 is supported.">
-                <ui.TextInput label="SecureJoin version" value={value("secureJoinVersion") || "3"} onInput={(v) => setField("secureJoinVersion", v)} />
+                <ui.TextInput label="SecureJoin version" disabled={setupBlocked()} value={value("secureJoinVersion") || "3"} onInput={(v) => setField("secureJoinVersion", v)} />
               </ui.SettingsRow>
               <ui.SettingsRow id="secureJoinRelays" title="Relay addresses (r=)" description="Optional local copy of invite relay addresses. The bridge still contacts only the pinned address.">
-                <ui.TextInput label="Relay addresses" value={value("secureJoinRelays")} onInput={(v) => setField("secureJoinRelays", v)} />
+                <ui.TextInput label="Relay addresses" disabled={setupBlocked()} value={value("secureJoinRelays")} onInput={(v) => setField("secureJoinRelays", v)} />
               </ui.SettingsRow>
               <ui.SettingsRow id="secureJoinInviteNumber" title="Legacy invite number (i=/j=)" description="Optional local copy only. v3 uses the auth code above; legacy invite numbers are not used as v3 secrets.">
-                <ui.TextInput label="Legacy invite number" value={value("secureJoinInviteNumber")} onInput={(v) => setField("secureJoinInviteNumber", v)} />
+                <ui.TextInput label="Legacy invite number" disabled={setupBlocked()} value={value("secureJoinInviteNumber")} onInput={(v) => setField("secureJoinInviteNumber", v)} />
               </ui.SettingsRow>
             </ui.SettingsSection>
           ) : (
@@ -490,79 +542,86 @@ export default Plugin.define({
               <ui.SettingsRow title="Autocrypt request" description={readiness().canStartHandshake
                 ? "Ready. Sends a plaintext hello with this bridge’s Autocrypt header."
                 : `Not ready: ${readiness().next.hint || readiness().next.label}.`}>
-                <ui.Button size="small" disabled={busy() || !readiness().canStartHandshake} onClick={() => void run("Autocrypt request sent", () => rpc().startHandshake({}))}>Send Autocrypt request</ui.Button>
+                <ui.Button
+                  size="small"
+                  busy={busy() || String(status()?.handshake || "") === "awaiting-reply"}
+                  disabled={setupBlocked() || !readiness().canStartHandshake}
+                  onClick={() => void run("Autocrypt request sent", () => rpc().startHandshake({}))}
+                >
+                  Send Autocrypt request
+                </ui.Button>
               </ui.SettingsRow>
               <ui.SettingsRow id="requireEncrypted" title="Reject plaintext inbound mail" description="When on, only encrypted prompts from the pinned contact are accepted. Replies stay OpenPGP-encrypted whenever the pinned key is known.">
-                <ui.Switch label="Reject plaintext inbound mail" hideLabel checked={checked("requireEncrypted")} onChange={(v) => setField("requireEncrypted", v)} />
+                <ui.Switch label="Reject plaintext inbound mail" hideLabel disabled={setupBlocked()} checked={checked("requireEncrypted")} onChange={(v) => setField("requireEncrypted", v)} />
               </ui.SettingsRow>
             </ui.SettingsSection>
           )}
 
           <ui.SettingsSection title="Mailbox tools">
             <ui.SettingsRow title="Rescan existing mail" description="Reads mail already in the mailbox, including replies received before the bridge started. Duplicate prompts are ignored.">
-              <ui.Button size="small" disabled={busy()} onClick={() => void run("Inbox rescanned", () => rpc().rescanInbox({}))}>Rescan inbox</ui.Button>
+              <ui.Button size="small" disabled={busy() || setupBlocked()} onClick={() => void run("Inbox rescanned", () => rpc().rescanInbox({}))}>Rescan inbox</ui.Button>
             </ui.SettingsRow>
             <ui.SettingsRow id="deleteAfterRead" title="Delete mail after processing" description="When on, each message is expunged from the IMAP server after the bridge handles it successfully. Failed or oversized messages stay in the mailbox.">
-              <ui.Switch label="Delete mail after processing" hideLabel checked={checked("deleteAfterRead")} onChange={(v) => setField("deleteAfterRead", v)} />
+              <ui.Switch label="Delete mail after processing" hideLabel disabled={setupBlocked()} checked={checked("deleteAfterRead")} onChange={(v) => setField("deleteAfterRead", v)} />
             </ui.SettingsRow>
             <ui.SettingsRow title="Reset learned key" description={readiness().canResetContact
               ? "Clears the learned key and handshake state. Required when changing the pinned contact."
               : "Nothing learned yet. Save & restart first, then reset when changing the pinned contact."}>
-              <ui.Button size="small" variant="danger" disabled={busy() || !readiness().canResetContact} onClick={() => void run("Contact reset", () => rpc().resetContact({}))}>Reset contact</ui.Button>
+              <ui.Button size="small" variant="danger" disabled={busy() || setupBlocked() || !readiness().canResetContact} onClick={() => void run("Contact reset", () => rpc().resetContact({}))}>Reset contact</ui.Button>
             </ui.SettingsRow>
           </ui.SettingsSection>
 
           <ui.SettingsSection title="Key and transport">
             <ui.SettingsRow title="Generate key" description="Generate an Ed25519/Cv25519 key on first run if none is imported.">
-              <ui.Switch label="Generate key" hideLabel checked={checked("generateKey")} onChange={(v) => setField("generateKey", v)} />
+              <ui.Switch label="Generate key" hideLabel disabled={setupBlocked()} checked={checked("generateKey")} onChange={(v) => setField("generateKey", v)} />
             </ui.SettingsRow>
             <ui.SettingsRow title="prefer-encrypt=mutual">
-              <ui.Switch label="Prefer mutual encryption" hideLabel checked={checked("preferEncryptMutual")} onChange={(v) => setField("preferEncryptMutual", v)} />
+              <ui.Switch label="Prefer mutual encryption" hideLabel disabled={setupBlocked()} checked={checked("preferEncryptMutual")} onChange={(v) => setField("preferEncryptMutual", v)} />
             </ui.SettingsRow>
             <ui.SettingsRow title="Verify TLS certificates">
-              <ui.Switch label="Verify TLS certificates" hideLabel checked={checked("verifyCertificate")} onChange={(v) => setField("verifyCertificate", v)} />
+              <ui.Switch label="Verify TLS certificates" hideLabel disabled={setupBlocked()} checked={checked("verifyCertificate")} onChange={(v) => setField("verifyCertificate", v)} />
             </ui.SettingsRow>
             <ui.SettingsRow title="Poll interval (ms)">
-              <ui.TextInput label="Poll interval" value={String(value("pollIntervalMs") || 30000)} onInput={(v) => setField("pollIntervalMs", Number(v))} />
+              <ui.TextInput label="Poll interval" disabled={setupBlocked()} value={String(value("pollIntervalMs") || 30000)} onInput={(v) => setField("pollIntervalMs", Number(v))} />
             </ui.SettingsRow>
             <ui.SettingsRow title="Imported private key" description={settings().hasPrivateKey ? "A private key is saved; leave blank to keep it." : undefined}>
-              <ui.TextInput label="Imported private key" type="password" value="" onInput={(v) => setField("privateKeyArmored", v)} placeholder={settings().hasPrivateKey ? "Saved" : "Armored private key"} />
+              <ui.TextInput label="Imported private key" type="password" disabled={setupBlocked()} value="" onInput={(v) => setField("privateKeyArmored", v)} placeholder={settings().hasPrivateKey ? "Saved" : "Armored private key"} />
             </ui.SettingsRow>
             <ui.SettingsRow title="Key passphrase" description={settings().hasKeyPassphrase ? "A passphrase is saved; leave blank to keep it." : undefined}>
-              <ui.TextInput label="Key passphrase" type="password" value="" onInput={(v) => setField("keyPassphrase", v)} placeholder={settings().hasKeyPassphrase ? "Saved" : "Optional"} />
+              <ui.TextInput label="Key passphrase" type="password" disabled={setupBlocked()} value="" onInput={(v) => setField("keyPassphrase", v)} placeholder={settings().hasKeyPassphrase ? "Saved" : "Optional"} />
             </ui.SettingsRow>
           </ui.SettingsSection>
 
           <ui.SettingsSection title="Remote controls" description="All commands arrive as encrypted mail from the pinned contact. No shell or arbitrary remote command execution is added.">
             <ui.SettingsRow title="Permission decisions by email" description="Allow !approve and !deny for low- and medium-risk OpenCode permission requests.">
-              <ui.Switch label="Permission decisions by email" hideLabel checked={checked("emailDecisions")} onChange={(v) => setField("emailDecisions", v)} />
+              <ui.Switch label="Permission decisions by email" hideLabel disabled={setupBlocked()} checked={checked("emailDecisions")} onChange={(v) => setField("emailDecisions", v)} />
             </ui.SettingsRow>
             <ui.SettingsRow title="High-risk decisions by email" description="DANGER: also allow email approval of shell-like actions and file access outside the session project. Off by default.">
-              <ui.Switch label="High-risk decisions by email" hideLabel checked={checked("emailHighRiskDecisions")} onChange={(v) => setField("emailHighRiskDecisions", v)} />
+              <ui.Switch label="High-risk decisions by email" hideLabel disabled={setupBlocked()} checked={checked("emailHighRiskDecisions")} onChange={(v) => setField("emailHighRiskDecisions", v)} />
             </ui.SettingsRow>
             <ui.SettingsRow title="Multiple-choice answers by email" description="Allow !answer to complete OpenCode question forms from the phone. Requires OpenCode Desktop to be running.">
-              <ui.Switch label="Multiple-choice answers by email" hideLabel checked={checked("emailQuestions")} onChange={(v) => setField("emailQuestions", v)} />
+              <ui.Switch label="Multiple-choice answers by email" hideLabel disabled={setupBlocked()} checked={checked("emailQuestions")} onChange={(v) => setField("emailQuestions", v)} />
             </ui.SettingsRow>
             <ui.SettingsRow title="Session output by email" description="Allow !peek to read recent assistant output.">
-              <ui.Switch label="Session output by email" hideLabel checked={checked("emailPeek")} onChange={(v) => setField("emailPeek", v)} />
+              <ui.Switch label="Session output by email" hideLabel disabled={setupBlocked()} checked={checked("emailPeek")} onChange={(v) => setField("emailPeek", v)} />
             </ui.SettingsRow>
             <ui.SettingsRow title="Terminal tail by email" description="Allow !tail to read the session terminal tail.">
-              <ui.Switch label="Terminal tail by email" hideLabel checked={checked("emailTail")} onChange={(v) => setField("emailTail", v)} />
+              <ui.Switch label="Terminal tail by email" hideLabel disabled={setupBlocked()} checked={checked("emailTail")} onChange={(v) => setField("emailTail", v)} />
             </ui.SettingsRow>
             <ui.SettingsRow title="Send project files by email" description="Allow !send to attach a file from the session project directory. Paths outside that project are refused.">
-              <ui.Switch label="Send project files by email" hideLabel checked={checked("emailSendFiles")} onChange={(v) => setField("emailSendFiles", v)} />
+              <ui.Switch label="Send project files by email" hideLabel disabled={setupBlocked()} checked={checked("emailSendFiles")} onChange={(v) => setField("emailSendFiles", v)} />
             </ui.SettingsRow>
             <ui.SettingsRow title="Session watch subscriptions" description="Allow !watch and !unwatch to email completion, failure and idle notices for a session.">
-              <ui.Switch label="Session watch subscriptions" hideLabel checked={checked("emailWatch")} onChange={(v) => setField("emailWatch", v)} />
+              <ui.Switch label="Session watch subscriptions" hideLabel disabled={setupBlocked()} checked={checked("emailWatch")} onChange={(v) => setField("emailWatch", v)} />
             </ui.SettingsRow>
             <ui.SettingsRow title="Read receipts" description="Request RFC 8098 read receipts for bridge mail and reply with an encrypted receipt when the pinned contact asks for one.">
-              <ui.Switch label="Read receipts" hideLabel checked={checked("emailReadReceipts")} onChange={(v) => setField("emailReadReceipts", v)} />
+              <ui.Switch label="Read receipts" hideLabel disabled={setupBlocked()} checked={checked("emailReadReceipts")} onChange={(v) => setField("emailReadReceipts", v)} />
             </ui.SettingsRow>
             <ui.SettingsRow title="Progressive replies" description="Send throttled working updates while OpenCode is still running. The final mail contains only the text not already mailed.">
-              <ui.Switch label="Progressive replies" hideLabel checked={checked("emailProgress")} onChange={(v) => setField("emailProgress", v)} />
+              <ui.Switch label="Progressive replies" hideLabel disabled={setupBlocked()} checked={checked("emailProgress")} onChange={(v) => setField("emailProgress", v)} />
             </ui.SettingsRow>
             <ui.SettingsRow title="Progress interval (ms)" description="Minimum gap between progressive mails. Default 20000 (about 180 mails/hour).">
-              <ui.TextInput label="Progress interval" value={String(value("emailProgressIntervalMs") || 20000)} onInput={(v) => setField("emailProgressIntervalMs", Number(v))} />
+              <ui.TextInput label="Progress interval" disabled={setupBlocked()} value={String(value("emailProgressIntervalMs") || 20000)} onInput={(v) => setField("emailProgressIntervalMs", Number(v))} />
             </ui.SettingsRow>
             <ui.SettingsRow
               title="Command reference"
@@ -598,9 +657,9 @@ export default Plugin.define({
                   value={sessionID() || (sessions()?.emailDisabled ? "none" : undefined)}
                   onChange={(value) => setSessionID(value)}
                   placeholder="Choose a session or None"
-                  disabled={busy()}
+                  disabled={busy() || setupBlocked()}
                 />
-                <ui.Button size="small" disabled={busy() || !sessionID().trim()} onClick={() => void bindSession()}>Switch session</ui.Button>
+                <ui.Button size="small" disabled={busy() || setupBlocked() || !sessionID().trim()} onClick={() => void bindSession()}>Switch session</ui.Button>
               </div>
             </ui.SettingsRow>
           </ui.SettingsSection>
@@ -616,7 +675,7 @@ export default Plugin.define({
               }
             />
             <ui.SettingsRow title="Apply changes">
-              <ui.Button variant="contrast" busy={busy()} onClick={() => void save()}>Save & restart</ui.Button>
+              <ui.Button variant="contrast" busy={busy()} disabled={setupBlocked()} onClick={() => void save()}>Save & restart</ui.Button>
             </ui.SettingsRow>
           </ui.SettingsSection>
         </ui.SettingsLayout>

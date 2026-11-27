@@ -1047,6 +1047,31 @@ export async function createBridge(ctx, cfg, options = {}) {
     return getStatus()
   }
 
+  /** Abort a pending SecureJoin. Late contact replies are ignored until restarted. */
+  async function cancelSecureJoin() {
+    if (cfg.remote.mode !== 'securejoin') {
+      throw new Error('Cancel SecureJoin is only available in SecureJoin remote mode')
+    }
+    const previous = state.data.handshake.secureJoin || {}
+    delete state.data.peers[cfg.pinned.contact]
+    state.data.handshake = {
+      phase: 'idle',
+      established: false,
+      verified: false,
+      lastError: '',
+      secureJoin: {
+        ...previous,
+        status: 'cancelled',
+        verified: false,
+        cancelledAt: Date.now(),
+      },
+    }
+    await state.save()
+    log(`SecureJoin cancelled for ${cfg.pinned.contact || 'unknown contact'}`)
+    onStatus(await getStatus())
+    return getStatus()
+  }
+
   async function sendSecureJoinRequestPubkey(to, auth) {
     // Bob's v3 request is symmetric and deliberately unsigned: Alice proves
     // herself by returning a signed pubkey encrypted with the same secret.
@@ -1124,6 +1149,7 @@ export async function createBridge(ctx, cfg, options = {}) {
 
   /** Bob side of SecureJoin v3. Returns true when the raw message was consumed. */
   async function handleSecureJoinPubkey(raw) {
+    if (state.data.handshake.secureJoin?.cancelledAt) return false
     const invite = pendingSecureJoin()
     if (!invite) return false
     const status = String(state.data.handshake.secureJoin?.status || '')
@@ -1183,6 +1209,7 @@ export async function createBridge(ctx, cfg, options = {}) {
   }
 
   async function handleSecureJoinContactConfirm(from, message) {
+    if (state.data.handshake.secureJoin?.cancelledAt) return false
     const invite = pendingSecureJoin()
     if (!invite || message.secureJoin?.step !== 'vc-contact-confirm') return false
     if (!message.encrypted || !message.signatureVerified) {
@@ -1214,6 +1241,12 @@ export async function createBridge(ctx, cfg, options = {}) {
     await state.save()
     await setHandshake({ phase: 'verified', established: true, verified: true, lastError: '' })
     log(`SecureJoin verified ${from} with fingerprint ${cfg.pinned.fingerprint}`)
+    try {
+      const sessionID = await sessionFor(from)
+      await maybeSendWelcome(from, message, sessionID)
+    } catch (error) {
+      log(`Could not send welcome mail: ${error.message}`)
+    }
     return true
   }
 
@@ -1747,6 +1780,7 @@ export async function createBridge(ctx, cfg, options = {}) {
     confirmQuestionReply,
     getStatus,
     startSecureJoin,
+    cancelSecureJoin,
     async startHandshake() {
       if (cfg.remote.mode !== 'autocrypt') {
         throw new Error('Autocrypt request is only available in Autocrypt remote mode')

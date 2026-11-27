@@ -80,4 +80,6 @@ test('session directory is readable from an encrypted mail client', () => {
   assert.match(text, /ses_main.*Main project.*\[email-bound\]/)
   assert.match(text, /!use <session-id>/)
   assert.match(text, /!new <title> in <project>/)
+  assert.match(text, /!watch \[session-id\]/)
+  assert.match(text, /!unwatch/)
 })

@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import * as openpgp from 'openpgp'
+import { simpleParser } from 'mailparser'
 import { createBridge } from '../src/bridge.js'
 import {
   decryptMessage,
@@ -258,7 +259,15 @@ test('SecureJoin joins the contact invite, verifies the pin and then rejects pla
   ].join('\r\n'))
   await h.bridge.process(plaintext)
   assert.deepEqual(h.prompted, [])
-  assert.equal(h.sent.length, 2)
+  assert.equal(h.sent.length, 3, 'verification sends a one-time welcome mail')
+  const welcome = await decryptMessage(
+    extractArmored(Buffer.from(h.sent[2].raw)),
+    { privateKey: contact.privateKey },
+    h.bot.publicB64,
+  )
+  const welcomeText = String((await simpleParser(welcome.data)).text || '')
+  assert.match(welcomeText, /Key confirmed for contact@example\.net/)
+  assert.match(welcomeText, /!sessions/)
 })
 
 test('all SecureJoin fields can be entered manually without an invite URL', async () => {
@@ -292,6 +301,30 @@ test('SecureJoin ignores messages before verification and rejects the wrong key 
   ]))
   assert.equal(h.sent.length, 1)
   assert.equal((await h.bridge.getStatus()).verified, false)
+})
+
+test('cancelling SecureJoin ignores late replies until it is restarted', async () => {
+  const contact = await keyPair('contact@example.net')
+  const h = await makeBridge(contact, { inviteUrl: inviteFor(contact) })
+  const secret = secretFor(contact.fingerprint)
+
+  await h.bridge.startSecureJoin()
+  assert.equal(h.sent.length, 1)
+  const cancelled = await h.bridge.cancelSecureJoin()
+  assert.equal(cancelled.secureJoin.status, 'cancelled')
+  assert.equal(cancelled.verified, false)
+  assert.equal(h.sent.length, 1, 'cancelling does not send mail')
+
+  await h.bridge.process(await buildSymmetricHandshake(h.cfg, contact, AUTH, secret, [
+    'Secure-Join: vc-pubkey',
+    `Secure-Join-Auth: ${AUTH}`,
+    `Autocrypt: ${autocryptHeader('contact@example.net', contact.publicB64, true)}`,
+  ]))
+  assert.equal(h.sent.length, 1, 'a late vc-pubkey is ignored after cancel')
+
+  const restarted = await h.bridge.startSecureJoin()
+  assert.equal(restarted.secureJoin.status, 'request-sent')
+  assert.equal(h.sent.length, 2)
 })
 
 test('Autocrypt mode keeps the legacy request and does not expose SecureJoin', async () => {

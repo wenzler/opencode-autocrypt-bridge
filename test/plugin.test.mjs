@@ -112,6 +112,7 @@ test('GUI defaults to key generation and stores hostnames without URL schemes', 
   assert.equal(typeof handlers.rescanInbox, 'function')
   assert.equal(typeof handlers.testMailAccount, 'function')
   assert.equal(typeof handlers.resetContact, 'function')
+  assert.equal(typeof handlers.cancelSecureJoin, 'function')
   assert.equal(typeof handlers.reportQuestionReply, 'function')
 
   await handlers.updateSettings({

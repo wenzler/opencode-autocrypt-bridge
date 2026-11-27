@@ -10,7 +10,7 @@ Design rules:
 - **Invites come from the contact:** the bridge never generates a QR. A pasted invite URL (or manually entered fields) supplies the inviter's fingerprint/address/name and the `s=` auth code. The auth code is kept only in local settings and used solely for the IMAP/SMTP handshake; no URL is fetched.
 - **No website calls:** the plugin never fetches the domain in an invite URL. All traffic is IMAP/SMTP to the configured mail host.
 - **Session-aware email:** every outbound subject carries `[session:ses_…]`. Delta Chat keeps that subject on replies, so the bridge returns to the same OpenCode session even across projects. Threading headers and explicit email commands are also supported.
-- **Guided setup:** the GUI shows a readiness checklist, verifies IMAP/SMTP login separately, and disables SecureJoin actions until the prerequisites are applied.
+- **Guided setup:** the GUI starts with a numbered instruction, verifies IMAP/SMTP login separately, locks every other control until those exact mail values pass the test, and shows cancelable SecureJoin wire progress. Editing any mail field invalidates the test and re-locks setup.
 - **Optional mailbox cleanup:** with **Delete mail after processing** enabled, the bridge expunges each message from IMAP only after handling it successfully. Failures and oversized messages stay in the mailbox.
 - **No remote shell:** encrypted email can answer OpenCode permission requests, answer native multiple-choice question forms, read session output, send project files, and subscribe to session notices. It never exposes arbitrary shell execution.
 - **Ported transport:** IMAP IDLE/checkpoint and SMTP sending patterns are adapted from the MIT-licensed [`opencode-email-sync`](https://github.com/Sponn/opencode-email-sync).
@@ -63,11 +63,11 @@ Choose **Remote type** in the GUI first. Pinning is common to both modes. In Sec
 
 The **Setup guide** section is the intended path, especially when changing the pinned contact:
 
-1. Fill the mail account fields and click **Test IMAP + SMTP**. This checks login only; it sends nothing.
+1. Fill the mail account fields and click **Test IMAP + SMTP**. This checks login only; it sends nothing. Until it succeeds with the current values, every other control in Settings is locked.
 2. Paste the invite URL and click **Fill SecureJoin fields**, or enter the pinned address, fingerprint and auth code manually.
 3. Click **Save & restart**. SecureJoin/handshake actions stay disabled until the live bridge uses these exact pinned values.
 4. If a different contact was pinned before, click **Reset contact** to clear the old learned key and handshake state.
-5. Click **Start SecureJoin** (or **Send Autocrypt request** in legacy mode). Then wait for the contact's reply. **Rescan inbox** picks up replies delayed by greylisting.
+5. Click **Start SecureJoin** (or **Send Autocrypt request** in legacy mode). A spinner and checklist show `vc-request-pubkey` sent, `vc-pubkey` received, `vc-request-with-auth` sent, and `vc-contact-confirm` received. **Cancel** aborts a pending join and ignores late replies until you start again. **Rescan inbox** picks up replies delayed by greylisting.
 
 ### SecureJoin (contact invite, default)
 
@@ -75,7 +75,7 @@ The **Setup guide** section is the intended path, especially when changing the p
 2. Choose **Start SecureJoin**. The bridge sends a symmetrically encrypted `vc-request-pubkey` to **only the pinned address**, using `securejoin/<pinned fingerprint>/<auth code>`.
 3. The invite issuer replies with a signed, symmetrically encrypted `vc-pubkey`. The bridge accepts its key only when that signature and fingerprint match `pinnedFingerprint`.
 4. The bridge sends a signed, encrypted `vc-request-with-auth` containing the invite auth code and the bridge's own fingerprint.
-5. The issuer sends a signed, encrypted `vc-contact-confirm`. The bridge marks the contact verified. While an auth code is configured and the handshake is pending, no normal mail drives OpenCode; after verification, plaintext is ignored.
+5. The issuer sends a signed, encrypted `vc-contact-confirm`. The bridge marks the contact verified and immediately sends one encrypted welcome mail with the live command list. While an auth code is configured and the handshake is pending, no normal mail drives OpenCode; after verification, plaintext is ignored.
 
 The auth code is stored locally and hidden in the GUI. It is never sent outside the encrypted handshake. Group and broadcast invites are rejected; this bridge is a one-to-one remote control, not a group member.
 
@@ -159,7 +159,7 @@ OPENPGP4FPR:FPR#v=3&s=AUTHCODE&a=you%40example.org&n=Bot+contact
 
 **Settings → Autocrypt Bridge** provides:
 
-- **Setup guide**: live checklist, with the next missing step first and action buttons disabled until prerequisites are met;
+- **Setup guide**: a numbered **Start here** instruction, live checklist, mail-test-gated controls, cancelable SecureJoin wire progress, and the next missing step first;
 - bot address, display name;
 - IMAP/SMTP hostname (no `https://` or path), port, security, login, and passwords, plus **Test IMAP + SMTP**;
 - **Remote type**: SecureJoin (Delta Chat) or Autocrypt; setup controls are grouped by mode;

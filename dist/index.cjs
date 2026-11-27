@@ -126763,6 +126763,8 @@ function formatSessionDirectory(catalog, boundSessionID = "", emailDisabled = fa
   lines.push("  !new <title> in <project> create a session in a listed project");
   lines.push("  !default                  return this thread to the email-bound session");
   lines.push("  !status                   show the current bridge binding");
+  lines.push("  !watch [session-id]       email result, failure and decision notices");
+  lines.push("  !unwatch                  stop those notices");
   lines.push("  !help                     full remote-control command list");
   return lines.join("\n");
 }
@@ -127685,6 +127687,29 @@ ${chunk}`
     onStatus(await getStatus());
     return getStatus();
   }
+  async function cancelSecureJoin() {
+    if (cfg.remote.mode !== "securejoin") {
+      throw new Error("Cancel SecureJoin is only available in SecureJoin remote mode");
+    }
+    const previous = state.data.handshake.secureJoin || {};
+    delete state.data.peers[cfg.pinned.contact];
+    state.data.handshake = {
+      phase: "idle",
+      established: false,
+      verified: false,
+      lastError: "",
+      secureJoin: {
+        ...previous,
+        status: "cancelled",
+        verified: false,
+        cancelledAt: Date.now()
+      }
+    };
+    await state.save();
+    log2(`SecureJoin cancelled for ${cfg.pinned.contact || "unknown contact"}`);
+    onStatus(await getStatus());
+    return getStatus();
+  }
   async function sendSecureJoinRequestPubkey(to, auth) {
     const inner = buildInnerMime({
       text: "Secure-Join",
@@ -127757,6 +127782,7 @@ ${chunk}`
     log2(`Sent SecureJoin vc-request-with-auth to ${to}`);
   }
   async function handleSecureJoinPubkey(raw) {
+    if (state.data.handshake.secureJoin?.cancelledAt) return false;
     const invite = pendingSecureJoin();
     if (!invite) return false;
     const status = String(state.data.handshake.secureJoin?.status || "");
@@ -127813,6 +127839,7 @@ ${chunk}`
     return true;
   }
   async function handleSecureJoinContactConfirm(from, message) {
+    if (state.data.handshake.secureJoin?.cancelledAt) return false;
     const invite = pendingSecureJoin();
     if (!invite || message.secureJoin?.step !== "vc-contact-confirm") return false;
     if (!message.encrypted || !message.signatureVerified) {
@@ -127844,6 +127871,12 @@ ${chunk}`
     await state.save();
     await setHandshake({ phase: "verified", established: true, verified: true, lastError: "" });
     log2(`SecureJoin verified ${from} with fingerprint ${cfg.pinned.fingerprint}`);
+    try {
+      const sessionID = await sessionFor(from);
+      await maybeSendWelcome(from, message, sessionID);
+    } catch (error) {
+      log2(`Could not send welcome mail: ${error.message}`);
+    }
     return true;
   }
   async function startAutocryptHandshake(force = false) {
@@ -128360,6 +128393,7 @@ ${command.rest}`;
     confirmQuestionReply,
     getStatus,
     startSecureJoin,
+    cancelSecureJoin,
     async startHandshake() {
       if (cfg.remote.mode !== "autocrypt") {
         throw new Error("Autocrypt request is only available in Autocrypt remote mode");
@@ -128807,6 +128841,10 @@ var BridgeRpc = rpc_exports.define({
       input: emptyInput,
       output: statusOutput
     },
+    cancelSecureJoin: {
+      input: emptyInput,
+      output: statusOutput
+    },
     startHandshake: {
       input: emptyInput,
       output: statusOutput
@@ -128871,7 +128909,7 @@ var BridgeRpc = rpc_exports.define({
 });
 
 // src/index.js
-var PLUGIN_VERSION = "0.5.23";
+var PLUGIN_VERSION = "0.5.24";
 var SETTING_KEYS = [
   "address",
   "displayName",
@@ -129175,6 +129213,10 @@ async function setupInstance(ctx, slot) {
     startSecureJoin: async () => {
       if (!slot.runtime?.bridge) throw new Error("Autocrypt Bridge is not configured");
       return slot.runtime.bridge.startSecureJoin();
+    },
+    cancelSecureJoin: async () => {
+      if (!slot.runtime?.bridge) throw new Error("Autocrypt Bridge is not configured");
+      return slot.runtime.bridge.cancelSecureJoin();
     },
     startHandshake: async () => {
       if (!slot.runtime?.bridge) throw new Error("Autocrypt Bridge is not configured");

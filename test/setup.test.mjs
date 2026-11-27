@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { setupMarkdown, setupReadiness } from '../src/setup.js'
+import { secureJoinProgress, setupMarkdown, setupReadiness } from '../src/setup.js'
 
 const FPR = '669AE77C1D829C65258FC4F8F220CFCAEAA9A4CE'
 
@@ -74,6 +74,27 @@ test('autocrypt mode does not require an invite auth code', () => {
   assert.equal(ready.steps.some((step) => step.id === 'auth'), false)
   assert.equal(ready.canStartHandshake, true)
   assert.equal(ready.canStartSecureJoin, false)
+})
+
+test('SecureJoin progress shows each wire step and pending state', () => {
+  const sent = secureJoinProgress({ secureJoin: { status: 'request-sent', address: 'contact@example.net' } })
+  assert.equal(sent.pending, true)
+  assert.match(sent.markdown, /\[x\] Sent `vc-request-pubkey` to contact@example\.net/)
+  assert.match(sent.markdown, /\[ \] Received signed `vc-pubkey`/)
+
+  const auth = secureJoinProgress({ secureJoin: { status: 'auth-sent' } })
+  assert.equal(auth.pending, true)
+  assert.match(auth.markdown, /\[x\] Received signed `vc-pubkey`/)
+  assert.match(auth.markdown, /\[x\] Sent encrypted `vc-request-with-auth`/)
+
+  const done = secureJoinProgress({ secureJoin: { status: 'verified' } })
+  assert.equal(done.verified, true)
+  assert.equal(done.pending, false)
+  assert.match(done.markdown, /\[x\] Received `vc-contact-confirm` — verified/)
+
+  const cancelled = secureJoinProgress({ secureJoin: { status: 'cancelled' } })
+  assert.equal(cancelled.cancelled, true)
+  assert.match(cancelled.markdown, /Cancelled/)
 })
 
 test('a failed mail test blocks the handshake', () => {

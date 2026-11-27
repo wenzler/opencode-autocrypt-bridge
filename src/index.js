@@ -6,7 +6,7 @@ import { testMailAccount as testMailAccountTransport } from './mail.js'
 import { BridgeRpc } from './rpc.js'
 import { formatSessionDirectory } from './session.js'
 
-const PLUGIN_VERSION = '0.5.23'
+const PLUGIN_VERSION = '0.5.24'
 const SETTING_KEYS = [
   'address', 'displayName', 'imapHost', 'imapPort', 'imapSecurity', 'imapUser', 'imapPassword', 'imapMailbox',
   'smtpHost', 'smtpPort', 'smtpSecurity', 'smtpUser', 'smtpPassword', 'pinnedContact',
@@ -310,6 +310,10 @@ async function setupInstance(ctx, slot) {
     startSecureJoin: async () => {
       if (!slot.runtime?.bridge) throw new Error('Autocrypt Bridge is not configured')
       return slot.runtime.bridge.startSecureJoin()
+    },
+    cancelSecureJoin: async () => {
+      if (!slot.runtime?.bridge) throw new Error('Autocrypt Bridge is not configured')
+      return slot.runtime.bridge.cancelSecureJoin()
     },
     startHandshake: async () => {
       if (!slot.runtime?.bridge) throw new Error('Autocrypt Bridge is not configured')

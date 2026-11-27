@@ -104,6 +104,40 @@ export function setupReadiness(settings = {}, status = {}, extra = {}) {
   }
 }
 
+/**
+ * Human-readable SecureJoin wire progress derived from bridge status events.
+ * The GUI uses this to show sent/received steps instead of a silent button.
+ */
+export function secureJoinProgress(status = {}) {
+  const join = status?.secureJoin || {}
+  const step = String(join.status || 'idle')
+  const reached = {
+    request: ['request-sent', 'pubkey-received', 'auth-sent', 'verified'].includes(step),
+    pubkey: ['pubkey-received', 'auth-sent', 'verified'].includes(step),
+    auth: ['auth-sent', 'verified'].includes(step),
+    confirmed: step === 'verified',
+  }
+  const pending = ['request-sent', 'pubkey-received', 'auth-sent'].includes(step)
+  const lines = [
+    `- [${reached.request ? 'x' : ' '}] Sent \`vc-request-pubkey\` to ${join.address || status?.pinnedContact || 'the pinned contact'}`,
+    `- [${reached.pubkey ? 'x' : ' '}] Received signed \`vc-pubkey\` with the pinned fingerprint`,
+    `- [${reached.auth ? 'x' : ' '}] Sent encrypted \`vc-request-with-auth\``,
+    `- [${reached.confirmed ? 'x' : ' '}] Received \`vc-contact-confirm\` — verified`,
+  ]
+  if (step === 'error') lines.push('', `**Failed:** ${status?.lastError || 'SecureJoin error'}`)
+  if (step === 'cancelled') lines.push('', 'Cancelled. Nothing else will be accepted until you start again.')
+  if (pending) lines.push('', 'Waiting for the contact. Keep both mail clients open; greylisting can delay a reply.')
+  return {
+    step,
+    pending,
+    failed: step === 'error',
+    cancelled: step === 'cancelled',
+    verified: step === 'verified',
+    lines,
+    markdown: lines.join('\n'),
+  }
+}
+
 export function setupMarkdown(readiness) {
   const value = readiness || setupReadiness()
   const lines = [
