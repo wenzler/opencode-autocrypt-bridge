@@ -137,6 +137,7 @@ export async function createBridge(ctx, cfg, options = {}) {
   const sessionStatus = new Map()
   const lastWatchNotify = new Map()
   const progress = new Map()
+  const watchAnnounced = new Map()
   const announcedDecisions = new Set()
   const announcingQuestions = new Set()
   let started = false
@@ -448,6 +449,32 @@ export async function createBridge(ctx, cfg, options = {}) {
     }
   }
 
+  /** New assistant text since the last mailed watch result for one session. */
+  async function freshWatchResult(sessionID) {
+    let messages = []
+    try {
+      messages = (await ctx.session.context({ sessionID })) || []
+    } catch {
+      return { text: '', ids: [] }
+    }
+    const announced = watchAnnounced.get(sessionID) || new Set()
+    const fresh = messages.filter((entry) => (
+      entry?.type === 'assistant' && !entry.error && !announced.has(entry.id)
+    ))
+    const text = fresh
+      .flatMap((entry) => (entry.content || []).filter((part) => part?.type === 'text').map((part) => part.text))
+      .join('\n\n')
+      .trim()
+    const ids = messages.filter((entry) => entry?.type === 'assistant').map((entry) => entry.id)
+    return { text, ids }
+  }
+
+  function markWatchResult(sessionID, ids) {
+    const announced = watchAnnounced.get(sessionID) || new Set()
+    for (const id of ids) if (id) announced.add(id)
+    watchAnnounced.set(sessionID, announced)
+  }
+
   async function handlePermissionAsked(data = {}) {
     const requestID = String(data.id || data.requestID || '')
     if (!requestID || announcedDecisions.has(requestID) || state.data.pending[requestID]) return
@@ -581,28 +608,38 @@ export async function createBridge(ctx, cfg, options = {}) {
     let subject = ''
     let text = ''
     let kind = 'session-notice'
+    let resultIDs = []
+    const isIdle = event.type === 'session.idle'
+      || (event.type === 'session.status' && data.status?.type === 'idle')
+    const isSuccess = event.type === 'session.execution.succeeded'
+    if (isIdle || isSuccess) {
+      const result = await freshWatchResult(sessionID)
+      resultIDs = result.ids
+      text = result.text
+    }
     if (event.type === 'session.status') {
       if (data.status?.type !== 'idle') return
       subject = `Session idle: ${sessionID}`
-      text = `Session ${sessionID} is idle.`
+      text = text || `Session ${sessionID} is idle.`
       kind = 'idle'
     } else if (event.type === 'session.idle') {
       subject = `Session idle: ${sessionID}`
-      text = `Session ${sessionID} is idle.`
+      text = text || `Session ${sessionID} is idle.`
       kind = 'idle'
     } else if (event.type === 'session.execution.failed' || event.type === 'session.step.failed') {
       const error = data.error?.message || data.error || 'unknown error'
       subject = `Session failed: ${sessionID}`
       text = `Session ${sessionID} failed: ${error}`
       kind = 'failure'
-    } else if (event.type === 'session.execution.succeeded') {
+    } else if (isSuccess) {
       subject = `Session finished: ${sessionID}`
-      text = `Session ${sessionID} finished. Use !peek to read the result.`
+      text = text || `Session ${sessionID} finished. Use !peek to read the result.`
       kind = 'success'
     } else {
       return
     }
     if (!watchersFor(sessionID).length) return
+    if (resultIDs.length) markWatchResult(sessionID, resultIDs)
     lastWatchNotify.set(sessionID, Date.now())
     await sendSessionNotice(sessionID, subject, text, kind)
   }

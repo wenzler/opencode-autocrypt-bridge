@@ -126825,6 +126825,7 @@ async function createBridge(ctx, cfg, options2 = {}) {
   const sessionStatus = /* @__PURE__ */ new Map();
   const lastWatchNotify = /* @__PURE__ */ new Map();
   const progress = /* @__PURE__ */ new Map();
+  const watchAnnounced = /* @__PURE__ */ new Map();
   const announcedDecisions = /* @__PURE__ */ new Set();
   const announcingQuestions = /* @__PURE__ */ new Set();
   let started = false;
@@ -127099,6 +127100,24 @@ async function createBridge(ctx, cfg, options2 = {}) {
       });
     }
   }
+  async function freshWatchResult(sessionID) {
+    let messages = [];
+    try {
+      messages = await ctx.session.context({ sessionID }) || [];
+    } catch {
+      return { text: "", ids: [] };
+    }
+    const announced = watchAnnounced.get(sessionID) || /* @__PURE__ */ new Set();
+    const fresh = messages.filter((entry) => entry?.type === "assistant" && !entry.error && !announced.has(entry.id));
+    const text = fresh.flatMap((entry) => (entry.content || []).filter((part) => part?.type === "text").map((part) => part.text)).join("\n\n").trim();
+    const ids = messages.filter((entry) => entry?.type === "assistant").map((entry) => entry.id);
+    return { text, ids };
+  }
+  function markWatchResult(sessionID, ids) {
+    const announced = watchAnnounced.get(sessionID) || /* @__PURE__ */ new Set();
+    for (const id2 of ids) if (id2) announced.add(id2);
+    watchAnnounced.set(sessionID, announced);
+  }
   async function handlePermissionAsked(data = {}) {
     const requestID = String(data.id || data.requestID || "");
     if (!requestID || announcedDecisions.has(requestID) || state.data.pending[requestID]) return;
@@ -127226,28 +127245,37 @@ async function createBridge(ctx, cfg, options2 = {}) {
     let subject = "";
     let text = "";
     let kind = "session-notice";
+    let resultIDs = [];
+    const isIdle = event.type === "session.idle" || event.type === "session.status" && data.status?.type === "idle";
+    const isSuccess6 = event.type === "session.execution.succeeded";
+    if (isIdle || isSuccess6) {
+      const result3 = await freshWatchResult(sessionID);
+      resultIDs = result3.ids;
+      text = result3.text;
+    }
     if (event.type === "session.status") {
       if (data.status?.type !== "idle") return;
       subject = `Session idle: ${sessionID}`;
-      text = `Session ${sessionID} is idle.`;
+      text = text || `Session ${sessionID} is idle.`;
       kind = "idle";
     } else if (event.type === "session.idle") {
       subject = `Session idle: ${sessionID}`;
-      text = `Session ${sessionID} is idle.`;
+      text = text || `Session ${sessionID} is idle.`;
       kind = "idle";
     } else if (event.type === "session.execution.failed" || event.type === "session.step.failed") {
       const error = data.error?.message || data.error || "unknown error";
       subject = `Session failed: ${sessionID}`;
       text = `Session ${sessionID} failed: ${error}`;
       kind = "failure";
-    } else if (event.type === "session.execution.succeeded") {
+    } else if (isSuccess6) {
       subject = `Session finished: ${sessionID}`;
-      text = `Session ${sessionID} finished. Use !peek to read the result.`;
+      text = text || `Session ${sessionID} finished. Use !peek to read the result.`;
       kind = "success";
     } else {
       return;
     }
     if (!watchersFor(sessionID).length) return;
+    if (resultIDs.length) markWatchResult(sessionID, resultIDs);
     lastWatchNotify.set(sessionID, Date.now());
     await sendSessionNotice(sessionID, subject, text, kind);
   }
@@ -128750,7 +128778,7 @@ var BridgeRpc = rpc_exports.define({
 });
 
 // src/index.js
-var PLUGIN_VERSION = "0.5.21";
+var PLUGIN_VERSION = "0.5.22";
 var SETTING_KEYS = [
   "address",
   "displayName",

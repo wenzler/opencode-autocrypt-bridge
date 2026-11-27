@@ -360,6 +360,8 @@ test('watch subscriptions email completion notices and !peek reads session conte
     data: { sessionID: 'session-1' },
   })
   assert.ok(h.sent.some((entry) => entry.raw.includes('X-OpenCode-Notice: success')))
+  const watchTexts = await sentTexts(h.sent, bridge.getIdentity())
+  assert.ok(watchTexts.some((text) => text.includes('The report is ready')), 'watch mail carries the result')
   await bridge.process(contactReply(contact, {
     messageId: '<peek@example.net>',
     text: '!peek 2',
