@@ -6,7 +6,7 @@ import { testMailAccount as testMailAccountTransport } from './mail.js'
 import { BridgeRpc } from './rpc.js'
 import { formatSessionDirectory } from './session.js'
 
-const PLUGIN_VERSION = '0.5.27'
+const PLUGIN_VERSION = '0.5.28'
 const SETTING_KEYS = [
   'address', 'displayName', 'imapHost', 'imapPort', 'imapSecurity', 'imapUser', 'imapPassword', 'imapMailbox',
   'smtpHost', 'smtpPort', 'smtpSecurity', 'smtpUser', 'smtpPassword', 'pinnedContact',

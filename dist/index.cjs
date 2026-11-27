@@ -128407,7 +128407,8 @@ ${command.rest}`;
           const replies = assistantMessages.flatMap((entry) => entry.content.filter((part) => part.type === "text").map((part) => part.text)).join("\n\n").trim();
           const sentProgress = Boolean(active?.sentLength);
           const mailedText = active ? active.text.slice(0, active.sentLength) : "";
-          const remaining = active ? unreportedRemainder(replies, mailedText) : replies;
+          const finalSource = active && active.text.length > replies.length ? active.text : replies;
+          const remaining = active ? unreportedRemainder(finalSource, mailedText) : replies;
           const attachments = await attachmentsFromSession(assistantMessages, sessionID);
           const terminalText = remaining || (sentProgress ? `Completed in session ${sessionID}.` : "");
           if (terminalText || attachments.length) {
@@ -128989,7 +128990,7 @@ var BridgeRpc = rpc_exports.define({
 });
 
 // src/index.js
-var PLUGIN_VERSION = "0.5.27";
+var PLUGIN_VERSION = "0.5.28";
 var SETTING_KEYS = [
   "address",
   "displayName",

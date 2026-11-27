@@ -248,6 +248,40 @@ test('final mail includes deltas received after the throttled progress mail', as
   assert.doesNotMatch(finalText, /Working/)
 })
 
+test('a run that stops for a question still mails its leading streamed output', async () => {
+  const bot = await keyPair('bot@example.org')
+  const contact = await keyPair('contact@example.net')
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-ac-progress-'))
+
+  const h = harness(contact.fingerprint, root)
+  // Keep everything inside the throttle window: no separate progress mail.
+  h.cfg.remote.progressIntervalMs = 60_000
+  const bridge = await createBridge(h.ctx, h.cfg, {
+    identity: bot, sender: h.sender, log: () => {},
+  })
+
+  const pending = bridge.process(contactMail(contact))
+  await waitFor(h.waitCalled)
+  // The question ends the run before an assistant message is committed.
+  h.setMessages([
+    { id: 'user-message', type: 'user', content: [{ type: 'text', text: 'go' }] },
+  ])
+  await bridge.processEvent({
+    type: 'session.text.delta',
+    data: {
+      sessionID: h.session.id,
+      assistantMessageID: 'assistant-1',
+      delta: 'Leading output before the question ',
+    },
+  })
+  h.release()
+  await pending
+
+  assert.equal(h.sent.length, 1)
+  const finalText = await decryptedText(h.sent, 0, bot)
+  assert.match(finalText, /Leading output before the question/)
+})
+
 test('a fully mailed progress answer still gets one short completion mail', async () => {
   const bot = await keyPair('bot@example.org')
   const contact = await keyPair('contact@example.net')
