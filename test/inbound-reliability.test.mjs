@@ -108,6 +108,18 @@ test('the live IMAP loop retries a failed message instead of deleting it', async
   assert.deepEqual(deleted, [])
 })
 
+test('a quarantined rescan advances the checkpoint but keeps the mail', async () => {
+  const cfg = mailConfig()
+  cfg.imap.deleteAfterRead = true
+  const store = new Map()
+  const deleted = []
+  const client = fakeImapClient({ deleted })
+  const result = await rescanMailbox(cfg, store, async () => 'skip', () => {}, undefined, () => client)
+  assert.equal(result.processed, 0)
+  assert.deepEqual(store.get('imap:INBOX'), { validity: '42', uid: 7 })
+  assert.deepEqual(deleted, [])
+})
+
 async function waitFor(promise, ms = 2000) {
   let timer
   try {
@@ -180,6 +192,63 @@ test('a malformed message is consumed instead of blocking the mailbox', async ()
     startImap: async () => {},
   })
   assert.equal(await bridge.process(Buffer.from('not a mail at all')), true)
+})
+
+test('repeated inbound failures are bounded and quarantined', async () => {
+  const bot = await keyPair('bot@example.org')
+  const contact = await keyPair('contact@example.net')
+  const cfg = mailConfig({
+    remoteMode: 'autocrypt',
+    generateKey: false,
+    pinnedContactKey: contact.publicB64,
+  })
+  cfg.pinned.fingerprint = await keyFingerprint(contact.publicB64)
+  const values = new Map()
+  const ctx = {
+    storage: {
+      async get(key) { return values.get(key) },
+      async set(key, value) { values.set(key, value) },
+    },
+    session: {
+      async get({ sessionID }) { return { id: sessionID, title: 'Quarantine test' } },
+      async create() { return { id: 'session-1' } },
+      async list() { return { data: [] } },
+    },
+    event: { subscribe() { return (async function* () {})() } },
+    location: { directory: '/tmp' },
+  }
+  const sent = []
+  const bridge = await createBridge(ctx, cfg, {
+    identity: bot,
+    log: () => {},
+    sender: { async send(raw, to) { sent.push({ raw, to }) } },
+    encryptMime: async () => { throw new Error('broken encryption key') },
+  })
+  const raw = Buffer.from([
+    'From: Contact <contact@example.net>',
+    'To: <bot@example.org>',
+    'Subject: Retry test',
+    `Date: ${new Date().toUTCString()}`,
+    'Message-ID: <quarantine-test@example.net>',
+    `Autocrypt: ${autocryptHeader('contact@example.net', contact.publicB64, true)}`,
+    'MIME-Version: 1.0',
+    'Content-Type: text/plain; charset=utf-8',
+    'Content-Transfer-Encoding: 7bit',
+    '',
+    '!sessions',
+    '',
+  ].join('\r\n'))
+
+  const id = '<quarantine-test@example.net>'
+  assert.equal(await bridge.process(raw), false)
+  values.get('autocrypt.state').retries[id].nextAt = 0
+  assert.equal(await bridge.process(raw), false)
+  values.get('autocrypt.state').retries[id].nextAt = 0
+  assert.equal(await bridge.process(raw), 'skip')
+  const status = await bridge.getStatus()
+  assert.equal(status.quarantinedInbound, 1)
+  assert.match(status.lastInboundWarning, /Quarantined message/)
+  assert.deepEqual(sent, [])
 })
 
 test('an encryption failure never falls back to cleartext', async () => {

@@ -53,6 +53,8 @@ const statusOutput = {
       additionalProperties: false,
     },
     lastError: { type: 'string' },
+    quarantinedInbound: { type: 'number' },
+    lastInboundWarning: { type: 'string' },
     sessionID: { type: 'string' },
     sessionTitle: { type: 'string' },
     sessionDirectory: { type: 'string' },

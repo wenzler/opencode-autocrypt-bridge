@@ -125,10 +125,14 @@ export async function startImap(cfg, store, onMessage, signal, log, clientFactor
             const fetched = await client.fetchOne(message.uid, { source: true }, { uid: true })
             if (fetched?.source) {
               try {
-                // `false` means the handler wants another attempt: keep the
-                // checkpoint behind this UID and leave the mail in the mailbox.
-                const handled = await onMessage(fetched.source) !== false
-                if (handled) {
+                // `false` means retry: keep the checkpoint behind this UID.
+                // `'skip'` means quarantine: advance the checkpoint but leave
+                // the mail in the mailbox for a later rescan, with no deletion.
+                const result = await onMessage(fetched.source)
+                if (result === 'skip') {
+                  store.set(key, { validity, uid: message.uid })
+                  log(`Inbound message UID ${message.uid} was quarantined`)
+                } else if (result !== false) {
                   store.set(key, { validity, uid: message.uid })
                   if (cfg.imap.deleteAfterRead) await deleteProcessedMessage(client, message.uid, log)
                 } else {
@@ -199,14 +203,18 @@ export async function rescanMailbox(cfg, store, onMessage, log, signal = new Abo
       const fetched = await client.fetchOne(message.uid, { source: true }, { uid: true })
       if (!fetched?.source) continue
       try {
-        const handled = await onMessage(fetched.source) !== false
-        if (!handled) {
+        const result = await onMessage(fetched.source)
+        if (result === false) {
           log(`Rescan will retry message UID ${message.uid}`)
           continue
         }
         const current = store.get(checkpoint)
         const previousUid = current && current.validity === validity ? Number(current.uid) || 0 : 0
         store.set(checkpoint, { validity, uid: Math.max(previousUid, message.uid) })
+        if (result === 'skip') {
+          log(`Rescan quarantined message UID ${message.uid}; it stays in the mailbox`)
+          continue
+        }
         if (cfg.imap.deleteAfterRead) await deleteProcessedMessage(client, message.uid, log)
         processed += 1
       } catch (error) {

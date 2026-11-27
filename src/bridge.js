@@ -78,9 +78,15 @@ function cleanRemoteNote(value, maxLength = 2_000) {
 const STATE_KEY = 'autocrypt.state'
 
 const OUTBOX_LIMIT = 200
+const OUTBOX_BYTES_LIMIT = 20 * 1024 * 1024
+const OUTBOX_TTL_MS = 24 * 60 * 60 * 1000
 const OUTBOX_INTERVAL_MS = 10_000
 const OUTBOX_BASE_DELAY_MS = 15_000
 const OUTBOX_MAX_DELAY_MS = 15 * 60_000
+
+const INBOUND_MAX_ATTEMPTS = 3
+const INBOUND_RETRY_BASE_MS = 10_000
+const INBOUND_RETRY_MAX_MS = 5 * 60_000
 
 const STATE_RECORD_LIMIT = 200
 const STATE_RECORD_TTL_MS = 24 * 60 * 60 * 1000
@@ -149,6 +155,8 @@ async function loadState(ctx) {
   data.questions ||= {}
   data.sent ||= {}
   data.outbox ||= []
+  data.retries ||= {}
+  data.quarantine ||= {}
   return {
     data,
     async save() {
@@ -185,6 +193,26 @@ export async function createBridge(ctx, cfg, options = {}) {
   const state = await loadState(ctx)
   pruneRecords(state.data.pending)
   pruneRecords(state.data.questions)
+  pruneRecords(state.data.retries)
+  pruneRecords(state.data.quarantine)
+
+  // Queued raw messages belong to one pinned identity and trust state. If the
+  // pin, fingerprint or remote mode changed, stale mail must never be retried
+  // against the new configuration.
+  const outboxTrust = [
+    cfg.pinned.contact,
+    cfg.pinned.fingerprint,
+    cfg.remote.mode,
+    Boolean(cfg.pinned.secureJoin?.auth),
+  ].join('|')
+  const previousTrust = state.data.meta.autocryptOutboxTrust
+  if (previousTrust && previousTrust !== outboxTrust) {
+    state.data.outbox = []
+    log('Discarded queued replies after a pinned-contact or trust change')
+  }
+  state.data.meta.autocryptOutboxTrust = outboxTrust
+  await state.save()
+
   const store = {
     get(key) {
       return state.data.meta[key]
@@ -456,6 +484,8 @@ export async function createBridge(ctx, cfg, options = {}) {
         createdAt: Number(handshake.secureJoin?.createdAt || 0),
       },
       lastError: String(handshake.lastError || ''),
+      quarantinedInbound: Object.keys(state.data.quarantine || {}).length,
+      lastInboundWarning: String(state.data.meta.lastInboundWarning || ''),
       sessionID,
       sessionTitle: String(session?.title || ''),
       sessionDirectory: String(session?.location?.directory || ''),
@@ -909,7 +939,22 @@ export async function createBridge(ctx, cfg, options = {}) {
     await state.save()
   }
 
-  async function queueReply({ raw, to, messageId, sessionID, subject, error }) {
+  function pruneOutbox() {
+    const now = Date.now()
+    state.data.outbox = state.data.outbox.filter((entry) => (
+      entry && Number(entry.createdAt || 0) > 0 && now - Number(entry.createdAt) <= OUTBOX_TTL_MS
+    ))
+    let bytes = state.data.outbox.reduce((total, entry) => total + String(entry.raw || '').length, 0)
+    while (state.data.outbox.length > OUTBOX_LIMIT || bytes > OUTBOX_BYTES_LIMIT) {
+      const dropped = state.data.outbox.shift()
+      if (!dropped) break
+      bytes -= String(dropped.raw || '').length
+      log(`Dropped an old queued reply (outbox size limit reached)`)
+    }
+  }
+
+  async function queueReply({ raw, to, messageId, sessionID, subject, encrypted, error }) {
+    const createdAt = Date.now()
     const entry = {
       id: randomUUID(),
       to: String(to || ''),
@@ -917,16 +962,14 @@ export async function createBridge(ctx, cfg, options = {}) {
       messageId: String(messageId || ''),
       sessionID: String(sessionID || ''),
       subject: String(subject || ''),
+      encrypted: Boolean(encrypted),
       attempts: 0,
-      nextAt: Date.now() + OUTBOX_BASE_DELAY_MS,
+      nextAt: createdAt + OUTBOX_BASE_DELAY_MS,
       lastError: String(error?.message || error || 'SMTP error').slice(0, 500),
-      createdAt: Date.now(),
+      createdAt,
     }
     state.data.outbox.push(entry)
-    if (state.data.outbox.length > OUTBOX_LIMIT) {
-      const dropped = state.data.outbox.splice(0, state.data.outbox.length - OUTBOX_LIMIT)
-      log(`Dropped ${dropped.length} old queued replies (outbox limit ${OUTBOX_LIMIT})`)
-    }
+    pruneOutbox()
     await state.save()
     log(`Queued reply to ${entry.to} for retry (${entry.lastError})`)
   }
@@ -935,11 +978,23 @@ export async function createBridge(ctx, cfg, options = {}) {
     if (flushingOutbox || controller.signal.aborted) return
     flushingOutbox = true
     try {
+      pruneOutbox()
       const now = Date.now()
       const due = state.data.outbox.filter((entry) => entry && (force || Number(entry.nextAt || 0) <= now))
       if (!due.length) return
       for (const entry of due) {
         if (controller.signal.aborted) break
+        // Only the currently pinned contact may receive a retried message, and
+        // cleartext bootstrap mail must not outlive a newly learned peer key.
+        const staleCleartext = entry.encrypted !== true
+          && (cfg.pinned.requireEncrypted
+            || Boolean(state.data.peers[entry.to]?.keydata)
+            || (cfg.remote.mode === 'securejoin' && state.data.handshake.secureJoin?.verified))
+        if (entry.to !== cfg.pinned.contact || staleCleartext) {
+          state.data.outbox = state.data.outbox.filter((candidate) => candidate?.id !== entry.id)
+          log(`Discarded stale queued reply to ${entry.to}`)
+          continue
+        }
         try {
           await sender.send(Buffer.from(String(entry.raw || ''), 'base64'), String(entry.to || ''))
           state.data.outbox = state.data.outbox.filter((candidate) => candidate?.id !== entry.id)
@@ -1001,17 +1056,20 @@ export async function createBridge(ctx, cfg, options = {}) {
       body: protectedBody.body,
       headers: [...headers, ...receiptHeaders],
     })
+    const encrypted = protectedBody.contentType.includes('encrypted')
     let queued = false
     try {
       await sender.send(raw, to)
     } catch (error) {
       queued = true
-      await queueReply({ raw, to, messageId, sessionID, subject: finalSubject, error })
+      await queueReply({ raw, to, messageId, sessionID, subject: finalSubject, encrypted, error })
     }
-    await rememberSent(messageId, to, sessionID, finalSubject)
-    if (sessionID) await rememberThread(messageId, sessionID, to)
+    if (!queued) {
+      await rememberSent(messageId, to, sessionID, finalSubject)
+      if (sessionID) await rememberThread(messageId, sessionID, to)
+    }
     const delivery = queued ? 'Queued' : 'Sent'
-    log(`${delivery} ${protectedBody.contentType.includes('encrypted') ? 'encrypted' : 'cleartext'} reply to ${to}${sessionID ? ` [session:${sessionID}]` : ''}`)
+    log(`${delivery} ${encrypted ? 'encrypted' : 'cleartext'} reply to ${to}${sessionID ? ` [session:${sessionID}]` : ''}`)
   }
 
   /** Send an RFC 8098 MDN that is also a Delta Chat-compatible receipt. */
@@ -1045,10 +1103,11 @@ export async function createBridge(ctx, cfg, options = {}) {
   }
 
   async function handleReadReceipt(from, receipt) {
-    const action = String(receipt?.action || '').trim().toLowerCase().split(';')[0].trim()
-    // Only a displayed notification confirms reading. Failed, denied, delayed,
-    // deleted and error MDNs are delivery information, not read receipts.
-    if (action && action !== 'displayed') {
+    const action = String(receipt?.action || '').trim().toLowerCase()
+    // Only an unambiguous displayed notification confirms reading. Blank,
+    // failed, denied, delayed, deleted and modifier-laden MDNs are delivery
+    // information, not read receipts.
+    if (action !== 'displayed') {
       log(`Ignoring ${action} disposition notification from ${from}`)
       return
     }
@@ -1246,6 +1305,7 @@ export async function createBridge(ctx, cfg, options = {}) {
         cancelledAt: Date.now(),
       },
     }
+    state.data.outbox = []
     await state.save()
     log(`SecureJoin cancelled for ${cfg.pinned.contact || 'unknown contact'}`)
     onStatus(await getStatus())
@@ -1418,6 +1478,9 @@ export async function createBridge(ctx, cfg, options = {}) {
     }
     state.data.handshake.secureJoin.status = 'verified'
     state.data.handshake.secureJoin.verified = true
+    // Any reply queued before verification may be cleartext or addressed under
+    // the old trust state. It must not be delivered now.
+    state.data.outbox = []
     await state.save()
     await setHandshake({ phase: 'verified', established: true, verified: true, lastError: '' })
     log(`SecureJoin verified ${from} with fingerprint ${cfg.pinned.fingerprint}`)
@@ -1729,10 +1792,47 @@ export async function createBridge(ctx, cfg, options = {}) {
   ])
   const DECISION_COMMANDS = new Set(['approve', 'deny'])
 
+  /** Bounded retries keep one failing message from blocking the mailbox forever. */
+  async function recordInboundFailure(message, error) {
+    const id = String(message?.messageId || '')
+    if (!id) return false
+    const now = Date.now()
+    const previous = state.data.retries[id] || { attempts: 0, createdAt: now }
+    const attempts = Number(previous.attempts || 0) + 1
+    const record = {
+      attempts,
+      createdAt: Number(previous.createdAt || now),
+      lastError: String(error?.message || error || 'inbound failure').slice(0, 500),
+      nextAt: now + Math.min(INBOUND_RETRY_MAX_MS, INBOUND_RETRY_BASE_MS * 2 ** Math.min(attempts - 1, 5)),
+    }
+    if (attempts >= INBOUND_MAX_ATTEMPTS) {
+      state.data.quarantine[id] = { ...record, quarantinedAt: now }
+      delete state.data.retries[id]
+      state.data.meta.lastInboundWarning = `Quarantined message ${id}: ${record.lastError}`
+      await state.save()
+      log(`Quarantined inbound message ${id} after ${attempts} failures: ${record.lastError}`)
+      onStatus(await getStatus())
+      return 'skip'
+    }
+    state.data.retries[id] = record
+    await state.save()
+    log(`Inbound message ${id} will be retried (${attempts}/${INBOUND_MAX_ATTEMPTS}): ${record.lastError}`)
+    return false
+  }
+
   async function handle(raw) {
     let message
     let promptAccepted = false
-    const done = (value = true) => value
+    // A completed message clears its retry/quarantine record. Failures keep it
+    // so bounded retries can advance deterministically.
+    const done = async (value = true) => {
+      if (value && message?.messageId) {
+        delete state.data.retries[message.messageId]
+        delete state.data.quarantine[message.messageId]
+        await state.save()
+      }
+      return value
+    }
     try {
       try {
         if (await handleSecureJoinPubkey(raw)) return done()
@@ -1778,7 +1878,17 @@ export async function createBridge(ctx, cfg, options = {}) {
         await handleReadReceipt(from, message.mdn)
         return done()
       }
-      if (seenBefore(message.messageId)) return done()
+      if (seenBefore(message.messageId)) {
+        delete state.data.retries[message.messageId]
+        delete state.data.quarantine[message.messageId]
+        await state.save()
+        return done()
+      }
+      const retry = state.data.retries[message.messageId]
+      if (retry && Number(retry.nextAt || 0) > Date.now()) {
+        log(`Waiting to retry inbound message ${message.messageId}`)
+        return done(false)
+      }
       await markSeen(message.messageId)
 
       const command = parseSessionCommand(message.text)
@@ -1942,8 +2052,8 @@ export async function createBridge(ctx, cfg, options = {}) {
       log(`Inbound mail failed: ${error.message}`)
       // Malformed mail can never succeed on retry and would block the mailbox.
       // A prompt that was already accepted must not be submitted twice either.
-      // Only a failure before prompt acceptance is worth retrying.
-      return done(!message || promptAccepted)
+      if (!message || promptAccepted) return done()
+      return await recordInboundFailure(message, error)
     }
   }
   async function rescanInbox() {
@@ -1957,6 +2067,7 @@ export async function createBridge(ctx, cfg, options = {}) {
   async function resetContact() {
     delete state.data.peers[cfg.pinned.contact]
     state.data.handshake = { phase: 'idle', established: false, verified: false, lastError: '' }
+    state.data.outbox = []
     await state.save()
     onStatus(await getStatus())
     return getStatus()

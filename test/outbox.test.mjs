@@ -133,3 +133,147 @@ test('failed SMTP sends are queued and retried from persisted state', async () =
   assert.equal((await bridge.getStatus()).queuedReplies, 0)
   assert.equal(values.get('autocrypt.state').outbox.length, 0)
 })
+
+function outboxState(overrides = {}) {
+  return {
+    sessions: {}, peers: {}, seen: [], threads: {}, sessionContacts: {}, meta: {},
+    handshake: {}, watches: {}, pending: {}, questions: {}, sent: {}, outbox: [],
+    ...overrides,
+  }
+}
+
+test('a pinned-contact trust change discards queued replies', async () => {
+  const bot = await keyPair('bot@example.org')
+  const contact = await keyPair('contact@example.net')
+  const cfg = loadConfig({
+    address: 'bot@example.org', displayName: 'Bridge', imapHost: 'imap.example.org', imapPassword: 't',
+    smtpHost: 'smtp.example.org', smtpPassword: 't', pinnedContact: 'contact@example.net',
+    pinnedFingerprint: contact.fingerprint, remoteMode: 'autocrypt', generateKey: false,
+  }, {})
+  const values = new Map()
+  values.set('autocrypt.state', outboxState({
+    outbox: [{
+      id: 'stale', to: 'contact@example.net', messageId: '<stale@example.net>',
+      raw: Buffer.from('From: bot@example.org').toString('base64'),
+      createdAt: Date.now(), nextAt: 0, encrypted: true,
+    }],
+    meta: { autocryptOutboxTrust: 'old-contact@example.net|OLD|autocrypt|false' },
+  }))
+  const ctx = {
+    storage: {
+      async get(key) { return values.get(key) },
+      async set(key, value) { values.set(key, value) },
+    },
+    session: {},
+    event: { subscribe() { return (async function* () {})() } },
+    location: { directory: '/tmp' },
+  }
+  const sent = []
+  await createBridge(ctx, cfg, {
+    identity: bot,
+    sender: { async send(raw, to) { sent.push({ raw, to }) } },
+    log: () => {},
+  })
+  assert.equal(values.get('autocrypt.state').outbox.length, 0, 'stale queued mail is gone')
+  assert.deepEqual(sent, [])
+})
+
+test('old and oversized queued replies are pruned before retry', async () => {
+  const bot = await keyPair('bot@example.org')
+  const contact = await keyPair('contact@example.net')
+  const cfg = loadConfig({
+    address: 'bot@example.org', displayName: 'Bridge', imapHost: 'imap.example.org', imapPassword: 't',
+    smtpHost: 'smtp.example.org', smtpPassword: 't', pinnedContact: 'contact@example.net',
+    pinnedFingerprint: contact.fingerprint, remoteMode: 'autocrypt', generateKey: false,
+  }, {})
+  const now = Date.now()
+  const values = new Map()
+  values.set('autocrypt.state', outboxState({
+    outbox: [
+      {
+        id: 'expired', to: 'contact@example.net', messageId: '<expired@example.net>',
+        raw: Buffer.from('From: bot@example.org').toString('base64'),
+        createdAt: now - 25 * 60 * 60 * 1000, nextAt: 0, encrypted: true,
+      },
+      {
+        id: 'huge', to: 'contact@example.net', messageId: '<huge@example.net>',
+        raw: Buffer.alloc(16 * 1024 * 1024).toString('base64'),
+        createdAt: now, nextAt: 0, encrypted: true,
+      },
+      {
+        id: 'valid', to: 'contact@example.net', messageId: '<valid@example.net>',
+        raw: Buffer.from('From: bot@example.org').toString('base64'),
+        createdAt: now, nextAt: 0, encrypted: true,
+      },
+    ],
+    meta: {
+      autocryptOutboxTrust: `contact@example.net|${contact.fingerprint}|autocrypt|false`,
+    },
+  }))
+  const ctx = {
+    storage: {
+      async get(key) { return values.get(key) },
+      async set(key, value) { values.set(key, value) },
+    },
+    session: {},
+    event: { subscribe() { return (async function* () {})() } },
+    location: { directory: '/tmp' },
+  }
+  const sent = []
+  const bridge = await createBridge(ctx, cfg, {
+    identity: bot,
+    sender: { async send(raw, to) { sent.push({ raw, to }) } },
+    log: () => {},
+  })
+  await bridge.flushOutbox(true)
+  assert.deepEqual(sent.map((entry) => entry.to), ['contact@example.net'])
+  assert.equal(values.get('autocrypt.state').outbox.length, 0)
+})
+
+test('stale recipients and cleartext bootstrap replies are not retried', async () => {
+  const bot = await keyPair('bot@example.org')
+  const contact = await keyPair('contact@example.net')
+  const cfg = loadConfig({
+    address: 'bot@example.org', displayName: 'Bridge', imapHost: 'imap.example.org', imapPassword: 't',
+    smtpHost: 'smtp.example.org', smtpPassword: 't', pinnedContact: 'contact@example.net',
+    pinnedFingerprint: contact.fingerprint, remoteMode: 'autocrypt', generateKey: false,
+  }, {})
+  const now = Date.now()
+  const values = new Map()
+  values.set('autocrypt.state', outboxState({
+    peers: { 'contact@example.net': { keydata: contact.publicB64 } },
+    outbox: [
+      {
+        id: 'other', to: 'other@example.net', messageId: '<other@example.net>',
+        raw: Buffer.from('From: bot@example.org').toString('base64'),
+        createdAt: now, nextAt: 0, encrypted: true,
+      },
+      {
+        id: 'clear', to: 'contact@example.net', messageId: '<clear@example.net>',
+        raw: Buffer.from('From: bot@example.org').toString('base64'),
+        createdAt: now, nextAt: 0, encrypted: false,
+      },
+    ],
+    meta: {
+      autocryptOutboxTrust: `contact@example.net|${contact.fingerprint}|autocrypt|false`,
+    },
+  }))
+  const ctx = {
+    storage: {
+      async get(key) { return values.get(key) },
+      async set(key, value) { values.set(key, value) },
+    },
+    session: {},
+    event: { subscribe() { return (async function* () {})() } },
+    location: { directory: '/tmp' },
+  }
+  const sent = []
+  const bridge = await createBridge(ctx, cfg, {
+    identity: bot,
+    sender: { async send(raw, to) { sent.push({ raw, to }) } },
+    log: () => {},
+  })
+  await bridge.flushOutbox(true)
+  assert.deepEqual(sent, [])
+  assert.equal(values.get('autocrypt.state').outbox.length, 0)
+})

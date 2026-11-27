@@ -319,6 +319,8 @@ export default Plugin.define({
           `Last read receipt: ${current.lastReceiptAt ? new Date(current.lastReceiptAt).toLocaleString() : "(none)"}`,
           `Queued replies: ${current.queuedReplies ?? 0}`,
           ...(current.nextReplyRetryAt ? [`Next reply retry: ${new Date(current.nextReplyRetryAt).toLocaleString()}`] : []),
+          `Quarantined inbound: ${current.quarantinedInbound ?? 0}`,
+          ...(current.lastInboundWarning ? [`Inbound warning: ${current.lastInboundWarning}`] : []),
           ...(current.lastError ? [`Last error: ${current.lastError}`] : []),
         ]
         return lines.join("\n")

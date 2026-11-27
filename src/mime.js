@@ -281,6 +281,7 @@ export function parseDispositionNotification(raw) {
   if (!boundary) return undefined
   const marker = `--${boundary[1] || boundary[2]}`
   const body = text.slice(separator + 2)
+  let result
   for (const chunk of body.split(marker).slice(1)) {
     if (chunk.startsWith('--')) break
     const partSeparator = chunk.indexOf('\n\n')
@@ -293,16 +294,21 @@ export function parseDispositionNotification(raw) {
     ))
     const disposition = String(fields.get('disposition') || '')
     if (!disposition) continue
-    const action = String(fields.get('action') || disposition.split(';').slice(1).join(';') || '')
-      .trim()
-      .toLowerCase()
-    return {
+    // RFC 8098 puts the disposition mode after the first semicolon; Delta Chat
+    // may send the bare `displayed` form. Anything with extra modifiers is not
+    // accepted as an unambiguous read receipt.
+    const explicitAction = String(fields.get('action') || '')
+    const dispositionAction = disposition.includes(';')
+      ? disposition.slice(disposition.indexOf(';') + 1)
+      : disposition
+    const action = (explicitAction || dispositionAction).trim().toLowerCase()
+    result = {
       disposition,
       action,
       originalMessageID: String(fields.get('original-message-id') || headers.get('in-reply-to') || ''),
     }
   }
-  return undefined
+  return result
 }
 
 export function extractArmored(raw) {

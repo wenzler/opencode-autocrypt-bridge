@@ -353,6 +353,23 @@ test('a failed MDN disposition does not confirm the outbound message', async () 
   assert.equal((await bridge.getStatus()).lastReceiptAt, 0)
 })
 
+test('an ambiguous MDN disposition is not treated as a read receipt', async () => {
+  const bot = await keyPair('bot@example.org')
+  const contact = await keyPair('contact@example.net')
+  const h = harness(contact.fingerprint)
+  const bridge = await createBridge(h.ctx, h.cfg, {
+    identity: bot, sender: h.sender, log: () => {},
+  })
+
+  await bridge.process(contactMail(contact))
+  const outboundID = parseRawHeaders(h.sent[0].raw).get('message-id')
+  assert.equal(parseDispositionNotification(mdnMail(contact, outboundID, 'displayed; extra=1')).action, 'displayed; extra=1')
+  await bridge.process(mdnMail(contact, outboundID, 'displayed; extra=1'))
+
+  const state = h.values.get('autocrypt.state')
+  assert.ok(!state.sent[outboundID.replace(/^<|>$/g, '')].receiptAt)
+})
+
 test('a quoted-printable Delta Chat MDN confirms the matching outbound message', async () => {
   const bot = await keyPair('bot@example.org')
   const contact = await keyPair('contact@example.net')

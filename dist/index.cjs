@@ -126245,6 +126245,7 @@ function parseDispositionNotification(raw) {
   if (!boundary) return void 0;
   const marker = `--${boundary[1] || boundary[2]}`;
   const body = text.slice(separator + 2);
+  let result3;
   for (const chunk of body.split(marker).slice(1)) {
     if (chunk.startsWith("--")) break;
     const partSeparator = chunk.indexOf("\n\n");
@@ -126257,14 +126258,16 @@ function parseDispositionNotification(raw) {
     ));
     const disposition = String(fields.get("disposition") || "");
     if (!disposition) continue;
-    const action = String(fields.get("action") || disposition.split(";").slice(1).join(";") || "").trim().toLowerCase();
-    return {
+    const explicitAction = String(fields.get("action") || "");
+    const dispositionAction = disposition.includes(";") ? disposition.slice(disposition.indexOf(";") + 1) : disposition;
+    const action = (explicitAction || dispositionAction).trim().toLowerCase();
+    result3 = {
       disposition,
       action,
       originalMessageID: String(fields.get("original-message-id") || headers.get("in-reply-to") || "")
     };
   }
-  return void 0;
+  return result3;
 }
 function extractArmored(raw) {
   const text = Buffer.isBuffer(raw) ? raw.toString("utf8") : String(raw);
@@ -126392,8 +126395,11 @@ async function startImap(cfg, store, onMessage, signal, log2, clientFactory = (o
             const fetched = await client.fetchOne(message.uid, { source: true }, { uid: true });
             if (fetched?.source) {
               try {
-                const handled = await onMessage(fetched.source) !== false;
-                if (handled) {
+                const result3 = await onMessage(fetched.source);
+                if (result3 === "skip") {
+                  store.set(key5, { validity, uid: message.uid });
+                  log2(`Inbound message UID ${message.uid} was quarantined`);
+                } else if (result3 !== false) {
                   store.set(key5, { validity, uid: message.uid });
                   if (cfg.imap.deleteAfterRead) await deleteProcessedMessage(client, message.uid, log2);
                 } else {
@@ -126462,14 +126468,18 @@ async function rescanMailbox(cfg, store, onMessage, log2, signal = new AbortCont
       const fetched = await client.fetchOne(message.uid, { source: true }, { uid: true });
       if (!fetched?.source) continue;
       try {
-        const handled = await onMessage(fetched.source) !== false;
-        if (!handled) {
+        const result3 = await onMessage(fetched.source);
+        if (result3 === false) {
           log2(`Rescan will retry message UID ${message.uid}`);
           continue;
         }
         const current = store.get(checkpoint);
         const previousUid = current && current.validity === validity ? Number(current.uid) || 0 : 0;
         store.set(checkpoint, { validity, uid: Math.max(previousUid, message.uid) });
+        if (result3 === "skip") {
+          log2(`Rescan quarantined message UID ${message.uid}; it stays in the mailbox`);
+          continue;
+        }
         if (cfg.imap.deleteAfterRead) await deleteProcessedMessage(client, message.uid, log2);
         processed += 1;
       } catch (error) {
@@ -126856,9 +126866,14 @@ function cleanRemoteNote(value3, maxLength = 2e3) {
 }
 var STATE_KEY = "autocrypt.state";
 var OUTBOX_LIMIT = 200;
+var OUTBOX_BYTES_LIMIT = 20 * 1024 * 1024;
+var OUTBOX_TTL_MS = 24 * 60 * 60 * 1e3;
 var OUTBOX_INTERVAL_MS = 1e4;
 var OUTBOX_BASE_DELAY_MS = 15e3;
 var OUTBOX_MAX_DELAY_MS = 15 * 6e4;
+var INBOUND_MAX_ATTEMPTS = 3;
+var INBOUND_RETRY_BASE_MS = 1e4;
+var INBOUND_RETRY_MAX_MS = 5 * 6e4;
 var STATE_RECORD_LIMIT = 200;
 var STATE_RECORD_TTL_MS = 24 * 60 * 60 * 1e3;
 function pruneRecords(collection, limit = STATE_RECORD_LIMIT, ttlMs = STATE_RECORD_TTL_MS) {
@@ -126921,6 +126936,8 @@ async function loadState(ctx) {
   data.questions ||= {};
   data.sent ||= {};
   data.outbox ||= [];
+  data.retries ||= {};
+  data.quarantine ||= {};
   return {
     data,
     async save() {
@@ -126955,6 +126972,21 @@ async function createBridge(ctx, cfg, options2 = {}) {
   const state = await loadState(ctx);
   pruneRecords(state.data.pending);
   pruneRecords(state.data.questions);
+  pruneRecords(state.data.retries);
+  pruneRecords(state.data.quarantine);
+  const outboxTrust = [
+    cfg.pinned.contact,
+    cfg.pinned.fingerprint,
+    cfg.remote.mode,
+    Boolean(cfg.pinned.secureJoin?.auth)
+  ].join("|");
+  const previousTrust = state.data.meta.autocryptOutboxTrust;
+  if (previousTrust && previousTrust !== outboxTrust) {
+    state.data.outbox = [];
+    log2("Discarded queued replies after a pinned-contact or trust change");
+  }
+  state.data.meta.autocryptOutboxTrust = outboxTrust;
+  await state.save();
   const store = {
     get(key5) {
       return state.data.meta[key5];
@@ -127200,6 +127232,8 @@ async function createBridge(ctx, cfg, options2 = {}) {
         createdAt: Number(handshake.secureJoin?.createdAt || 0)
       },
       lastError: String(handshake.lastError || ""),
+      quarantinedInbound: Object.keys(state.data.quarantine || {}).length,
+      lastInboundWarning: String(state.data.meta.lastInboundWarning || ""),
       sessionID,
       sessionTitle: String(session?.title || ""),
       sessionDirectory: String(session?.location?.directory || ""),
@@ -127612,7 +127646,19 @@ ${chunk}`
     }
     await state.save();
   }
-  async function queueReply({ raw, to, messageId, sessionID, subject, error }) {
+  function pruneOutbox() {
+    const now3 = Date.now();
+    state.data.outbox = state.data.outbox.filter((entry) => entry && Number(entry.createdAt || 0) > 0 && now3 - Number(entry.createdAt) <= OUTBOX_TTL_MS);
+    let bytes2 = state.data.outbox.reduce((total2, entry) => total2 + String(entry.raw || "").length, 0);
+    while (state.data.outbox.length > OUTBOX_LIMIT || bytes2 > OUTBOX_BYTES_LIMIT) {
+      const dropped = state.data.outbox.shift();
+      if (!dropped) break;
+      bytes2 -= String(dropped.raw || "").length;
+      log2(`Dropped an old queued reply (outbox size limit reached)`);
+    }
+  }
+  async function queueReply({ raw, to, messageId, sessionID, subject, encrypted, error }) {
+    const createdAt = Date.now();
     const entry = {
       id: (0, import_node_crypto5.randomUUID)(),
       to: String(to || ""),
@@ -127620,16 +127666,14 @@ ${chunk}`
       messageId: String(messageId || ""),
       sessionID: String(sessionID || ""),
       subject: String(subject || ""),
+      encrypted: Boolean(encrypted),
       attempts: 0,
-      nextAt: Date.now() + OUTBOX_BASE_DELAY_MS,
+      nextAt: createdAt + OUTBOX_BASE_DELAY_MS,
       lastError: String(error?.message || error || "SMTP error").slice(0, 500),
-      createdAt: Date.now()
+      createdAt
     };
     state.data.outbox.push(entry);
-    if (state.data.outbox.length > OUTBOX_LIMIT) {
-      const dropped = state.data.outbox.splice(0, state.data.outbox.length - OUTBOX_LIMIT);
-      log2(`Dropped ${dropped.length} old queued replies (outbox limit ${OUTBOX_LIMIT})`);
-    }
+    pruneOutbox();
     await state.save();
     log2(`Queued reply to ${entry.to} for retry (${entry.lastError})`);
   }
@@ -127637,11 +127681,18 @@ ${chunk}`
     if (flushingOutbox || controller.signal.aborted) return;
     flushingOutbox = true;
     try {
+      pruneOutbox();
       const now3 = Date.now();
       const due = state.data.outbox.filter((entry) => entry && (force || Number(entry.nextAt || 0) <= now3));
       if (!due.length) return;
       for (const entry of due) {
         if (controller.signal.aborted) break;
+        const staleCleartext = entry.encrypted !== true && (cfg.pinned.requireEncrypted || Boolean(state.data.peers[entry.to]?.keydata) || cfg.remote.mode === "securejoin" && state.data.handshake.secureJoin?.verified);
+        if (entry.to !== cfg.pinned.contact || staleCleartext) {
+          state.data.outbox = state.data.outbox.filter((candidate) => candidate?.id !== entry.id);
+          log2(`Discarded stale queued reply to ${entry.to}`);
+          continue;
+        }
         try {
           await sender.send(Buffer.from(String(entry.raw || ""), "base64"), String(entry.to || ""));
           state.data.outbox = state.data.outbox.filter((candidate) => candidate?.id !== entry.id);
@@ -127699,17 +127750,20 @@ ${chunk}`
       body: protectedBody.body,
       headers: [...headers, ...receiptHeaders]
     });
+    const encrypted = protectedBody.contentType.includes("encrypted");
     let queued = false;
     try {
       await sender.send(raw, to);
     } catch (error) {
       queued = true;
-      await queueReply({ raw, to, messageId, sessionID, subject: finalSubject, error });
+      await queueReply({ raw, to, messageId, sessionID, subject: finalSubject, encrypted, error });
     }
-    await rememberSent(messageId, to, sessionID, finalSubject);
-    if (sessionID) await rememberThread(messageId, sessionID, to);
+    if (!queued) {
+      await rememberSent(messageId, to, sessionID, finalSubject);
+      if (sessionID) await rememberThread(messageId, sessionID, to);
+    }
     const delivery = queued ? "Queued" : "Sent";
-    log2(`${delivery} ${protectedBody.contentType.includes("encrypted") ? "encrypted" : "cleartext"} reply to ${to}${sessionID ? ` [session:${sessionID}]` : ""}`);
+    log2(`${delivery} ${encrypted ? "encrypted" : "cleartext"} reply to ${to}${sessionID ? ` [session:${sessionID}]` : ""}`);
   }
   async function sendReadReceipt(to, originalMessageID) {
     if (cfg.remote?.readReceipts === false) return;
@@ -127736,8 +127790,8 @@ ${chunk}`
     log2(`Sent read receipt to ${to} for ${id2}`);
   }
   async function handleReadReceipt(from, receipt) {
-    const action = String(receipt?.action || "").trim().toLowerCase().split(";")[0].trim();
-    if (action && action !== "displayed") {
+    const action = String(receipt?.action || "").trim().toLowerCase();
+    if (action !== "displayed") {
       log2(`Ignoring ${action} disposition notification from ${from}`);
       return;
     }
@@ -127916,6 +127970,7 @@ ${chunk}`
         cancelledAt: Date.now()
       }
     };
+    state.data.outbox = [];
     await state.save();
     log2(`SecureJoin cancelled for ${cfg.pinned.contact || "unknown contact"}`);
     onStatus(await getStatus());
@@ -128079,6 +128134,7 @@ ${chunk}`
     };
     state.data.handshake.secureJoin.status = "verified";
     state.data.handshake.secureJoin.verified = true;
+    state.data.outbox = [];
     await state.save();
     await setHandshake({ phase: "verified", established: true, verified: true, lastError: "" });
     log2(`SecureJoin verified ${from} with fingerprint ${cfg.pinned.fingerprint}`);
@@ -128385,10 +128441,43 @@ Further replies in this subject stay in this session.`;
     "unwatch"
   ]);
   const DECISION_COMMANDS = /* @__PURE__ */ new Set(["approve", "deny"]);
+  async function recordInboundFailure(message, error) {
+    const id2 = String(message?.messageId || "");
+    if (!id2) return false;
+    const now3 = Date.now();
+    const previous = state.data.retries[id2] || { attempts: 0, createdAt: now3 };
+    const attempts = Number(previous.attempts || 0) + 1;
+    const record2 = {
+      attempts,
+      createdAt: Number(previous.createdAt || now3),
+      lastError: String(error?.message || error || "inbound failure").slice(0, 500),
+      nextAt: now3 + Math.min(INBOUND_RETRY_MAX_MS, INBOUND_RETRY_BASE_MS * 2 ** Math.min(attempts - 1, 5))
+    };
+    if (attempts >= INBOUND_MAX_ATTEMPTS) {
+      state.data.quarantine[id2] = { ...record2, quarantinedAt: now3 };
+      delete state.data.retries[id2];
+      state.data.meta.lastInboundWarning = `Quarantined message ${id2}: ${record2.lastError}`;
+      await state.save();
+      log2(`Quarantined inbound message ${id2} after ${attempts} failures: ${record2.lastError}`);
+      onStatus(await getStatus());
+      return "skip";
+    }
+    state.data.retries[id2] = record2;
+    await state.save();
+    log2(`Inbound message ${id2} will be retried (${attempts}/${INBOUND_MAX_ATTEMPTS}): ${record2.lastError}`);
+    return false;
+  }
   async function handle(raw) {
     let message;
     let promptAccepted = false;
-    const done3 = (value3 = true) => value3;
+    const done3 = async (value3 = true) => {
+      if (value3 && message?.messageId) {
+        delete state.data.retries[message.messageId];
+        delete state.data.quarantine[message.messageId];
+        await state.save();
+      }
+      return value3;
+    };
     try {
       try {
         if (await handleSecureJoinPubkey(raw)) return done3();
@@ -128430,7 +128519,17 @@ Further replies in this subject stay in this session.`;
         await handleReadReceipt(from, message.mdn);
         return done3();
       }
-      if (seenBefore(message.messageId)) return done3();
+      if (seenBefore(message.messageId)) {
+        delete state.data.retries[message.messageId];
+        delete state.data.quarantine[message.messageId];
+        await state.save();
+        return done3();
+      }
+      const retry3 = state.data.retries[message.messageId];
+      if (retry3 && Number(retry3.nextAt || 0) > Date.now()) {
+        log2(`Waiting to retry inbound message ${message.messageId}`);
+        return done3(false);
+      }
       await markSeen(message.messageId);
       const command = parseSessionCommand(message.text);
       const { establishedNow } = await learnPeer(from, message.autocrypt);
@@ -128573,7 +128672,8 @@ ${command.rest}`;
     } catch (error) {
       if (message?.messageId && !promptAccepted) await unmarkSeen(message.messageId);
       log2(`Inbound mail failed: ${error.message}`);
-      return done3(!message || promptAccepted);
+      if (!message || promptAccepted) return done3();
+      return await recordInboundFailure(message, error);
     }
   }
   async function rescanInbox() {
@@ -128586,6 +128686,7 @@ ${command.rest}`;
   async function resetContact() {
     delete state.data.peers[cfg.pinned.contact];
     state.data.handshake = { phase: "idle", established: false, verified: false, lastError: "" };
+    state.data.outbox = [];
     await state.save();
     onStatus(await getStatus());
     return getStatus();
@@ -129001,6 +129102,8 @@ var statusOutput = {
       additionalProperties: false
     },
     lastError: { type: "string" },
+    quarantinedInbound: { type: "number" },
+    lastInboundWarning: { type: "string" },
     sessionID: { type: "string" },
     sessionTitle: { type: "string" },
     sessionDirectory: { type: "string" },
