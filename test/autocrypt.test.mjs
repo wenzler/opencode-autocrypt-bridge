@@ -182,11 +182,11 @@ test('established replies keep the Autocrypt header and Chat-Version marker', as
   assert.equal(status.established, true)
   assert.equal(status.verified, true)
   assert.equal(h.sent.length, 2)
-  const promptText = h.promptInputs[0].text
-  const marker = '--- Autocrypt bridge metadata (not user input) ---'
-  assert.ok(promptText.indexOf('Hello from the pinned contact.') < promptText.indexOf(marker))
-  assert.ok(promptText.indexOf(marker) < promptText.indexOf('[Autocrypt email from'))
-  assert.ok(promptText.includes('[OpenCode session:'))
+  const prompt = h.promptInputs[0]
+  assert.equal(prompt.text.trim(), 'Hello from the pinned contact.')
+  assert.equal(prompt.metadata.source, 'autocrypt-email')
+  assert.equal(prompt.metadata.from, 'contact@example.net')
+  assert.ok(prompt.metadata.sessionID)
   const reply = parseRawHeaders(h.sent[1].raw)
   assert.match(reply.get('autocrypt'), /addr=bot@example\.org/)
   assert.equal(reply.get('chat-version'), '1.0')

@@ -1686,20 +1686,25 @@ export async function createBridge(ctx, cfg, options = {}) {
           description: attachment.description,
         }))
         const promptId = hashId(message.messageId)
-        const text = [
-          command?.rest || message.text || '(message contained no plain text)',
-          '--- Autocrypt bridge metadata (not user input) ---',
-          `[Autocrypt email from ${from}${message.fromName ? ` (${message.fromName})` : ''}]`,
-          `[OpenCode session: ${sessionID}${resolution.note ? ` — ${resolution.note}` : ''}]`,
-          ...(message.attachments.length ? [`[Attachments: ${message.attachments.map((a) => a.filename).join(', ')}]`] : []),
-        ].join('\n\n')
+        // Only the email body is user input. Routing/sender metadata lives in
+        // the structured `metadata` field so it can never be echoed back into
+        // the conversation and mistaken for something the contact wrote.
+        const text = command?.rest || message.text || '(message contained no plain text)'
         const promptResult = await ctx.session.prompt({
           sessionID,
           id: promptId,
           text,
           ...(files.length ? { files } : {}),
           delivery: wasBusy ? 'queue' : 'steer',
-          metadata: { source: 'autocrypt-email', from, messageId: message.messageId, sessionID },
+          metadata: {
+            source: 'autocrypt-email',
+            from,
+            fromName: message.fromName,
+            messageId: message.messageId,
+            sessionID,
+            note: resolution.note,
+            attachments: message.attachments.map((a) => a.filename),
+          },
         })
         if (wasBusy) {
           await sendCommandReply(from, message, sessionID, `Session ${sessionID} is busy; your prompt was queued. !watch ${sessionID} emails you when it finishes.`)

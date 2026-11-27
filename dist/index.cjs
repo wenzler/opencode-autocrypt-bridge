@@ -128354,20 +128354,22 @@ ${command.rest}`;
           description: attachment.description
         }));
         const promptId = hashId(message.messageId);
-        const text = [
-          command?.rest || message.text || "(message contained no plain text)",
-          "--- Autocrypt bridge metadata (not user input) ---",
-          `[Autocrypt email from ${from}${message.fromName ? ` (${message.fromName})` : ""}]`,
-          `[OpenCode session: ${sessionID}${resolution.note ? ` \u2014 ${resolution.note}` : ""}]`,
-          ...message.attachments.length ? [`[Attachments: ${message.attachments.map((a) => a.filename).join(", ")}]`] : []
-        ].join("\n\n");
+        const text = command?.rest || message.text || "(message contained no plain text)";
         const promptResult = await ctx.session.prompt({
           sessionID,
           id: promptId,
           text,
           ...files.length ? { files } : {},
           delivery: wasBusy ? "queue" : "steer",
-          metadata: { source: "autocrypt-email", from, messageId: message.messageId, sessionID }
+          metadata: {
+            source: "autocrypt-email",
+            from,
+            fromName: message.fromName,
+            messageId: message.messageId,
+            sessionID,
+            note: resolution.note,
+            attachments: message.attachments.map((a) => a.filename)
+          }
         });
         if (wasBusy) {
           await sendCommandReply(from, message, sessionID, `Session ${sessionID} is busy; your prompt was queued. !watch ${sessionID} emails you when it finishes.`);
@@ -128978,7 +128980,7 @@ var BridgeRpc = rpc_exports.define({
 });
 
 // src/index.js
-var PLUGIN_VERSION = "0.5.25";
+var PLUGIN_VERSION = "0.5.26";
 var SETTING_KEYS = [
   "address",
   "displayName",
